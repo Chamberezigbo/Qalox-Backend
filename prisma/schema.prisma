@@ -1,0 +1,514 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "prisma"
+}
+
+model Admin {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int?
+  campusId    Int? // Optional, since admins might not always belong to a campus
+  name        String   @db.VarChar(255)
+  email       String   @unique @db.VarChar(255) // Ensure unique emails
+  password    String   @db.VarChar(255)
+  steps       Int      @default(0) // Tracks the steps for the admin
+  role        Role
+  createdAt   DateTime @default(now()) @db.Timestamp
+  hasLoggedIn Boolean  @default(false)
+
+  // Relationships
+  school                       School?                @relation(fields: [schoolId], references: [id])
+  campus                       Campus?                @relation(fields: [campusId], references: [id])
+  createdContinuousAssessments ContinuousAssessment[] @relation("AdminCreatedCAs")
+  createdExams                 Exam[]                 @relation("AdminCreatedExams")
+
+  publishedResults PublishedResult[]
+
+  @@map("admins")
+}
+
+enum Role {
+  super_admin
+  school_admin
+}
+
+model School {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique @db.VarChar(255) // Add @unique here
+  prefix      String   @db.VarChar(10)
+  logoUrl     String?  @db.VarChar(255)
+  stampUrl    String?  @db.VarChar(255)
+  email       String?  @db.VarChar(255)
+  phoneNumber String?  @db.VarChar(50)
+  address     String?  @db.Text
+  createdAt   DateTime @default(now()) @db.Timestamp
+
+  campuses        Campus[]
+  admins          Admin[]
+  Class           Class[]
+  Staff           Staff[]
+  Student         Student[]
+  Subject         Subject[]
+  GradingScheme   GradingScheme[]
+  RemarkScheme    RemarkScheme?
+  AcademicSession AcademicSession[]
+  AcademicTerm    AcademicTerm[]
+  CATemplate      CATemplate[]
+
+  @@map("schools")
+}
+
+model Token {
+  id         Int      @id @default(autoincrement())
+  email      String   @unique @db.VarChar(255) // Unique key to ensure no duplicate email tokens
+  uniqueKey  String   @unique @db.VarChar(255) // Unique key for token generation/validation
+  status     String?  @db.VarChar(50)
+  schoolName String   @db.VarChar(255) // School name associated with the token
+  createdAt  DateTime @default(now()) // Timestamp for when the token was created
+
+  @@map("tokens") // Maps to a table named `tokens`
+}
+
+model Campus {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int
+  name        String   @db.VarChar(255)
+  address     String?  @db.Text
+  phoneNumber String?  @db.VarChar(50)
+  email       String?  @db.VarChar(255)
+  createdAt   DateTime @default(now()) @db.Timestamp
+
+  school             School              @relation(fields: [schoolId], references: [id])
+  admins             Admin[]
+  Class              Class[]
+  Staff              Staff[]
+  Student            Student[]
+  Subject            Subject[]
+  TeacherAssignments TeacherAssignment[] // ✅ added
+  gradingSchemes GradingScheme[]
+
+  @@unique([schoolId, name]) // 🔒 Prevent same campus name for same school
+  @@map("campuses")
+}
+
+model Class {
+  id          Int          @id @default(autoincrement())
+  schoolId    Int
+  campusId    Int?
+  name        String
+  customName  String?
+  staffId     Int? // Optional, in case a class is created without a teacher assigned
+  createdAt   DateTime     @default(now())
+  school      School       @relation(fields: [schoolId], references: [id])
+  campus      Campus?      @relation(fields: [campusId], references: [id])
+  staff       Staff?       @relation(fields: [staffId], references: [id])
+  classGroups ClassGroup[] // One-to-many relation with ClassGroup
+  students    Student[] // One-to-many relation with Student
+
+  assignments TeacherAssignment[] // Teachers teaching in this class
+
+  ContinuousAssessment ContinuousAssessment[]
+  Exam                 Exam[]
+  GradingSchemeClass   GradingSchemeClass[]
+  CATemplate           CATemplate[]
+  ClassSubject         ClassSubject[]
+  publishedResults PublishedResult[]
+  resultSubmissions ResultSubmission[]
+
+  // Optionally, add a unique constraint for name, school, and campus
+  @@unique([name, schoolId, campusId])
+  @@map("classes") // Maps the model to the "classes" table in the database
+}
+
+model ClassGroup {
+  id        Int      @id @default(autoincrement())
+  classId   Int
+  name      String
+  createdAt DateTime @default(now())
+  class     Class    @relation(fields: [classId], references: [id])
+
+  students Student[] // ✅ back-relation (one group -> many students)
+}
+
+model Staff {
+  id                 Int       @id @default(autoincrement())
+  schoolId           Int
+  campusId           Int?
+  name               String
+  email              String?   @unique
+  gender             String?   // "Male", "Female", "Other"
+  phoneNumber        String?
+  address            String?
+  duty               String? // e.g., "Teacher", "Accountant", "Cleaner"
+  nextOfKin          String?
+  dateEmployed       DateTime?
+  payroll            Decimal? // salary or payroll reference
+  createdAt          DateTime  @default(now())
+  registrationNumber String    @unique @db.VarChar(50)
+
+  school      School              @relation(fields: [schoolId], references: [id])
+  campus      Campus?             @relation(fields: [campusId], references: [id])
+  classes     Class[] // if staff is a teacher, they can have classes
+  assignments TeacherAssignment[] // All class+subject+campus teaching assignments
+  resultSubmissions ResultSubmission[]
+
+  @@unique([schoolId, registrationNumber])
+  @@map("staffs")
+}
+
+model Student {
+  id       Int  @id @default(autoincrement())
+  schoolId Int
+  campusId Int?
+  classId  Int
+
+  name              String
+  surname           String
+  otherNames        String
+  gender            String? @db.VarChar(10)
+  dateOfBirth       String?
+  guardianName      String?
+  guardianNumber    String?
+  lifestyle         String?
+  academicSessionId Int
+  email             String?
+  classGroupId      Int? // ✅ optional since not all students must have a group
+
+  academicSession    AcademicSession @relation(fields: [academicSessionId], references: [id])
+  classGroup         ClassGroup?     @relation(fields: [classGroupId], references: [id])
+  // ✅ NEW: Registration Number Field
+  registrationNumber String          @unique @db.VarChar(50)
+  passportUrl       String?  @db.VarChar(255)
+
+  createdAt  DateTime     @default(now())
+  school     School       @relation(fields: [schoolId], references: [id])
+  campus     Campus?      @relation(fields: [campusId], references: [id])
+  class      Class        @relation(fields: [classId], references: [id])
+  CAResult   CAResult[]
+  ExamResult ExamResult[]
+  publishedResultRows PublishedResultRow[]
+
+  // ✅ NEW: Unique constraint for registration number per school
+  @@unique([schoolId, registrationNumber])
+  @@map("students")
+}
+
+model Subject {
+  id        Int      @id @default(autoincrement())
+  schoolId  Int
+  campusId  Int?
+  name      String   @db.VarChar(255) // Subject name (e.g., "Mathematics")
+  code      String?  @db.VarChar(50) // Unique subject code (optional)
+  createdAt DateTime @default(now())
+
+  school                School                 @relation(fields: [schoolId], references: [id])
+  campus                Campus?                @relation(fields: [campusId], references: [id])
+  assignments           TeacherAssignment[] // Who teaches this subject (and where)
+  continuousAssessments ContinuousAssessment[]
+  exams                 Exam[]
+  classSubjects         ClassSubject[]
+  publishedResults PublishedResult[]
+  resultSubmissions ResultSubmission[]
+
+  @@map("subjects")
+}
+
+model TeacherAssignment {
+  id         Int      @id @default(autoincrement())
+  staffId    Int
+  classId    Int? // Optional classId
+  subjectId  Int? // Optional subjectId
+  campusId   Int? // Optional campusId
+  assignedAt DateTime @default(now())
+
+  staff   Staff    @relation(fields: [staffId], references: [id])
+  class   Class?   @relation(fields: [classId], references: [id])
+  subject Subject? @relation(fields: [subjectId], references: [id])
+  campus  Campus?  @relation(fields: [campusId], references: [id])
+
+  @@index([staffId, classId, subjectId, campusId], name: "TeacherAssignment_unique") // Unique index
+  @@map("teacher_assignments")
+}
+
+// School-level default CA structure
+model CATemplate {
+  id       Int     @id @default(autoincrement())
+  schoolId Int
+  classId  Int?    // NULL = applies to whole school, set = class override
+  name     String  // e.g. "CA1", "CA2", "Exam"
+  maxScore Int
+  isExam   Boolean @default(false) // true = this is an exam, false = CA
+
+  school School  @relation(fields: [schoolId], references: [id])
+  class  Class?  @relation(fields: [classId], references: [id])
+
+  @@unique([schoolId, classId, name])
+  @@map("ca_templates")
+}
+
+// Direct link between class and subject
+model ClassSubject {
+  id        Int @id @default(autoincrement())
+  classId   Int
+  subjectId Int
+
+  class   Class   @relation(fields: [classId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+
+  @@unique([classId, subjectId])
+  @@map("class_subjects")
+}
+
+
+model ContinuousAssessment {
+  id        Int      @id @default(autoincrement())
+  classId   Int
+  subjectId Int?
+  name      String   @db.VarChar(50)
+  maxScore  Int
+  createdAt DateTime @default(now())
+
+  createdByAdminId Int?
+  createdByAdmin   Admin? @relation("AdminCreatedCAs", fields: [createdByAdminId], references: [id])
+
+  class     Class      @relation(fields: [classId], references: [id])
+  subject   Subject?   @relation(fields: [subjectId], references: [id])
+  caResults CAResult[]
+
+  @@unique([classId, subjectId, name])
+  @@map("continuous_assessments")
+}
+
+model CAResult {
+  id                Int      @id @default(autoincrement())
+  studentId         Int?
+  caId              Int
+  academicSessionId Int
+  termId            Int?     // ← add this
+  score             Decimal
+  createdAt         DateTime @default(now())
+
+  student         Student?             @relation(fields: [studentId], references: [id])
+  ca              ContinuousAssessment @relation(fields: [caId], references: [id])
+  academicSession AcademicSession      @relation(fields: [academicSessionId], references: [id])
+  term            AcademicTerm?        @relation(fields: [termId], references: [id]) // ← add this
+
+  @@unique([studentId, caId, academicSessionId])
+  @@map("ca_results")
+}
+
+
+model Exam {
+  id        Int      @id @default(autoincrement())
+  classId   Int
+  subjectId Int?
+  name      String   @db.VarChar(50) // e.g., "Midterm", "Final"
+  weightage Decimal? // Weightage in the final grade
+  maxScore  Int
+  createdAt DateTime @default(now())
+
+  createdByAdminId Int?
+  createdByAdmin   Admin? @relation("AdminCreatedExams", fields: [createdByAdminId], references: [id])
+
+  class       Class        @relation(fields: [classId], references: [id])
+  subject     Subject?     @relation(fields: [subjectId], references: [id])
+  examResults ExamResult[]
+  scheduledDate DateTime?
+
+  @@unique([classId, subjectId, name])
+  @@map("exams")
+}
+
+model ExamResult {
+  id                Int      @id @default(autoincrement())
+  studentId         Int?
+  examId            Int
+  academicSessionId Int
+  termId            Int?     // ← add this
+  score             Decimal
+  createdAt         DateTime @default(now())
+
+  student         Student?        @relation(fields: [studentId], references: [id])
+  exam            Exam            @relation(fields: [examId], references: [id])
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
+  term            AcademicTerm?   @relation(fields: [termId], references: [id]) // ← add this
+
+  @@unique([studentId, examId, academicSessionId])
+  @@map("exam_results")
+}
+
+model GradingScheme {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int
+  name        String // e.g. "Junior Secondary Grading"
+  usePosition Boolean  @default(true) // rank students or not
+  createdAt   DateTime @default(now())
+  campusId    Int?  
+
+  school  School               @relation(fields: [schoolId], references: [id])
+  grades  GradingRule[]
+  campus  Campus?              @relation(fields: [campusId], references: [id]) 
+  classes GradingSchemeClass[]
+
+  @@map("grading_schemes")
+}
+
+model GradingRule {
+  id       Int    @id @default(autoincrement())
+  schemeId Int
+  minScore Int
+  maxScore Int
+  grade    String
+  remark   String
+
+  scheme GradingScheme @relation(fields: [schemeId], references: [id])
+
+  @@map("grading_rules")
+}
+
+model GradingSchemeClass {
+  id       Int @id @default(autoincrement())
+  schemeId Int
+  classId  Int @unique
+
+  scheme GradingScheme @relation(fields: [schemeId], references: [id])
+  class  Class         @relation(fields: [classId], references: [id])
+}
+
+model RemarkScheme {
+  id        Int      @id @default(autoincrement())
+  schoolId  Int
+  name      String
+  createdAt DateTime @default(now())
+
+  school School      @relation(fields: [schoolId], references: [id])
+  rules  RemarkRule[]
+
+  @@unique([schoolId])
+  @@map("remark_schemes")
+}
+
+model RemarkRule {
+  id       Int    @id @default(autoincrement())
+  schemeId Int
+  minScore Int
+  maxScore Int
+  remark   String @db.Text
+
+  scheme RemarkScheme @relation(fields: [schemeId], references: [id])
+
+  @@map("remark_rules")
+}
+
+model AcademicSession {
+  id        Int      @id @default(autoincrement())
+  schoolId  Int
+  name      String
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  school            School             @relation(fields: [schoolId], references: [id])
+  students          Student[]
+  caResults         CAResult[]
+  examResults       ExamResult[]
+  publishedResults  PublishedResult[]
+  resultSubmissions ResultSubmission[]
+  terms             AcademicTerm[]
+
+  @@unique([schoolId, name])
+  @@map("academic_sessions")
+}
+
+model PublishedResult {
+  id                 Int      @id @default(autoincrement())
+  classId            Int
+  subjectId          Int
+  academicSessionId  Int
+  termId             Int?
+  publishedByAdminId Int
+  publishedAt        DateTime @default(now())
+
+  class           Class           @relation(fields: [classId], references: [id])
+  subject         Subject         @relation(fields: [subjectId], references: [id])
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
+  term            AcademicTerm?   @relation(fields: [termId], references: [id])
+  admin           Admin           @relation(fields: [publishedByAdminId], references: [id])
+  rows            PublishedResultRow[]
+
+  @@unique([classId, subjectId, academicSessionId])
+  @@map("published_results")
+}
+
+model PublishedResultRow {
+  id                Int     @id @default(autoincrement())
+  publishedResultId Int
+  studentId         Int
+  caTotal           Float
+  examTotal         Float
+  total             Float
+  grade             String?
+  remark            String?
+  position          Int?
+
+  publishedResult PublishedResult @relation(fields: [publishedResultId], references: [id])
+  student         Student         @relation(fields: [studentId], references: [id])
+
+  @@map("published_result_rows")
+}
+
+
+enum SubmissionStatus {
+  PENDING    // submitted, awaiting admin review
+  REJECTED   // admin rejected, teacher can re-enter
+}
+
+model ResultSubmission {
+  id                Int              @id @default(autoincrement())
+  classId           Int
+  subjectId         Int
+  academicSessionId Int
+  termId            Int?             // ← add this
+  staffId           Int
+  status            SubmissionStatus @default(PENDING)
+  submittedAt       DateTime         @default(now())
+
+  class           Class           @relation(fields: [classId], references: [id])
+  subject         Subject         @relation(fields: [subjectId], references: [id])
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
+  term            AcademicTerm?   @relation(fields: [termId], references: [id]) // ← add this
+  staff           Staff           @relation(fields: [staffId], references: [id])
+
+  @@unique([classId, subjectId, academicSessionId, staffId])
+  @@map("result_submissions")
+}
+
+
+model AcademicTerm {
+  id              Int       @id @default(autoincrement())
+  schoolId        Int
+  sessionId       Int
+  name            String    // "First Term", "Second Term", "Third Term"
+  isActive        Boolean   @default(false)
+  resumptionDate  DateTime? // Date when this term resumes (next term start date)
+  createdAt       DateTime  @default(now())
+
+  school   School          @relation(fields: [schoolId], references: [id])
+  session  AcademicSession @relation(fields: [sessionId], references: [id])
+
+  caResults         CAResult[]
+  examResults       ExamResult[]
+  resultSubmissions ResultSubmission[]
+  publishedResults  PublishedResult[]
+
+  @@unique([schoolId, sessionId, name])
+  @@map("academic_terms")
+}
+
+
