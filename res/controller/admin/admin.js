@@ -54,6 +54,14 @@ exports.createAdmin = async (req, res, next) => {
         });
       }
 
+      // Check if token is still active (not already used)
+      if (tokenRecord.status !== 'active') {
+        return res.status(400).json({
+          message:
+            "Token is no longer active. It may have already been used.",
+        });
+      }
+
       // After successfully validation,update token status to'inactive'
       await prisma.token.update({
         where: { email },

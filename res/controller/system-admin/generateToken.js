@@ -16,7 +16,9 @@ exports.generateToken = async (req, res, next) => {
       });
     }
 
-    const uniqueKey = `Test-${crypto.randomBytes(16).toString("hex")}`;
+    // Generate token in format TKN-XXXXXX (6 random hex characters)
+    const randomHex = crypto.randomBytes(3).toString("hex").toUpperCase();
+    const uniqueKey = `TKN-${randomHex}`;
 
     const newToken = await prisma.token.create({
       data: {

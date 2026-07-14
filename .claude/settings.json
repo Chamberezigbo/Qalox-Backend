@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nQalox Development Workflow\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nPhase 1 (Before coding):\n  /explore  → find patterns and understand code\n  /plan     → map implementation approach\n\nPhase 2 (Before committing):\n  git commit → hooks remind you to run /code-review\n\nPhase 3 (Git shortcuts):\n  save  → stage + commit (no push)\n  sync  → stage + commit + push\n  ship  → stage + commit + push + create PR\n\nRead .claude/WORKFLOW.md for details.\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'",
+            "statusMessage": "Loading Qalox workflow..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '\n💡 Code changed: Consider running /code-review to catch issues before committing.\n'",
+            "statusMessage": "Suggesting code-review..."
+          }
+        ]
+      }
+    ]
+  }
+}
