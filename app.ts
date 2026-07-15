@@ -18,11 +18,15 @@ const studentDash = require("./res/routes/studentDashboard");
 
 const app = express();
 
-// Enable CORS for all origins during development/demo
-// For production, configure specific origins
+// Enable CORS with configurable origins from .env
+const corsOrigins = process.env.CORS_ORIGIN?.split(",") || ["*"];
+const corsCredentials = process.env.CORS_CREDENTIALS === "true";
+
 app.use(cors({
-  origin: "*",
-  credentials: false
+  origin: corsOrigins,
+  credentials: corsCredentials,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
 // Parse JSON bodies//

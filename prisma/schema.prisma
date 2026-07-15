@@ -20,7 +20,7 @@ model Admin {
   password    String   @db.VarChar(255)
   steps       Int      @default(0) // Tracks the steps for the admin
   role        Role
-  createdAt   DateTime @default(now()) @db.Timestamp
+  createdAt   DateTime @default(now())
   hasLoggedIn Boolean  @default(false)
 
   // Relationships
@@ -48,7 +48,7 @@ model School {
   email       String?  @db.VarChar(255)
   phoneNumber String?  @db.VarChar(50)
   address     String?  @db.Text
-  createdAt   DateTime @default(now()) @db.Timestamp
+  createdAt   DateTime @default(now())
 
   campuses        Campus[]
   admins          Admin[]
@@ -83,7 +83,7 @@ model Campus {
   address     String?  @db.Text
   phoneNumber String?  @db.VarChar(50)
   email       String?  @db.VarChar(255)
-  createdAt   DateTime @default(now()) @db.Timestamp
+  createdAt   DateTime @default(now())
 
   school             School              @relation(fields: [schoolId], references: [id])
   admins             Admin[]
