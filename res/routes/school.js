@@ -5,11 +5,17 @@ const upload = require("../middleware/upload");
 const auth = require("../middleware/authenticateSuperAdmin");
 const validate = require("../middleware/validator");
 const { schoolValidationSchema } = require("../schemas/index");
+const { serviceAuth } = require("../middleware/serviceAuth");
 
-const { setupSchool } = require("../controller/school/schoolController");
+const { setupSchool, listSchools, getSchool } = require("../controller/school/schoolController");
 
 const router = express.Router();
 
+// Public endpoints for Super Admin & Marketer Portal
+router.get("/", serviceAuth, listSchools);
+router.get("/:id", serviceAuth, getSchool);
+
+// Setup endpoint for creating schools
 router.post(
   "/setup",
   upload.fields([{ name: "logoUrl" }, { name: "stampUrl" }]),

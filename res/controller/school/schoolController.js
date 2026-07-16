@@ -132,3 +132,101 @@ exports.setupSchool = async (req, res, next) => {
   }
 
 };
+
+/**
+ * List all schools (for Super Admin & Marketer Portal)
+ * GET /api/schools?page=1&limit=20&search=school_name
+ */
+exports.listSchools = async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 20));
+    const search = req.query.search || '';
+
+    const where = search
+      ? { name: { contains: search, mode: 'insensitive' } }
+      : {};
+
+    const [schools, total] = await Promise.all([
+      prisma.school.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          prefix: true,
+          email: true,
+          phoneNumber: true,
+          address: true,
+          logoUrl: true,
+          stampUrl: true,
+          createdAt: true,
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.school.count({ where }),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: schools,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get single school details
+ * GET /api/schools/:id
+ */
+exports.getSchool = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const school = await prisma.school.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        campuses: {
+          select: { id: true, name: true },
+        },
+        _count: {
+          select: { students: true, classes: true },
+        },
+      },
+    });
+
+    if (!school) {
+      return res.status(404).json({
+        success: false,
+        message: 'School not found',
+        code: 'SCHOOL_NOT_FOUND',
+      });
+    }
+
+    // Get active session
+    const activeSession = await prisma.academicSession.findFirst({
+      where: { schoolId: parseInt(id), isActive: true },
+      select: { id: true, name: true, isActive: true },
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...school,
+        totalStudents: school._count.students,
+        totalClasses: school._count.classes,
+        activeSession,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
