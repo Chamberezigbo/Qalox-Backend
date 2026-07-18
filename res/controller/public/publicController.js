@@ -155,7 +155,7 @@ exports.suspendSchool = async (req, res, next) => {
       });
     }
 
-    logger.success(`[SUSPEND_SCHOOL] School ${suspend ? 'suspended' : 'reactivated'} successfully`, { schoolId, isSuspended: updatedSchool.isSuspended });
+    logger.info(`[SUSPEND_SCHOOL] School ${suspend ? 'suspended' : 'reactivated'} successfully`, { schoolId, isSuspended: updatedSchool.isSuspended });
 
     res.status(200).json({
       success: true,
@@ -214,7 +214,7 @@ exports.deleteSchool = async (req, res, next) => {
     logger.info(`[DELETE_SCHOOL] Starting cascade deletion`, { schoolId, reason });
     const result = await schoolService.deleteSchoolCascade(schoolId, reason);
 
-    logger.success(`[DELETE_SCHOOL] School deleted successfully`, { schoolId, deletedAt: result.deletedAt });
+    logger.info(`[DELETE_SCHOOL] School deleted successfully`, { schoolId, deletedAt: result.deletedAt });
 
     res.status(200).json({
       success: true,
@@ -326,7 +326,7 @@ exports.createAdmin = async (req, res, next) => {
       },
     });
 
-    logger.success(`[CREATE_ADMIN] Admin created successfully`, { adminId: newAdmin.id, email, role, schoolId: newAdmin.schoolId });
+    logger.info(`[CREATE_ADMIN] Admin created successfully`, { adminId: newAdmin.id, email, role, schoolId: newAdmin.schoolId });
 
     res.status(201).json({
       success: true,
@@ -416,7 +416,7 @@ exports.loginPublic = async (req, res, next) => {
       });
     }
 
-    logger.success(`[LOGIN_PUBLIC] ${admin.role} login successful`, { email, adminId: admin.id, role: admin.role });
+    logger.info(`[LOGIN_PUBLIC] ${admin.role} login successful`, { email, adminId: admin.id, role: admin.role });
 
     // Return user info for JWT generation by calling service
     res.status(200).json({
@@ -504,7 +504,7 @@ exports.createMarketer = async (req, res, next) => {
       });
     }
 
-    logger.success(`[CREATE_MARKETER] Marketer created successfully`, { marketerId: newMarketer.id, email, tier: newMarketer.tier });
+    logger.info(`[CREATE_MARKETER] Marketer created successfully`, { marketerId: newMarketer.id, email, tier: newMarketer.tier });
 
     res.status(201).json({
       success: true,
@@ -709,7 +709,7 @@ exports.updateMarketer = async (req, res, next) => {
       },
     });
 
-    logger.success(`[UPDATE_MARKETER] Marketer updated successfully`, { marketerId, email: updatedMarketer.email });
+    logger.info(`[UPDATE_MARKETER] Marketer updated successfully`, { marketerId, email: updatedMarketer.email });
 
     res.status(200).json({
       success: true,
@@ -772,7 +772,7 @@ exports.suspendMarketer = async (req, res, next) => {
       },
     });
 
-    logger.success(`[SUSPEND_MARKETER] Marketer ${suspend ? 'suspended' : 'activated'} successfully`, { marketerId, email: updatedMarketer.email, isSuspended: updatedMarketer.isSuspended });
+    logger.info(`[SUSPEND_MARKETER] Marketer ${suspend ? 'suspended' : 'activated'} successfully`, { marketerId, email: updatedMarketer.email, isSuspended: updatedMarketer.isSuspended });
 
     res.status(200).json({
       success: true,
@@ -848,7 +848,7 @@ exports.setMarketerCommission = async (req, res, next) => {
       },
     });
 
-    logger.success(`[SET_COMMISSION] Commission updated successfully`, { marketerId, commissionRate });
+    logger.info(`[SET_COMMISSION] Commission updated successfully`, { marketerId, commissionRate });
 
     res.status(200).json({
       success: true,
@@ -1026,7 +1026,7 @@ exports.updateMarketerWallet = async (req, res, next) => {
       },
     });
 
-    logger.success(`[UPDATE_WALLET] Wallet updated successfully`, { marketerId, operation, amount, newBalance });
+    logger.info(`[UPDATE_WALLET] Wallet updated successfully`, { marketerId, operation, amount, newBalance });
 
     res.status(200).json({
       success: true,
