@@ -39,6 +39,20 @@ model Admin {
   isSuspended     Boolean  @default(false)
   suspendedAt     DateTime?
 
+  // Marketer Commission & Wallet Fields (only for role=marketer)
+  commissionRate      Float?   @default(0.0)  // Commission percentage (e.g., 5.0 = 5%)
+  commissionStructure String?  @db.VarChar(50) // 'flat', 'tiered', 'performance'
+
+  // Wallet/Financial Fields
+  walletBalance       Float?   @default(0.0)
+  walletPending       Float?   @default(0.0)
+  totalEarned         Float?   @default(0.0)
+  totalWithdrawn       Float?   @default(0.0)
+
+  // Transaction History (JSON array for simplicity, can normalize later)
+  transactionCount    Int      @default(0)
+  lastPayoutDate      DateTime?
+
   // Relationships
   school                       School?                @relation(fields: [schoolId], references: [id])
   campus                       Campus?                @relation(fields: [campusId], references: [id])

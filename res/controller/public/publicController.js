@@ -784,3 +784,262 @@ exports.suspendMarketer = async (req, res, next) => {
     next(err);
   }
 };
+
+// ============================================
+// COMMISSION & WALLET ENDPOINTS
+// ============================================
+
+// PATCH /api/public/marketers/:id/commission
+// Set marketer commission rate (Super Admin only)
+exports.setMarketerCommission = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { commissionRate, commissionStructure } = req.body;
+    const marketerId = parseInt(id, 10);
+
+    logger.debug(`[SET_COMMISSION] Setting commission for marketer`, { marketerId, commissionRate, commissionStructure });
+
+    if (isNaN(marketerId)) {
+      logger.warn(`[SET_COMMISSION] Invalid marketer ID`, { id });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid marketer ID",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    if (typeof commissionRate !== 'number' || commissionRate < 0 || commissionRate > 100) {
+      logger.warn(`[SET_COMMISSION] Invalid commission rate`, { commissionRate });
+      return res.status(400).json({
+        success: false,
+        message: "Commission rate must be between 0 and 100",
+        code: "INVALID_RATE",
+      });
+    }
+
+    // Check if marketer exists
+    const existingMarketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+    });
+
+    if (!existingMarketer) {
+      logger.warn(`[SET_COMMISSION] Marketer not found`, { marketerId });
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    // Update commission
+    const updatedMarketer = await prisma.admin.update({
+      where: { id: marketerId },
+      data: {
+        commissionRate,
+        commissionStructure: commissionStructure || "flat",
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        tier: true,
+        commissionRate: true,
+        commissionStructure: true,
+      },
+    });
+
+    logger.success(`[SET_COMMISSION] Commission updated successfully`, { marketerId, commissionRate });
+
+    res.status(200).json({
+      success: true,
+      message: "Commission rate updated successfully",
+      data: updatedMarketer,
+    });
+  } catch (err) {
+    logger.error(`[SET_COMMISSION] Error setting commission`, { error: err.message, marketerId: req.params.id });
+    next(err);
+  }
+};
+
+// GET /api/public/marketers/:id/wallet
+// Get marketer wallet information (Super Admin, Marketer Portal)
+exports.getMarketerWallet = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const marketerId = parseInt(id, 10);
+
+    logger.debug(`[GET_WALLET] Fetching wallet for marketer`, { marketerId });
+
+    if (isNaN(marketerId)) {
+      logger.warn(`[GET_WALLET] Invalid marketer ID`, { id });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid marketer ID",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    // Check if marketer exists
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        tier: true,
+        walletBalance: true,
+        walletPending: true,
+        totalEarned: true,
+        totalWithdrawn: true,
+        transactionCount: true,
+        lastPayoutDate: true,
+        commissionRate: true,
+      },
+    });
+
+    if (!marketer) {
+      logger.warn(`[GET_WALLET] Marketer not found`, { marketerId });
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    logger.info(`[GET_WALLET] Retrieved wallet for marketer`, { marketerId, balance: marketer.walletBalance });
+
+    res.status(200).json({
+      success: true,
+      message: "Wallet retrieved successfully",
+      data: {
+        marketerId: marketer.id,
+        balance: marketer.walletBalance,
+        pending: marketer.walletPending,
+        totalEarned: marketer.totalEarned,
+        totalWithdrawn: marketer.totalWithdrawn,
+        transactionCount: marketer.transactionCount,
+        lastPayoutDate: marketer.lastPayoutDate,
+        commissionRate: marketer.commissionRate,
+      },
+    });
+  } catch (err) {
+    logger.error(`[GET_WALLET] Error fetching wallet`, { error: err.message, marketerId: req.params.id });
+    next(err);
+  }
+};
+
+// PATCH /api/public/marketers/:id/wallet
+// Update marketer wallet balance (for payout/credit operations)
+exports.updateMarketerWallet = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { operation, amount, description } = req.body;
+    const marketerId = parseInt(id, 10);
+
+    logger.debug(`[UPDATE_WALLET] Wallet operation`, { marketerId, operation, amount });
+
+    if (isNaN(marketerId)) {
+      logger.warn(`[UPDATE_WALLET] Invalid marketer ID`, { id });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid marketer ID",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    if (!['credit', 'debit', 'payout'].includes(operation)) {
+      logger.warn(`[UPDATE_WALLET] Invalid operation`, { operation });
+      return res.status(400).json({
+        success: false,
+        message: "Operation must be 'credit', 'debit', or 'payout'",
+        code: "INVALID_OPERATION",
+      });
+    }
+
+    if (typeof amount !== 'number' || amount <= 0) {
+      logger.warn(`[UPDATE_WALLET] Invalid amount`, { amount });
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be a positive number",
+        code: "INVALID_AMOUNT",
+      });
+    }
+
+    // Get current marketer
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+    });
+
+    if (!marketer) {
+      logger.warn(`[UPDATE_WALLET] Marketer not found`, { marketerId });
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    // Calculate new balances
+    let newBalance = marketer.walletBalance || 0;
+    let newWithdrawn = marketer.totalWithdrawn || 0;
+
+    if (operation === 'credit') {
+      newBalance += amount;
+    } else if (operation === 'debit') {
+      if (newBalance < amount) {
+        logger.warn(`[UPDATE_WALLET] Insufficient balance`, { marketerId, balance: newBalance, amount });
+        return res.status(400).json({
+          success: false,
+          message: "Insufficient wallet balance",
+          code: "INSUFFICIENT_BALANCE",
+        });
+      }
+      newBalance -= amount;
+    } else if (operation === 'payout') {
+      if (newBalance < amount) {
+        logger.warn(`[UPDATE_WALLET] Insufficient balance for payout`, { marketerId, balance: newBalance, amount });
+        return res.status(400).json({
+          success: false,
+          message: "Insufficient wallet balance for payout",
+          code: "INSUFFICIENT_BALANCE",
+        });
+      }
+      newBalance -= amount;
+      newWithdrawn += amount;
+    }
+
+    // Update wallet
+    const updatedMarketer = await prisma.admin.update({
+      where: { id: marketerId },
+      data: {
+        walletBalance: newBalance,
+        totalWithdrawn: newWithdrawn,
+        lastPayoutDate: operation === 'payout' ? new Date() : marketer.lastPayoutDate,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        walletBalance: true,
+        totalWithdrawn: true,
+        lastPayoutDate: true,
+      },
+    });
+
+    logger.success(`[UPDATE_WALLET] Wallet updated successfully`, { marketerId, operation, amount, newBalance });
+
+    res.status(200).json({
+      success: true,
+      message: `Wallet ${operation} successful`,
+      data: {
+        marketerId: updatedMarketer.id,
+        balance: updatedMarketer.walletBalance,
+        totalWithdrawn: updatedMarketer.totalWithdrawn,
+        lastPayoutDate: updatedMarketer.lastPayoutDate,
+      },
+    });
+  } catch (err) {
+    logger.error(`[UPDATE_WALLET] Error updating wallet`, { error: err.message, marketerId: req.params.id });
+    next(err);
+  }
+};

@@ -378,4 +378,40 @@ router.patch(
   publicController.suspendMarketer
 );
 
+/**
+ * ============================================
+ * COMMISSION & WALLET ENDPOINTS
+ * ============================================
+ */
+
+/**
+ * PATCH /api/public/marketers/:id/commission
+ * Set marketer commission rate (Super Admin configures)
+ */
+router.patch(
+  "/marketers/:id/commission",
+  serviceAuth,
+  publicController.setMarketerCommission
+);
+
+/**
+ * GET /api/public/marketers/:id/wallet
+ * Get marketer wallet and financial information
+ */
+router.get(
+  "/marketers/:id/wallet",
+  serviceAuth,
+  publicController.getMarketerWallet
+);
+
+/**
+ * PATCH /api/public/marketers/:id/wallet
+ * Update wallet balance (credit, debit, payout operations)
+ */
+router.patch(
+  "/marketers/:id/wallet",
+  serviceAuth,
+  publicController.updateMarketerWallet
+);
+
 module.exports = router;
