@@ -351,6 +351,93 @@ exports.createAdmin = async (req, res, next) => {
 // MARKETER ENDPOINTS
 // ============================================
 
+// POST /api/public/auth/login
+// Login for both admins and marketers (returns basic info, no JWT)
+// Service-to-service endpoint - JWT issued by calling service
+exports.loginPublic = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    logger.debug(`[LOGIN_PUBLIC] Login attempt`, { email });
+
+    if (!email || !password) {
+      logger.warn(`[LOGIN_PUBLIC] Missing credentials`, { email });
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required",
+        code: "MISSING_CREDENTIALS",
+      });
+    }
+
+    // Find admin by email (could be super_admin, school_admin, or marketer)
+    const admin = await prisma.admin.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        password: true,
+        role: true,
+        tier: true,
+        referralCode: true,
+        isEmailVerified: true,
+        isSuspended: true,
+      },
+    });
+
+    if (!admin) {
+      logger.warn(`[LOGIN_PUBLIC] User not found`, { email });
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+        code: "INVALID_CREDENTIALS",
+      });
+    }
+
+    // Check if marketer is suspended
+    if (admin.role === "marketer" && admin.isSuspended) {
+      logger.warn(`[LOGIN_PUBLIC] Marketer account suspended`, { email, adminId: admin.id });
+      return res.status(403).json({
+        success: false,
+        message: "This account has been suspended",
+        code: "ACCOUNT_SUSPENDED",
+      });
+    }
+
+    // Verify password
+    const isPasswordValid = await bcrypt.compare(password, admin.password);
+
+    if (!isPasswordValid) {
+      logger.warn(`[LOGIN_PUBLIC] Invalid password`, { email });
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+        code: "INVALID_CREDENTIALS",
+      });
+    }
+
+    logger.success(`[LOGIN_PUBLIC] ${admin.role} login successful`, { email, adminId: admin.id, role: admin.role });
+
+    // Return user info for JWT generation by calling service
+    res.status(200).json({
+      success: true,
+      message: "Authentication successful",
+      data: {
+        id: admin.id,
+        email: admin.email,
+        name: admin.name,
+        role: admin.role,
+        tier: admin.tier,
+        referralCode: admin.referralCode,
+        isEmailVerified: admin.isEmailVerified,
+      },
+    });
+  } catch (err) {
+    logger.error(`[LOGIN_PUBLIC] Error during login`, { error: err.message, email: req.body?.email });
+    next(err);
+  }
+};
+
 // POST /api/public/marketers
 // Create a new marketer account (service-to-service)
 exports.createMarketer = async (req, res, next) => {

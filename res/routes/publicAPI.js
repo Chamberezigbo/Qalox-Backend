@@ -307,6 +307,23 @@ router.post(
 
 /**
  * ============================================
+ * AUTHENTICATION ENDPOINTS
+ * ============================================
+ */
+
+/**
+ * POST /api/public/auth/login
+ * Login for admins and marketers (returns user info for JWT generation)
+ * Used by: Super Admin Portal, Marketer Portal
+ */
+router.post(
+  "/auth/login",
+  serviceAuth,
+  publicController.loginPublic
+);
+
+/**
+ * ============================================
  * MARKETER ENDPOINTS
  * ============================================
  */
