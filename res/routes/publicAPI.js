@@ -5,7 +5,14 @@
 
 const express = require("express");
 const { serviceAuth } = require("../middleware/serviceAuth");
+const validate = require("../middleware/validator");
 const prisma = require("../util/prisma");
+const publicController = require("../controller/public/publicController");
+const {
+  suspendSchoolSchema,
+  deleteSchoolSchema,
+  createAdminSchema,
+} = require("../schemas/publicAPISchemas");
 
 const router = express.Router();
 
@@ -252,5 +259,106 @@ router.patch("/tokens/:uniqueKey/deactivate", serviceAuth, async (req, res, next
     next(error);
   }
 });
+
+/**
+ * ============================================
+ * NEW ENDPOINTS FOR SUPER ADMIN PORTAL
+ * ============================================
+ */
+
+/**
+ * GET /api/public/schools/:id
+ * Retrieve single school with campuses (service-to-service)
+ */
+router.get("/schools/:id", serviceAuth, publicController.getSchoolById);
+
+/**
+ * PATCH /api/public/schools/:id/suspend
+ * Suspend or reactivate a school (service-to-service)
+ */
+router.patch(
+  "/schools/:id/suspend",
+  serviceAuth,
+  validate(suspendSchoolSchema),
+  publicController.suspendSchool
+);
+
+/**
+ * DELETE /api/public/schools/:id
+ * Permanently delete a school with cascade deletion (service-to-service)
+ */
+router.delete(
+  "/schools/:id",
+  serviceAuth,
+  validate(deleteSchoolSchema),
+  publicController.deleteSchool
+);
+
+/**
+ * POST /api/public/admins
+ * Create an admin account (service-to-service, after token validation)
+ */
+router.post(
+  "/admins",
+  serviceAuth,
+  validate(createAdminSchema),
+  publicController.createAdmin
+);
+
+/**
+ * ============================================
+ * MARKETER ENDPOINTS
+ * ============================================
+ */
+
+/**
+ * POST /api/public/marketers
+ * Create a new marketer account (service-to-service)
+ */
+router.post(
+  "/marketers",
+  serviceAuth,
+  publicController.createMarketer
+);
+
+/**
+ * GET /api/public/marketers
+ * List all marketers with pagination (service-to-service)
+ */
+router.get(
+  "/marketers",
+  serviceAuth,
+  publicController.listMarketers
+);
+
+/**
+ * GET /api/public/marketers/:id
+ * Get marketer details (service-to-service)
+ */
+router.get(
+  "/marketers/:id",
+  serviceAuth,
+  publicController.getMarketerById
+);
+
+/**
+ * PATCH /api/public/marketers/:id
+ * Update marketer details (service-to-service)
+ */
+router.patch(
+  "/marketers/:id",
+  serviceAuth,
+  publicController.updateMarketer
+);
+
+/**
+ * PATCH /api/public/marketers/:id/suspend
+ * Suspend or activate a marketer (service-to-service)
+ */
+router.patch(
+  "/marketers/:id/suspend",
+  serviceAuth,
+  publicController.suspendMarketer
+);
 
 module.exports = router;

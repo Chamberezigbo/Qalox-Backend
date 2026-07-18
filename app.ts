@@ -16,6 +16,8 @@ const publicRoutes = require("./res/routes/public");
 const publicAPIRoutes = require("./res/routes/publicAPI");
 const { notFound } = require("./res/middleware/404");
 const studentDash = require("./res/routes/studentDashboard");
+const requestLogger = require("./res/middleware/requestLogger");
+const logger = require("./res/config/logger");
 
 const app = express();
 
@@ -30,8 +32,17 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
-// Parse JSON bodies//
+// Parse JSON bodies
 app.use(express.json());
+
+// Request logging middleware - logs all incoming requests and responses
+app.use(requestLogger);
+
+// Log server startup
+logger.info("✅ Qalox Backend Server Starting", {
+  environment: process.env.NODE_ENV || "development",
+  port: process.env.PORT || 3000,
+});
 
 // Static files //
 const path = require("path");

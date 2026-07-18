@@ -21,7 +21,23 @@ model Admin {
   steps       Int      @default(0) // Tracks the steps for the admin
   role        Role
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
   hasLoggedIn Boolean  @default(false)
+
+  // Marketer-specific fields (only used when role = marketer)
+  tier            String?  @db.VarChar(50)  // bronze, silver, gold, platinum
+  referralCode    String?  @unique @db.VarChar(50)
+  avatar          String?  @db.VarChar(255)
+  phone           String?  @db.VarChar(20)
+  address         String?  @db.Text
+  city            String?  @db.VarChar(100)
+  state           String?  @db.VarChar(100)
+  bankName        String?  @db.VarChar(100)
+  bankAccountNumber String? @db.VarChar(50)
+  bankAccountName String?  @db.VarChar(255)
+  isEmailVerified Boolean  @default(false)
+  isSuspended     Boolean  @default(false)
+  suspendedAt     DateTime?
 
   // Relationships
   school                       School?                @relation(fields: [schoolId], references: [id])
@@ -37,6 +53,7 @@ model Admin {
 enum Role {
   super_admin
   school_admin
+  marketer
 }
 
 model School {
@@ -48,7 +65,11 @@ model School {
   email       String?  @db.VarChar(255)
   phoneNumber String?  @db.VarChar(50)
   address     String?  @db.Text
+  isSuspended Boolean  @default(false)
+  suspendedAt DateTime?
+  suspensionReason String? @db.VarChar(500)
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   campuses        Campus[]
   admins          Admin[]
