@@ -1,0 +1,1408 @@
+openapi: 3.0.0
+info:
+  title: Qalox Marketer Portal API
+  description: |
+    Complete REST API for the Marketer Portal, providing authentication, wallet management,
+    school management, commission tracking, and analytics endpoints.
+
+    **Authentication:** All endpoints require `x-service-key` header for service-to-service authentication.
+  version: 1.0.0
+  contact:
+    name: Qalox Backend Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000/api/public
+    description: Development Server
+  - url: https://api.qalox.com/api/public
+    description: Production Server
+
+tags:
+  - name: Phase 1 - Core
+    description: Authentication, Wallet, Commissions, Notifications, Tokens
+  - name: Phase 2 - Profile & Settings
+    description: User profile, Password, Bank accounts, Notifications, Transactions
+  - name: Phase 3 - Advanced
+    description: 2FA setup, Analytics, Dashboard, Earnings
+  - name: Super Admin - Platform Management
+    description: Schools/Marketers/Plans endpoints consumed by the Super Admin Portal's qaloxApiClient
+
+components:
+  securitySchemes:
+    serviceKey:
+      type: apiKey
+      in: header
+      name: x-service-key
+      description: Service-to-service authentication key
+
+  parameters:
+    marketerId:
+      name: marketerId
+      in: query
+      required: true
+      schema:
+        type: integer
+      description: ID of the marketer (Admin user with role=marketer)
+
+    page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+      description: Page number for pagination
+
+    limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+      description: Items per page
+
+    startDate:
+      name: startDate
+      in: query
+      schema:
+        type: string
+        format: date-time
+      description: Filter from this date (ISO 8601 format)
+
+    endDate:
+      name: endDate
+      in: query
+      schema:
+        type: string
+        format: date-time
+      description: Filter until this date (ISO 8601 format)
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - success
+        - message
+        - code
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Resource not found"
+        code:
+          type: string
+          example: "NOT_FOUND"
+
+    Success:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Operation successful"
+        data:
+          type: object
+
+    Commission:
+      type: object
+      properties:
+        id:
+          type: integer
+        marketerId:
+          type: integer
+        amount:
+          type: number
+          format: float
+        rate:
+          type: number
+          format: float
+        status:
+          type: string
+          enum: [pending, paid]
+        month:
+          type: integer
+          minimum: 1
+          maximum: 12
+        year:
+          type: integer
+        source:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+        marketerId:
+          type: integer
+        title:
+          type: string
+        message:
+          type: string
+        type:
+          type: string
+          enum: [info, success, warning, error]
+        isRead:
+          type: boolean
+        link:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    SchoolToken:
+      type: object
+      properties:
+        id:
+          type: integer
+        code:
+          type: string
+        schoolName:
+          type: string
+        schoolEmail:
+          type: string
+        status:
+          type: string
+          enum: [active, used, revoked, expired]
+        issuedDate:
+          type: string
+          format: date-time
+        expiryDate:
+          type: string
+          format: date-time
+
+    Marketer:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        phone:
+          type: string
+        address:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+        walletBalance:
+          type: number
+          format: float
+        totalEarned:
+          type: number
+          format: float
+        totalWithdrawn:
+          type: number
+          format: float
+        tier:
+          type: string
+          enum: [bronze, silver, gold, platinum]
+
+security:
+  - serviceKey: []
+
+paths:
+  /schools:
+    get:
+      tags:
+        - Super Admin - Platform Management
+      summary: List schools (paginated)
+      description: |
+        No authentication required. Used by the Super Admin Portal's
+        `qaloxApiClient.listSchools`. Response includes both legacy flat
+        fields (`schools`, `total`, `page`, `pageSize`) and a nested
+        `data.data` / `data.meta` shape for the portal's pagination client.
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  count: { type: integer }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  schools:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        logo: { type: string, nullable: true }
+                        stamp: { type: string, nullable: true }
+                        adminEmail: { type: string }
+                        adminName: { type: string, nullable: true }
+                        campusCount: { type: integer }
+                        dateRegistered: { type: string, format: date-time }
+                        status: { type: string, enum: [active, suspended] }
+                  data:
+                    type: object
+                    description: Nested shape consumed by qaloxApiClient
+                    properties:
+                      data:
+                        type: array
+                        items: { type: object }
+                      meta:
+                        type: object
+                        properties:
+                          total: { type: integer }
+                          page: { type: integer }
+                          limit: { type: integer }
+
+  /marketers:
+    get:
+      tags:
+        - Super Admin - Platform Management
+      summary: List all marketers (service-to-service)
+      security:
+        - serviceKey: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    description: Nested shape consumed by qaloxApiClient.listMarketers
+                    properties:
+                      data:
+                        type: array
+                        items: { type: object }
+                      meta:
+                        type: object
+                        properties:
+                          page: { type: integer }
+                          limit: { type: integer }
+                          total: { type: integer }
+                          totalPages: { type: integer }
+
+  /marketers/{id}/status:
+    patch:
+      tags:
+        - Super Admin - Platform Management
+      summary: Suspend/activate a marketer (alias)
+      description: |
+        Alias of `PATCH /marketers/{id}/suspend` — the Super Admin Portal's
+        `qaloxApiClient.toggleMarketerStatus` calls this path specifically.
+        Both routes point to the same handler.
+      security:
+        - serviceKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                suspend: { type: boolean }
+                reason: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Success
+        '404':
+          description: Marketer not found
+
+  /plans:
+    get:
+      tags:
+        - Super Admin - Platform Management
+      summary: List active billing plans
+      description: |
+        No authentication required. Mounted under `/api/public/plans`.
+        Reuses the `getBillingPlans` controller shared with the Super Admin
+        Portal's own OpenAPI spec (`docs/openapi-super-admin.yaml`).
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      plans:
+                        type: array
+                        items: { type: object }
+                      total: { type: integer }
+
+  /auth/2fa/verify:
+    post:
+      tags:
+        - Phase 1 - Core
+      summary: Verify 2FA code during login
+      description: Validates 2FA OTP code and returns authenticated user token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tempToken
+                - code
+              properties:
+                tempToken:
+                  type: string
+                  description: Temporary JWT token from login
+                code:
+                  type: string
+                  pattern: '^\d{6}$'
+                  description: 6-digit OTP code
+      responses:
+        '200':
+          description: 2FA verified successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      email:
+                        type: string
+                      name:
+                        type: string
+                      token:
+                        type: string
+        '400':
+          description: Invalid or missing fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /marketers/{marketerId}/wallet:
+    post:
+      tags:
+        - Phase 1 - Core
+      summary: Process wallet operation (withdraw/credit)
+      description: Perform withdraw or credit operation on marketer wallet
+      parameters:
+        - name: marketerId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount
+                - operation
+              properties:
+                amount:
+                  type: number
+                  format: float
+                  minimum: 0
+                operation:
+                  type: string
+                  enum: [withdraw, credit]
+      responses:
+        '200':
+          description: Operation successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      marketerId:
+                        type: integer
+                      balance:
+                        type: number
+                      totalWithdrawn:
+                        type: number
+                      lastPayoutDate:
+                        type: string
+                        format: date-time
+        '400':
+          description: Invalid operation or insufficient balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Marketer not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /school-tokens/by-school:
+    get:
+      tags:
+        - Phase 1 - Core
+      summary: Get token count per school
+      description: Returns count of tokens issued for each school
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        school:
+                          type: string
+                        tokens:
+                          type: integer
+
+  /school-tokens/{id}/revoke:
+    patch:
+      tags:
+        - Phase 1 - Core
+      summary: Revoke a school token
+      description: Deactivate/revoke an active token
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Token revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      status:
+                        type: string
+        '404':
+          description: Token not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /commissions:
+    get:
+      tags:
+        - Phase 1 - Core
+      summary: Get marketer commissions
+      description: Retrieve paginated list of commissions with optional date filtering. marketerId is extracted from JWT token.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      commissions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Commission'
+                      total:
+                        type: integer
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      pages:
+                        type: integer
+
+  /commissions/summary:
+    get:
+      tags:
+        - Phase 1 - Core
+      summary: Get commission summary
+      description: Get aggregated commission data (this month, last month, total, pending). marketerId is extracted from JWT token.
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      thisMonth:
+                        type: number
+                      lastMonth:
+                        type: number
+                      total:
+                        type: number
+                      pending:
+                        type: number
+
+  /commissions/monthly-chart:
+    get:
+      tags:
+        - Phase 3 - Advanced
+      summary: Get monthly commission chart data
+      description: Retrieve commission data for last N months for charting. marketerId is extracted from JWT token.
+      parameters:
+        - name: months
+          in: query
+          schema:
+            type: integer
+            default: 12
+            minimum: 1
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        month:
+                          type: string
+                        amount:
+                          type: number
+
+  /notifications/{id}/read:
+    put:
+      tags:
+        - Phase 1 - Core
+      summary: Mark notification as read
+      description: Mark a single notification as read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Notification marked as read
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /notifications/read-all:
+    put:
+      tags:
+        - Phase 1 - Core
+      summary: Mark all notifications as read
+      description: Mark all unread notifications as read for a marketer. marketerId is extracted from JWT token.
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+
+  /users/profile:
+    put:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Update marketer profile
+      description: Update profile information (name, phone, address, city, state)
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                phone:
+                  type: string
+                address:
+                  type: string
+                city:
+                  type: string
+                state:
+                  type: string
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/Marketer'
+
+  /users/password:
+    put:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Change password
+      description: Change marketer password with current password verification
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - currentPassword
+                - newPassword
+              properties:
+                currentPassword:
+                  type: string
+                  format: password
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        '200':
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '401':
+          description: Invalid current password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/avatar:
+    post:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Upload avatar
+      description: Upload profile avatar image
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                avatar:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Avatar uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      avatarUrl:
+                        type: string
+
+  /settings/banks:
+    get:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Get list of banks
+      description: Retrieve list of Nigerian banks for account setup
+      responses:
+        '200':
+          description: Banks list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code:
+                          type: string
+                        name:
+                          type: string
+                        slug:
+                          type: string
+
+  /settings/verify-account:
+    get:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Verify bank account
+      description: Verify bank account number and name using bank verification service
+      parameters:
+        - name: accountNumber
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: bankCode
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Account verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      accountNumber:
+                        type: string
+                      accountName:
+                        type: string
+                      bankCode:
+                        type: string
+                      verified:
+                        type: boolean
+
+  /settings/bank-account:
+    put:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Save bank account details
+      description: Store marketer's bank account information for payouts
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - accountNumber
+                - accountName
+                - bankCode
+              properties:
+                accountNumber:
+                  type: string
+                accountName:
+                  type: string
+                bankCode:
+                  type: string
+      responses:
+        '200':
+          description: Bank account saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      accountNumber:
+                        type: string
+                      accountName:
+                        type: string
+                      bankCode:
+                        type: string
+
+  /settings/notifications:
+    put:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Update notification preferences
+      description: Configure notification settings (email, push, alerts)
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: boolean
+                push:
+                  type: boolean
+                commissionAlerts:
+                  type: boolean
+                marketingUpdates:
+                  type: boolean
+      responses:
+        '200':
+          description: Preferences updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+
+  /transactions:
+    get:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Get transaction history
+      description: Retrieve paginated list of transactions for authenticated marketer. marketerId is extracted from JWT token.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      transactions:
+                        type: array
+                      total:
+                        type: integer
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      pages:
+                        type: integer
+
+  /transactions/stats:
+    get:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Get transaction statistics
+      description: Get summary statistics for transactions. marketerId is extracted from JWT token.
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      totalAmount:
+                        type: number
+                      transactionCount:
+                        type: integer
+                      averageTransaction:
+                        type: number
+
+  /settings/2fa/toggle:
+    post:
+      tags:
+        - Phase 2 - Profile & Settings
+      summary: Toggle 2FA
+      description: Enable or disable 2FA
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enabled
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: 2FA toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      twoFactorEnabled:
+                        type: boolean
+
+  /settings/2fa/setup:
+    post:
+      tags:
+        - Phase 3 - Advanced
+      summary: Start 2FA setup
+      description: Generate QR code and secret for 2FA setup
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      responses:
+        '200':
+          description: Setup started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      secret:
+                        type: string
+                      qrCode:
+                        type: string
+                      manualEntry:
+                        type: string
+
+  /settings/2fa/verify-setup:
+    post:
+      tags:
+        - Phase 3 - Advanced
+      summary: Verify 2FA setup
+      description: Verify 2FA setup and enable it
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - secret
+                - code
+              properties:
+                secret:
+                  type: string
+                code:
+                  type: string
+                  pattern: '^\d{6}$'
+      responses:
+        '200':
+          description: 2FA enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      twoFactorEnabled:
+                        type: boolean
+                      backupCodes:
+                        type: array
+                        items:
+                          type: string
+
+  /settings/2fa/disable:
+    post:
+      tags:
+        - Phase 3 - Advanced
+      summary: Disable 2FA
+      description: Disable 2FA (requires password verification)
+      parameters:
+        - $ref: '#/components/parameters/marketerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - password
+              properties:
+                password:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: 2FA disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /marketer-schools/stats:
+    get:
+      tags:
+        - Phase 3 - Advanced
+      summary: Get school statistics
+      description: Get statistics about marketer's schools. marketerId is extracted from JWT token.
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      totalSchools:
+                        type: integer
+                      activeSchools:
+                        type: integer
+                      suspendedSchools:
+                        type: integer
+                      totalTokensIssued:
+                        type: integer
+                      totalRevenue:
+                        type: number
+
+  /dashboard/summary:
+    get:
+      tags:
+        - Phase 3 - Advanced
+      summary: Get dashboard summary
+      description: Get dashboard overview with wallet and earnings info. marketerId is extracted from JWT token.
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      walletBalance:
+                        type: number
+                      pendingBalance:
+                        type: number
+                      totalEarned:
+                        type: number
+                      totalWithdrawn:
+                        type: number
+
+  /dashboard/recent-activity:
+    get:
+      tags:
+        - Phase 3 - Advanced
+      summary: Get recent activity
+      description: Get recent commissions and notifications. marketerId is extracted from JWT token.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                        description:
+                          type: string
+                        timestamp:
+                          type: string
+                          format: date-time
+
+  /school-tokens/{id}/status:
+    patch:
+      tags:
+        - Phase 3 - Advanced
+      summary: Update token status
+      description: Change token status (active, used, revoked, expired)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [active, used, revoked, expired]
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      status:
+                        type: string
+
+  /marketer-schools/{id}:
+    delete:
+      tags:
+        - Phase 3 - Advanced
+      summary: Delete marketer school
+      description: Soft delete a marketer's school
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: School deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      status:
+                        type: string
+
+  /marketer/{marketerId}/earnings:
+    get:
+      tags:
+        - Phase 3 - Advanced
+      summary: Get marketer earnings
+      description: Get complete earnings overview
+      parameters:
+        - name: marketerId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      marketerId:
+                        type: integer
+                      availableBalance:
+                        type: number
+                      pendingBalance:
+                        type: number
+                      totalPendingPayout:
+                        type: number
+                      totalEarned:
+                        type: number
+                      totalWithdrawn:
+                        type: number
+                      commissionRate:
+                        type: number
+                      lastPayoutDate:
+                        type: string
+                        format: date-time

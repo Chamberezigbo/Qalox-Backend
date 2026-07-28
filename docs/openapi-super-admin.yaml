@@ -1,0 +1,726 @@
+openapi: 3.0.0
+info:
+  title: Qalox Super Admin Portal API
+  description: |
+    Complete REST API for the Qalox Super Admin Portal, providing authentication,
+    school-admin management, registration token handling, dashboard statistics,
+    marketer platform stats, and platform-wide settings.
+
+    **Authentication:**
+    - Login/Register endpoints: No authentication required
+    - All other endpoints on this spec: Bearer JWT token via `Authorization` header (24-hour validity)
+    - Super admin role required for all authenticated endpoints
+
+    **Important — path layout:** These routes are mounted directly under `/api`
+    (not `/api/super-admin`) to match the exact bare paths the Super Admin
+    Portal frontend calls (e.g. `POST /api/login`, `GET /api/stats`).
+
+    **Shared token store:** Registration tokens (`TKN-XXXXXX`) are read from
+    and written to the same `Token` table used by the existing school
+    onboarding flow (`/api/system-admin/generate`, `/api/public/tokens/validate`).
+    There is a single source of truth for tokens platform-wide.
+
+    **Billing plans:** `GET /plans` lives under the Public API instead of here
+    — see `openapi.yaml` → `GET /public/plans` (no auth required).
+  version: 1.1.0
+  contact:
+    name: Qalox Support
+    email: support@qalox.com
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000/api
+    description: Development Server
+  - url: https://api.qalox.com/api
+    description: Production Server
+
+tags:
+  - name: Auth
+    description: Login, registration, profile, password
+  - name: Tokens
+    description: School-admin registration token management (shared Token table)
+  - name: Dashboard
+    description: Platform-wide dashboard statistics
+  - name: School Admins
+    description: Manage school_admin accounts across the platform
+  - name: Marketers
+    description: Platform-wide marketer statistics
+  - name: Settings
+    description: Platform-wide configuration
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token valid for 24 hours
+
+  schemas:
+    Admin:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          format: email
+          example: super-admin@qalox.com
+        name:
+          type: string
+          example: Super Administrator
+        role:
+          type: string
+          enum: [super_admin, school_admin, marketer]
+          example: super_admin
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        hasLoggedIn:
+          type: boolean
+          example: true
+
+    RegistrationToken:
+      type: object
+      description: Shape returned by GET /tokens (mapped from the shared `Token` table)
+      properties:
+        id:
+          type: integer
+          example: 1
+        token:
+          type: string
+          example: TKN-6F8145
+        generatedFor:
+          type: string
+          format: email
+          example: newschool@example.com
+        generatedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [unused, used, expired]
+          example: unused
+
+    SchoolAdmin:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 5
+        name:
+          type: string
+          example: Dr. Emeka Okonkwo
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          nullable: true
+        school:
+          type: string
+          nullable: true
+          example: Greenfield Academy
+        schoolId:
+          type: integer
+          nullable: true
+        role:
+          type: string
+          example: school_admin
+        dateCreated:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [active, suspended]
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        code:
+          type: string
+
+paths:
+  /login:
+    post:
+      tags: [Auth]
+      summary: Authenticate super admin
+      description: Login with email and password to get JWT token (24-hour validity)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: super-admin@qalox.com
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      email:
+                        type: string
+                      name:
+                        type: string
+                      role:
+                        type: string
+                      token:
+                        type: string
+                      firstLogin:
+                        type: boolean
+        '400':
+          description: Missing credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /register:
+    post:
+      tags: [Auth]
+      summary: Register new admin with token
+      description: |
+        Create a new super admin account using a registration token from the
+        shared `Token` table. Token must be active and not expired. Email must
+        match the token's email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, email, password, name]
+              properties:
+                token:
+                  type: string
+                  pattern: ^TKN-[A-Z0-9]+$
+                  example: TKN-6F8145
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                name:
+                  type: string
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      email: { type: string }
+                      name: { type: string }
+                      role: { type: string }
+        '400':
+          description: Token inactive, expired, or email mismatch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: Token not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /profile:
+    get:
+      tags: [Auth]
+      summary: Get authenticated admin profile
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/Admin' }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Forbidden - not a super admin
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    patch:
+      tags: [Auth]
+      summary: Update admin profile
+      description: Update the authenticated admin's name and/or email
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/Admin' }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Email already in use
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /change-password:
+    patch:
+      tags: [Auth]
+      summary: Change password
+      description: Change the authenticated admin's password. Requires current password verification.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 8 }
+      responses:
+        '200':
+          description: Password changed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+        '401':
+          description: Unauthorized or current password incorrect
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /generate:
+    post:
+      tags: [Tokens]
+      summary: Generate registration token
+      description: |
+        Create a new registration token (TKN-XXXXXX format) in the shared
+        `Token` table. Token expires in 30 days by default. One active token
+        per email address.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                schoolName: { type: string, nullable: true }
+      responses:
+        '201':
+          description: Token generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      email: { type: string }
+                      token: { type: string, example: TKN-6F8145 }
+                      generatedFor: { type: string }
+                      status: { type: string, example: active }
+                      schoolName: { type: string, nullable: true }
+                      expiresAt: { type: string, format: date-time }
+        '400':
+          description: Missing email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Active token already exists for this email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /tokens:
+    get:
+      tags: [Tokens]
+      summary: List registration tokens
+      description: |
+        Paginated list of tokens, mapped to the `unused | used | expired`
+        vocabulary the frontend expects. Filtering by `status` is applied
+        post-mapping (not a raw DB column filter).
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [unused, used, expired] }
+      responses:
+        '200':
+          description: Tokens retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/RegistrationToken' }
+                      meta:
+                        type: object
+                        properties:
+                          total: { type: integer }
+                          page: { type: integer }
+                          limit: { type: integer }
+                          totalPages: { type: integer }
+
+  /tokens/{id}:
+    delete:
+      tags: [Tokens]
+      summary: Revoke registration token
+      description: Deactivates a token (maps to `used` in the frontend vocabulary)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Token revoked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      email: { type: string }
+                      uniqueKey: { type: string }
+                      status: { type: string, example: inactive }
+        '404':
+          description: Token not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /stats:
+    get:
+      tags: [Dashboard]
+      summary: Get dashboard statistics
+      description: Flat shape matching the Super Admin Portal's `DashboardStats` type.
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      totalSchools: { type: integer, example: 24 }
+                      activeAdmins: { type: integer, example: 37 }
+                      tokensGenerated: { type: integer, example: 58 }
+                      tokensUsed: { type: integer, example: 41 }
+                      tokensTotal: { type: integer, example: 58 }
+
+  /admins:
+    get:
+      tags: [School Admins]
+      summary: List school admins
+      description: Paginated list of role=school_admin accounts, with search and status filtering.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, suspended] }
+      responses:
+        '200':
+          description: Retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/SchoolAdmin' }
+                      meta:
+                        type: object
+                        properties:
+                          total: { type: integer }
+                          page: { type: integer }
+                          limit: { type: integer }
+                          totalPages: { type: integer }
+
+  /admins/{id}/suspend:
+    patch:
+      tags: [School Admins]
+      summary: Suspend or reactivate a school admin
+      description: Toggles `isSuspended` for the given school_admin.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Suspension toggled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      name: { type: string }
+                      email: { type: string }
+                      status: { type: string, enum: [active, suspended] }
+        '404':
+          description: School admin not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /admins/{id}/reset:
+    post:
+      tags: [School Admins]
+      summary: Reset a school admin's password
+      description: |
+        Generates a new temporary password and returns it directly in the
+        response. **No email/SMS delivery is configured yet** — the caller
+        is responsible for relaying it to the admin.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Password reset successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      email: { type: string }
+                      temporaryPassword: { type: string, example: a1b2c3d4e5f6 }
+        '404':
+          description: School admin not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /marketers/stats:
+    get:
+      tags: [Marketers]
+      summary: Get platform-wide marketer statistics
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      totalMarketers: { type: integer }
+                      byTier:
+                        type: object
+                        properties:
+                          bronze: { type: integer }
+                          silver: { type: integer }
+                          gold: { type: integer }
+                      pendingVerifications: { type: integer }
+                      totalTokensGenerated:
+                        type: integer
+                        description: Count of SchoolToken rows (marketer-portal assessment tokens, distinct from admin registration tokens)
+
+  /settings:
+    get:
+      tags: [Settings]
+      summary: Get platform settings
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Settings retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      commissionRate: { type: number, format: float, example: 5.0 }
+                      platformName: { type: string, example: Qalox }
+                      supportEmail: { type: string, format: email }
+                      maxTokensPerSchool: { type: integer, example: 10 }
+                      tokenExpirationDays: { type: integer, example: 30 }
+                      updatedAt: { type: string, format: date-time }
+    patch:
+      tags: [Settings]
+      summary: Update platform settings
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commissionRate: { type: number, minimum: 0, maximum: 100 }
+                platformName: { type: string }
+                supportEmail: { type: string, format: email }
+                maxTokensPerSchool: { type: integer, minimum: 1 }
+                tokenExpirationDays: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Settings updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      commissionRate: { type: number }
+                      platformName: { type: string }
+                      supportEmail: { type: string }
+                      maxTokensPerSchool: { type: integer }
+                      tokenExpirationDays: { type: integer }
+                      updatedAt: { type: string, format: date-time }
+
+security:
+  - BearerAuth: []

@@ -31,22 +31,31 @@ const serviceAuth = (req, res, next) => {
     return next();
   }
 
-  // Check for Bearer token (for admin users)
+  // Check for Bearer token (for admin users and frontend clients)
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7);
     const jwt = require('jsonwebtoken');
 
+    // Try verifying with Qalox JWT_SECRET first
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       req.user = decoded;
       req.service = { authenticated: false }; // User, not service
       return next();
     } catch (error) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token',
-        code: 'INVALID_TOKEN'
-      });
+      // If that fails, try Marketer Portal's JWT_SECRET (for frontend clients)
+      try {
+        const decoded = jwt.verify(token, process.env.MARKETER_PORTAL_JWT_SECRET || 'your-strong-random-secret-here');
+        req.user = decoded;
+        req.service = { authenticated: false, source: 'marketer-portal' }; // Frontend client
+        return next();
+      } catch (error2) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid token',
+          code: 'INVALID_TOKEN'
+        });
+      }
     }
   }
 

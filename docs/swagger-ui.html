@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qalox Marketer Portal API - Swagger UI</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui.css">
+    <style>
+        html {
+            box-sizing: border-box;
+            overflow: -moz-scrollbars-vertical;
+            overflow-y: scroll;
+        }
+        *, *:before, *:after {
+            box-sizing: inherit;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background: #fafafa;
+            font-family: sans-serif;
+        }
+        .topbar {
+            background-color: #1d1a1a;
+            padding: 10px 0;
+            border-bottom: 1px solid #666;
+        }
+        .topbar-title {
+            color: #fff;
+            font-size: 20px;
+            font-weight: bold;
+            margin: 0 30px;
+        }
+        .topbar-subtitle {
+            color: #aaa;
+            font-size: 13px;
+            margin: 5px 30px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div class="topbar-title">🚀 Qalox Marketer Portal API</div>
+        <div class="topbar-subtitle">Complete REST API Documentation | v1.0.0</div>
+    </div>
+
+    <div id="swagger-ui"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui-bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@3/swagger-ui-standalone-preset.js"></script>
+    <script>
+        window.onload = function() {
+            const ui = SwaggerUIBundle({
+                url: "openapi.yaml",
+                dom_id: '#swagger-ui',
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                layout: "BaseLayout",
+                deepLinking: true,
+                defaultModelsExpandDepth: 1,
+                docExpansion: "list",
+                filter: true,
+                showRequestHeaders: true,
+                supportedSubmitMethods: [
+                    'get',
+                    'post',
+                    'put',
+                    'patch',
+                    'delete'
+                ],
+                requestInterceptor: function(request) {
+                    // Add x-service-key header to all requests
+                    request.headers['x-service-key'] = 'your-service-key-here';
+                    return request;
+                }
+            });
+            window.ui = ui;
+        };
+    </script>
+</body>
+</html>

@@ -17,6 +17,7 @@
     "prisma:migrate": "prisma migrate dev --name",
     "prisma:studio": "prisma studio",
     "prisma:reset": "prisma migrate reset",
+    "seed:super-admin": "node scripts/seed-super-admin.js",
     "postinstall": "npx prisma generate --schema=\"$INIT_CWD/prisma/schema.prisma\""
   },
   "author": "chamberezigbo",

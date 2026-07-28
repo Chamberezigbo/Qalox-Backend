@@ -1,0 +1,4198 @@
+openapi: 3.0.0
+info:
+  title: Qalox School Management System API
+  description: |
+    Comprehensive REST API for the Qalox School Management System, providing
+    complete functionality for schools to manage students, teachers, classes,
+    assessments, grading, and academic results.
+
+    **Authentication:**
+    - Admin endpoints: Bearer token (JWT) via `Authorization` header
+    - Teacher endpoints: Bearer token (JWT) via `Authorization` header
+    - Student endpoints: Bearer token (JWT) via `Authorization` header
+    - Public endpoints: No authentication required
+
+    **Base URL:** `/api`
+  version: 2.0.0
+  contact:
+    name: Qalox Backend Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000/api
+    description: Development Server
+  - url: https://api.qalox.com/api
+    description: Production Server
+
+tags:
+  - name: Admin - Authentication
+    description: Admin login and account creation
+  - name: Admin - School Management
+    description: School info, overview, dashboard
+  - name: Admin - Students
+    description: Create, read, update students and class assignments
+  - name: Admin - Staff
+    description: Create, manage teachers and staff assignments
+  - name: Admin - Classes
+    description: Create and manage classes, class groups
+  - name: Admin - Campuses
+    description: Campus management
+  - name: Admin - Subjects
+    description: Subject creation and management
+  - name: Admin - Assessments
+    description: CA templates, exam scheduling, broadsheet
+  - name: Admin - Grading
+    description: Grading scheme creation, management and remark schemes
+  - name: Admin - Results
+    description: Result publication, submission management, approval
+  - name: Admin - Academic Setup
+    description: Academic terms, sessions, calendar management
+  - name: Teacher - Authentication
+    description: Teacher login and profile
+  - name: Teacher - Dashboard
+    description: Teacher overview and statistics
+  - name: Teacher - Scoring
+    description: CA and exam score entry and management
+  - name: Teacher - Classes & Students
+    description: View assigned classes and students
+  - name: Teacher - Results
+    description: Result broadsheet, computation and submission
+  - name: Student - Authentication
+    description: Student login
+  - name: Student - Dashboard
+    description: Student dashboard and metrics
+  - name: Student - Results
+    description: View grades and academic results
+  - name: Setup
+    description: System setup endpoints (classes and campuses)
+  - name: Public
+    description: Public data endpoints
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained after login
+
+  parameters:
+    page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+      description: Page number for pagination
+
+    pageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        default: 10
+        minimum: 1
+      description: Number of items per page
+
+    classId:
+      name: classId
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Unique class identifier
+
+    studentId:
+      name: studentId
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Unique student identifier
+
+    staffId:
+      name: staffId
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Unique staff identifier
+
+    subjectId:
+      name: subjectId
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Unique subject identifier
+
+    schemeId:
+      name: schemeId
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Unique grading scheme identifier
+
+  schemas:
+    # ==================== Authentication Schemas ====================
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: admin@school.com
+        password:
+          type: string
+          format: password
+          minLength: 6
+          example: SecurePassword123
+
+    AdminLoginResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Login successful"
+        admin:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 1
+            name:
+              type: string
+              example: "John Doe"
+            email:
+              type: string
+              format: email
+              example: "admin@school.com"
+            role:
+              type: string
+              enum: [super_admin, school_admin]
+              example: "school_admin"
+            schoolId:
+              type: integer
+              example: 1
+            steps:
+              type: integer
+              example: 0
+        token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+    TeacherLoginResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Login successful"
+        teacher:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 1
+            name:
+              type: string
+              example: "Mrs. Jane Smith"
+            email:
+              type: string
+              format: email
+              example: "jane.smith@school.com"
+            schoolId:
+              type: integer
+              example: 1
+            registrationNumber:
+              type: string
+              example: "TSH001"
+        token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+    StudentLoginResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Login successful"
+        student:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 1
+            name:
+              type: string
+              example: "Chidiebere"
+            surname:
+              type: string
+              example: "Okafor"
+            email:
+              type: string
+              format: email
+              example: "chidi@student.com"
+            schoolId:
+              type: integer
+              example: 1
+            registrationNumber:
+              type: string
+              example: "QXS-2026-001"
+        token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+    # ==================== Admin Creation Schemas ====================
+    CreateAdminRequest:
+      type: object
+      required:
+        - email
+        - password
+        - name
+        - role
+      properties:
+        email:
+          type: string
+          format: email
+          example: admin@school.com
+        password:
+          type: string
+          format: password
+          minLength: 6
+          example: SecurePassword123
+        name:
+          type: string
+          example: "John Administrator"
+        role:
+          type: string
+          enum: [super_admin, school_admin]
+          example: "school_admin"
+        schoolId:
+          type: integer
+          description: Required for school_admin, not allowed for super_admin
+          example: 1
+        campusId:
+          type: integer
+          description: Optional campus assignment
+          example: 1
+        uniqueKey:
+          type: string
+          description: Required for super_admin registration
+          example: "unique-key-hash"
+
+    AdminUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "John Administrator"
+        email:
+          type: string
+          format: email
+          example: admin@school.com
+        password:
+          type: string
+          format: password
+          minLength: 6
+          example: NewPassword123
+
+    # ==================== School Schemas ====================
+    SchoolSetupRequest:
+      type: object
+      required:
+        - name
+        - prefix
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          example: "Beacon International School"
+        prefix:
+          type: string
+          maxLength: 10
+          example: "BIS"
+        email:
+          type: string
+          format: email
+          example: "info@school.com"
+        phoneNumber:
+          type: string
+          example: "+234 8012345678"
+        address:
+          type: string
+          example: "123 School Street, Lagos"
+        logoUrl:
+          type: string
+          format: binary
+          description: School logo file
+        stampUrl:
+          type: string
+          format: binary
+          description: School stamp/seal file
+
+    SchoolResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Beacon International School"
+        prefix:
+          type: string
+          example: "BIS"
+        logoUrl:
+          type: string
+          example: "https://api.qalox.com/api/uploads/logo.png"
+        stampUrl:
+          type: string
+          example: "https://api.qalox.com/api/uploads/stamp.png"
+        email:
+          type: string
+          format: email
+          example: "info@school.com"
+        phoneNumber:
+          type: string
+          example: "+234 8012345678"
+        address:
+          type: string
+          example: "123 School Street, Lagos"
+        isSuspended:
+          type: boolean
+          example: false
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    SchoolOverviewResponse:
+      type: object
+      properties:
+        totalStudents:
+          type: integer
+          example: 245
+        totalTeachers:
+          type: integer
+          example: 18
+        totalClasses:
+          type: integer
+          example: 12
+        activeTerm:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 1
+            name:
+              type: string
+              example: "First Term"
+        activeSession:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 1
+            name:
+              type: string
+              example: "2023/2024"
+
+    # ==================== Student Schemas ====================
+    CreateStudentRequest:
+      type: object
+      required:
+        - name
+        - surname
+        - classId
+        - academicSessionId
+      properties:
+        name:
+          type: string
+          example: "Chidiebere"
+        surname:
+          type: string
+          example: "Okafor"
+        otherNames:
+          type: string
+          example: "Chisom"
+        gender:
+          type: string
+          enum: [M, F, Other]
+          example: "M"
+        email:
+          type: string
+          format: email
+          example: "chidi@student.com"
+        dateOfBirth:
+          type: string
+          format: date
+          example: "2010-05-15"
+        classId:
+          type: integer
+          example: 3
+        campusId:
+          type: integer
+          example: 1
+        classGroupId:
+          type: integer
+          description: Optional class group assignment
+          example: 1
+        guardianName:
+          type: string
+          example: "Mr. Okafor Chukwu"
+        guardianNumber:
+          type: string
+          example: "+234 8012345678"
+        lifestyle:
+          type: string
+          example: "Boarder"
+        academicSessionId:
+          type: integer
+          example: 1
+        passport:
+          type: string
+          format: binary
+          description: Student passport/ID photo
+
+    StudentResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Chidiebere"
+        surname:
+          type: string
+          example: "Okafor"
+        email:
+          type: string
+          format: email
+          example: "chidi@student.com"
+        registrationNumber:
+          type: string
+          example: "QXS-2026-001"
+        gender:
+          type: string
+          example: "M"
+        dateOfBirth:
+          type: string
+          format: date
+          example: "2010-05-15"
+        classId:
+          type: integer
+          example: 3
+        campusId:
+          type: integer
+          example: 1
+        schoolId:
+          type: integer
+          example: 1
+        passportUrl:
+          type: string
+          example: "https://api.qalox.com/api/uploads/passport.jpg"
+        class:
+          $ref: '#/components/schemas/ClassResponse'
+        campus:
+          $ref: '#/components/schemas/CampusResponse'
+        academicSession:
+          $ref: '#/components/schemas/AcademicSessionResponse'
+        classGroup:
+          $ref: '#/components/schemas/ClassGroupResponse'
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    # ==================== Class Schemas ====================
+    CreateClassRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "JSS 1A"
+        customName:
+          type: string
+          example: "Science Stream"
+        campusId:
+          type: integer
+          example: 1
+        staffId:
+          type: integer
+          description: ID of teacher to assign to class
+          example: 5
+
+    ClassResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "JSS 1A"
+        customName:
+          type: string
+          example: "Science Stream"
+        schoolId:
+          type: integer
+          example: 1
+        campusId:
+          type: integer
+          example: 1
+        staffId:
+          type: integer
+          example: 5
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+        campus:
+          $ref: '#/components/schemas/CampusResponse'
+        staff:
+          $ref: '#/components/schemas/StaffResponse'
+        classGroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClassGroupResponse'
+        students:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentResponse'
+
+    CreateClassGroupRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Group A"
+
+    ClassGroupResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        classId:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Group A"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+        students:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentResponse'
+
+    # ==================== Campus Schemas ====================
+    CreateCampusRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Main Campus"
+        address:
+          type: string
+          example: "123 School Street, Lagos"
+        phoneNumber:
+          type: string
+          example: "+234 8012345678"
+        email:
+          type: string
+          format: email
+          example: "campus@school.com"
+
+    CampusResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Main Campus"
+        schoolId:
+          type: integer
+          example: 1
+        address:
+          type: string
+          example: "123 School Street, Lagos"
+        phoneNumber:
+          type: string
+          example: "+234 8012345678"
+        email:
+          type: string
+          format: email
+          example: "campus@school.com"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    # ==================== Staff/Teacher Schemas ====================
+    CreateStaffRequest:
+      type: object
+      required:
+        - name
+        - email
+      properties:
+        name:
+          type: string
+          example: "Mrs. Jane Smith"
+        email:
+          type: string
+          format: email
+          example: "jane.smith@school.com"
+        gender:
+          type: string
+          enum: [Male, Female, Other]
+          example: "Female"
+        phoneNumber:
+          type: string
+          example: "+234 8012345678"
+        address:
+          type: string
+          example: "45 Teacher Street, Lagos"
+        duty:
+          type: string
+          description: Role/position (e.g., Teacher, Accountant, Cleaner)
+          example: "Teacher"
+        nextOfKin:
+          type: string
+          example: "Mr. Smith John"
+        dateEmployed:
+          type: string
+          format: date
+          example: "2020-06-01"
+        payroll:
+          type: number
+          format: decimal
+          example: 150000.00
+        campusId:
+          type: integer
+          example: 1
+
+    StaffResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Mrs. Jane Smith"
+        email:
+          type: string
+          format: email
+          example: "jane.smith@school.com"
+        registrationNumber:
+          type: string
+          example: "TSH001"
+        gender:
+          type: string
+          example: "Female"
+        phoneNumber:
+          type: string
+          example: "+234 8012345678"
+        address:
+          type: string
+          example: "45 Teacher Street, Lagos"
+        duty:
+          type: string
+          example: "Teacher"
+        nextOfKin:
+          type: string
+          example: "Mr. Smith John"
+        dateEmployed:
+          type: string
+          format: date
+          example: "2020-06-01"
+        payroll:
+          type: number
+          format: decimal
+          example: 150000.00
+        schoolId:
+          type: integer
+          example: 1
+        campusId:
+          type: integer
+          example: 1
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    AssignTeacherRequest:
+      type: object
+      required:
+        - staffId
+        - classId
+        - subjectId
+      properties:
+        staffId:
+          type: integer
+          example: 1
+        classId:
+          type: integer
+          example: 3
+        subjectId:
+          type: integer
+          example: 2
+        campusId:
+          type: integer
+          example: 1
+
+    TeacherAssignmentResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        staffId:
+          type: integer
+          example: 1
+        classId:
+          type: integer
+          example: 3
+        subjectId:
+          type: integer
+          example: 2
+        campusId:
+          type: integer
+          example: 1
+        assignedAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    # ==================== Subject Schemas ====================
+    CreateSubjectRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Mathematics"
+        code:
+          type: string
+          example: "MATH101"
+
+    SubjectResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Mathematics"
+        code:
+          type: string
+          example: "MATH101"
+        schoolId:
+          type: integer
+          example: 1
+        campusId:
+          type: integer
+          example: 1
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    # ==================== Assessment Schemas ====================
+    CreateCATemplateRequest:
+      type: object
+      required:
+        - name
+        - maxScore
+      properties:
+        name:
+          type: string
+          example: "CA 1"
+        maxScore:
+          type: integer
+          example: 10
+        classId:
+          type: integer
+          description: If provided, template applies only to this class; if null, applies school-wide
+          example: 1
+
+    CATemplateResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "CA 1"
+        maxScore:
+          type: integer
+          example: 10
+        schoolId:
+          type: integer
+          example: 1
+        classId:
+          type: integer
+          nullable: true
+          example: 1
+        isExam:
+          type: boolean
+          example: false
+
+    UpsertCAScoresRequest:
+      type: object
+      required:
+        - caId
+        - classId
+        - scores
+      properties:
+        caId:
+          type: integer
+          example: 1
+        classId:
+          type: integer
+          example: 3
+        scores:
+          type: array
+          items:
+            type: object
+            required:
+              - studentId
+              - score
+            properties:
+              studentId:
+                type: integer
+                example: 1
+              score:
+                type: number
+                format: decimal
+                example: 8.5
+
+    UpsertExamScoresRequest:
+      type: object
+      required:
+        - examId
+        - classId
+        - scores
+      properties:
+        examId:
+          type: integer
+          example: 1
+        classId:
+          type: integer
+          example: 3
+        scores:
+          type: array
+          items:
+            type: object
+            required:
+              - studentId
+              - score
+            properties:
+              studentId:
+                type: integer
+                example: 1
+              score:
+                type: number
+                format: decimal
+                example: 45.0
+
+    # ==================== Grading Schemas ====================
+    CreateGradingSchemeRequest:
+      type: object
+      required:
+        - name
+        - grades
+      properties:
+        name:
+          type: string
+          example: "JSS Grading System"
+        usePosition:
+          type: boolean
+          description: Whether to rank students (1st, 2nd, 3rd) in results
+          example: true
+        classIds:
+          type: array
+          items:
+            type: integer
+          description: Classes this scheme applies to
+          example: [1, 2, 3]
+        grades:
+          type: array
+          items:
+            type: object
+            required:
+              - min
+              - max
+              - grade
+              - remark
+            properties:
+              min:
+                type: integer
+                example: 70
+              max:
+                type: integer
+                example: 100
+              grade:
+                type: string
+                example: "A"
+              remark:
+                type: string
+                example: "Excellent"
+
+    GradingSchemeResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "JSS Grading System"
+        usePosition:
+          type: boolean
+          example: true
+        schoolId:
+          type: integer
+          example: 1
+        campusId:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+        grades:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+                example: 1
+              minScore:
+                type: integer
+                example: 70
+              maxScore:
+                type: integer
+                example: 100
+              grade:
+                type: string
+                example: "A"
+              remark:
+                type: string
+                example: "Excellent"
+        classes:
+          type: array
+          items:
+            type: object
+            properties:
+              classId:
+                type: integer
+                example: 1
+
+    AddGradingClassesRequest:
+      type: object
+      required:
+        - classIds
+      properties:
+        classIds:
+          type: array
+          items:
+            type: integer
+          example: [4, 5, 6]
+
+    CreateRemarkSchemeRequest:
+      type: object
+      required:
+        - name
+        - rules
+      properties:
+        name:
+          type: string
+          example: "Standard Remarks"
+        rules:
+          type: array
+          items:
+            type: object
+            required:
+              - min
+              - max
+              - remark
+            properties:
+              min:
+                type: integer
+                example: 0
+              max:
+                type: integer
+                example: 40
+              remark:
+                type: string
+                example: "Needs Improvement"
+
+    # ==================== Result Schemas ====================
+    PublishResultsRequest:
+      type: object
+      required:
+        - classId
+        - subjectId
+        - academicSessionId
+      properties:
+        classId:
+          type: integer
+          example: 1
+        subjectId:
+          type: integer
+          example: 2
+        academicSessionId:
+          type: integer
+          example: 1
+        termId:
+          type: integer
+          nullable: true
+          example: 1
+
+    PublishedResultResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        classId:
+          type: integer
+          example: 1
+        subjectId:
+          type: integer
+          example: 2
+        academicSessionId:
+          type: integer
+          example: 1
+        termId:
+          type: integer
+          nullable: true
+        publishedByAdminId:
+          type: integer
+          example: 1
+        publishedAt:
+          type: string
+          format: date-time
+          example: "2024-06-15T10:30:00Z"
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+                example: 1
+              studentId:
+                type: integer
+                example: 1
+              caTotal:
+                type: number
+                format: float
+                example: 8.5
+              examTotal:
+                type: number
+                format: float
+                example: 45.0
+              total:
+                type: number
+                format: float
+                example: 53.5
+              grade:
+                type: string
+                example: "B"
+              remark:
+                type: string
+                example: "Good"
+              position:
+                type: integer
+                nullable: true
+                example: 3
+
+    # ==================== Academic Term Schemas ====================
+    CreateAcademicTermRequest:
+      type: object
+      required:
+        - sessionId
+        - name
+      properties:
+        sessionId:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "First Term"
+        resumptionDate:
+          type: string
+          format: date
+          example: "2024-01-15"
+
+    AcademicTermResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        schoolId:
+          type: integer
+          example: 1
+        sessionId:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "First Term"
+        isActive:
+          type: boolean
+          example: true
+        resumptionDate:
+          type: string
+          format: date
+          nullable: true
+          example: "2024-01-15"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    # ==================== Academic Session Schemas ====================
+    CreateAcademicSessionRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "2023/2024"
+
+    AcademicSessionResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        schoolId:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "2023/2024"
+        isActive:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+
+    # ==================== Teacher Dashboard Schemas ====================
+    TeacherOverviewResponse:
+      type: object
+      properties:
+        totalClasses:
+          type: integer
+          example: 3
+        totalStudents:
+          type: integer
+          example: 95
+        totalSubjects:
+          type: integer
+          example: 4
+        pendingSubmissions:
+          type: integer
+          example: 2
+        classesWithoutSubmission:
+          type: array
+          items:
+            type: object
+            properties:
+              classId:
+                type: integer
+                example: 1
+              className:
+                type: string
+                example: "JSS 1A"
+              subjects:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    subjectId:
+                      type: integer
+                      example: 1
+                    subjectName:
+                      type: string
+                      example: "Mathematics"
+
+    # ==================== Student Dashboard Schemas ====================
+    StudentDashboardMetricsResponse:
+      type: object
+      properties:
+        totalResults:
+          type: integer
+          example: 12
+        averageScore:
+          type: number
+          format: float
+          example: 68.5
+        currentTerm:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 1
+            name:
+              type: string
+              example: "First Term"
+        currentSession:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 1
+            name:
+              type: string
+              example: "2023/2024"
+
+    StudentResultResponse:
+      type: object
+      properties:
+        sessionId:
+          type: integer
+          example: 1
+        sessionName:
+          type: string
+          example: "2023/2024"
+        termId:
+          type: integer
+          nullable: true
+          example: 1
+        termName:
+          type: string
+          nullable: true
+          example: "First Term"
+        subjects:
+          type: array
+          items:
+            type: object
+            properties:
+              subjectId:
+                type: integer
+                example: 1
+              subjectName:
+                type: string
+                example: "Mathematics"
+              ca:
+                type: number
+                format: float
+                example: 8.5
+              exam:
+                type: number
+                format: float
+                example: 45.0
+              total:
+                type: number
+                format: float
+                example: 53.5
+              grade:
+                type: string
+                example: "B"
+              remark:
+                type: string
+                example: "Good"
+
+    # ==================== Error Schemas ====================
+    ErrorResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          example: "An error occurred"
+        error:
+          type: string
+          example: "Detailed error information"
+        code:
+          type: string
+          example: "VALIDATION_ERROR"
+
+    NotFoundResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Resource not found"
+
+    UnauthorizedResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Unauthorized - Invalid token"
+
+paths:
+  # ==================== ADMIN AUTHENTICATION ====================
+  /admin/create:
+    post:
+      summary: Create a new admin account
+      description: Create a super_admin or school_admin account. Super admins require a valid uniqueKey.
+      tags:
+        - Admin - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAdminRequest'
+      responses:
+        '201':
+          description: Admin created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminLoginResponse'
+        '400':
+          description: Invalid request or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/login:
+    post:
+      summary: Admin login
+      description: Authenticate an admin account and receive a JWT token
+      tags:
+        - Admin - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminLoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+
+  /admin/{id}:
+    put:
+      summary: Update admin details
+      description: Update an admin's information
+      tags:
+        - Admin - Authentication
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Admin ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateRequest'
+      responses:
+        '200':
+          description: Admin updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Admin updated successfully"
+                  admin:
+                    $ref: '#/components/schemas/AdminLoginResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Delete an admin account
+      description: Delete an admin account (super_admin only)
+      tags:
+        - Admin - Authentication
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Admin ID
+      responses:
+        '200':
+          description: Admin deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Admin deleted successfully"
+        '403':
+          description: Forbidden - insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== SCHOOL MANAGEMENT ====================
+  /school/setup:
+    post:
+      summary: Setup a new school
+      description: Create a new school with logo and stamp files
+      tags:
+        - Admin - School Management
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SchoolSetupRequest'
+      responses:
+        '201':
+          description: School created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "School setup successful"
+                  school:
+                    $ref: '#/components/schemas/SchoolResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /school:
+    get:
+      summary: List all schools (service-to-service)
+      description: Retrieve all schools (requires service authentication)
+      tags:
+        - Admin - School Management
+      responses:
+        '200':
+          description: Schools retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SchoolResponse'
+
+  /school/{id}:
+    get:
+      summary: Get school details
+      description: Retrieve details of a specific school
+      tags:
+        - Admin - School Management
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: School ID
+      responses:
+        '200':
+          description: School retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchoolResponse'
+        '404':
+          description: School not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundResponse'
+
+  /admin/my-school:
+    get:
+      summary: Get current admin's school
+      description: Retrieve the school information for the authenticated admin
+      tags:
+        - Admin - School Management
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: School retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  school:
+                    $ref: '#/components/schemas/SchoolResponse'
+
+  /admin/overview:
+    get:
+      summary: Get school overview
+      description: Get overview statistics for the admin's school
+      tags:
+        - Admin - School Management
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Overview retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overview:
+                    $ref: '#/components/schemas/SchoolOverviewResponse'
+
+  # ==================== ADMIN STUDENTS ====================
+  /admin/students:
+    get:
+      summary: List all students
+      description: Get paginated list of students in the school
+      tags:
+        - Admin - Students
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number
+        - name: campusId
+          in: query
+          schema:
+            type: integer
+          description: Filter by campus
+        - name: classId
+          in: query
+          schema:
+            type: integer
+          description: Filter by class
+        - name: gender
+          in: query
+          schema:
+            type: string
+            enum: [M, F, Other]
+          description: Filter by gender
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Search by student name
+      responses:
+        '200':
+          description: Students retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  students:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StudentResponse'
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                        example: 245
+                      page:
+                        type: integer
+                        example: 1
+                      pageSize:
+                        type: integer
+                        example: 9
+                      totalPages:
+                        type: integer
+                        example: 28
+
+  /admin/student/create:
+    post:
+      summary: Create a new student
+      description: Add a new student to the school
+      tags:
+        - Admin - Students
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateStudentRequest'
+      responses:
+        '201':
+          description: Student created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Student created successfully"
+                  student:
+                    $ref: '#/components/schemas/StudentResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/student/{studentId}:
+    get:
+      summary: Get student details
+      description: Retrieve detailed information about a specific student
+      tags:
+        - Admin - Students
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/studentId'
+      responses:
+        '200':
+          description: Student retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentResponse'
+        '404':
+          description: Student not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundResponse'
+    put:
+      summary: Update student
+      description: Update student information
+      tags:
+        - Admin - Students
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/studentId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateStudentRequest'
+      responses:
+        '200':
+          description: Student updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Student updated successfully"
+                  student:
+                    $ref: '#/components/schemas/StudentResponse'
+
+  /admin/student/change-class:
+    patch:
+      summary: Change student class
+      description: Move a student to a different class
+      tags:
+        - Admin - Students
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - studentId
+                - classId
+              properties:
+                studentId:
+                  type: integer
+                  example: 1
+                classId:
+                  type: integer
+                  example: 2
+      responses:
+        '200':
+          description: Student class changed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Student class changed successfully"
+                  student:
+                    $ref: '#/components/schemas/StudentResponse'
+
+  # ==================== ADMIN STAFF ====================
+  /admin/staff/create:
+    post:
+      summary: Create new staff member
+      description: Add a new staff/teacher member
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStaffRequest'
+      responses:
+        '201':
+          description: Staff created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Staff created successfully"
+                  staff:
+                    $ref: '#/components/schemas/StaffResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/staff:
+    get:
+      summary: List all staff
+      description: Get list of all staff members in the school
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/page'
+      responses:
+        '200':
+          description: Staff retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  staff:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StaffResponse'
+
+  /admin/staff/{staffId}:
+    get:
+      summary: Get staff details
+      description: Retrieve details of a specific staff member
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/staffId'
+      responses:
+        '200':
+          description: Staff retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaffResponse'
+        '404':
+          description: Staff not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundResponse'
+    patch:
+      summary: Update staff
+      description: Update staff member information
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/staffId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phoneNumber:
+                  type: string
+                address:
+                  type: string
+                duty:
+                  type: string
+      responses:
+        '200':
+          description: Staff updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Staff updated successfully"
+                  staff:
+                    $ref: '#/components/schemas/StaffResponse'
+    delete:
+      summary: Delete staff
+      description: Remove a staff member from the school
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/staffId'
+      responses:
+        '200':
+          description: Staff deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Staff deleted successfully"
+
+  /admin/staff/assign-teacher:
+    post:
+      summary: Assign teacher to class and subject
+      description: Assign a teacher to teach a specific subject in a class
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignTeacherRequest'
+      responses:
+        '201':
+          description: Teacher assigned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Teacher assigned successfully"
+                  assignment:
+                    $ref: '#/components/schemas/TeacherAssignmentResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/staff/reassign-teacher/{assignmentId}:
+    patch:
+      summary: Reassign teacher
+      description: Change a teacher's class or subject assignment
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: assignmentId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Assignment ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                classId:
+                  type: integer
+                  example: 2
+                subjectId:
+                  type: integer
+                  example: 3
+      responses:
+        '200':
+          description: Teacher reassigned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Teacher reassigned successfully"
+
+  # ==================== ADMIN CLASSES ====================
+  /admin/classes/create:
+    post:
+      summary: Create a new class
+      description: Add a new class to the school
+      tags:
+        - Admin - Classes
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateClassRequest'
+      responses:
+        '201':
+          description: Class created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Class created successfully"
+                  class:
+                    $ref: '#/components/schemas/ClassResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/classes:
+    get:
+      summary: List all classes
+      description: Get list of all classes in the school
+      tags:
+        - Admin - Classes
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Classes retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  classes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ClassResponse'
+
+  /admin/classes/{classId}:
+    delete:
+      summary: Delete class
+      description: Remove a class from the school
+      tags:
+        - Admin - Classes
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/classId'
+      responses:
+        '200':
+          description: Class deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Class deleted successfully"
+
+  /admin/class/update/{classId}:
+    patch:
+      summary: Update class
+      description: Update class information
+      tags:
+        - Admin - Classes
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/classId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "JSS 2A"
+                customName:
+                  type: string
+                  example: "Science Stream"
+                staffId:
+                  type: integer
+                  example: 5
+      responses:
+        '200':
+          description: Class updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Class updated successfully"
+                  class:
+                    $ref: '#/components/schemas/ClassResponse'
+
+  /admin/class-groups/create:
+    post:
+      summary: Create class group
+      description: Create a group within a class for organizing students
+      tags:
+        - Admin - Classes
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - classId
+                - name
+              properties:
+                classId:
+                  type: integer
+                  example: 1
+                name:
+                  type: string
+                  example: "Group A"
+      responses:
+        '201':
+          description: Class group created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Class group created successfully"
+                  group:
+                    $ref: '#/components/schemas/ClassGroupResponse'
+
+  /admin/class-groups:
+    get:
+      summary: List class groups
+      description: Get list of all class groups in the school
+      tags:
+        - Admin - Classes
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Class groups retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ClassGroupResponse'
+
+  /admin/class-group/update/{groupId}:
+    patch:
+      summary: Update class group
+      description: Update class group information
+      tags:
+        - Admin - Classes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Group ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "Updated Group Name"
+      responses:
+        '200':
+          description: Class group updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Class group updated successfully"
+
+  # ==================== ADMIN CAMPUSES ====================
+  /admin/campus/create:
+    post:
+      summary: Create campus
+      description: Add a new campus to the school
+      tags:
+        - Admin - Campuses
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampusRequest'
+      responses:
+        '201':
+          description: Campus created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Campus created successfully"
+                  campus:
+                    $ref: '#/components/schemas/CampusResponse'
+
+  /admin/campuses:
+    get:
+      summary: List campuses
+      description: Get list of all campuses in the school
+      tags:
+        - Admin - Campuses
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Campuses retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  campuses:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CampusResponse'
+
+  /admin/campus/update/{campusId}:
+    patch:
+      summary: Update campus
+      description: Update campus information
+      tags:
+        - Admin - Campuses
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: campusId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Campus ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampusRequest'
+      responses:
+        '200':
+          description: Campus updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Campus updated successfully"
+                  campus:
+                    $ref: '#/components/schemas/CampusResponse'
+
+  # ==================== ADMIN SUBJECTS ====================
+  /admin/subject/create:
+    post:
+      summary: Create subject
+      description: Add a new subject to the school
+      tags:
+        - Admin - Subjects
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubjectRequest'
+      responses:
+        '201':
+          description: Subject created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Subject created successfully"
+                  subject:
+                    $ref: '#/components/schemas/SubjectResponse'
+
+  /admin/subjects:
+    get:
+      summary: List subjects
+      description: Get list of all subjects in the school
+      tags:
+        - Admin - Subjects
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Subjects retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subjects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubjectResponse'
+
+  /admin/subject/{subjectId}:
+    put:
+      summary: Update subject
+      description: Update subject information
+      tags:
+        - Admin - Subjects
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/subjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubjectRequest'
+      responses:
+        '200':
+          description: Subject updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Subject updated successfully"
+                  subject:
+                    $ref: '#/components/schemas/SubjectResponse'
+    delete:
+      summary: Delete subject
+      description: Remove a subject from the school
+      tags:
+        - Admin - Subjects
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/subjectId'
+      responses:
+        '200':
+          description: Subject deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Subject deleted successfully"
+
+  # ==================== ADMIN ASSESSMENTS ====================
+  /admin/ca-template:
+    post:
+      summary: Create CA template
+      description: Create a continuous assessment template at school or class level
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCATemplateRequest'
+      responses:
+        '201':
+          description: CA template created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "CA template created successfully"
+                  template:
+                    $ref: '#/components/schemas/CATemplateResponse'
+
+  /admin/ca-template:
+    get:
+      summary: Get CA templates
+      description: Retrieve all CA templates for the school
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: CA templates retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CATemplateResponse'
+
+  /admin/assessments:
+    get:
+      summary: List assessments
+      description: Get assessments with optional filtering and pagination
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: classId
+          in: query
+          schema:
+            type: integer
+          description: Filter by class
+        - name: subjectId
+          in: query
+          schema:
+            type: integer
+          description: Filter by subject
+        - name: campusId
+          in: query
+          schema:
+            type: integer
+          description: Filter by campus
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Filter by assessment name
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+      responses:
+        '200':
+          description: Assessments retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assessments:
+                    type: array
+                    items:
+                      type: object
+                  meta:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      pageSize:
+                        type: integer
+                      total:
+                        type: integer
+
+  /admin/class-subject/assign:
+    post:
+      summary: Assign subjects to class
+      description: Assign one or more subjects to a class
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - classId
+                - subjectIds
+              properties:
+                classId:
+                  type: integer
+                  example: 1
+                subjectIds:
+                  type: array
+                  items:
+                    type: integer
+                  example: [1, 2, 3]
+      responses:
+        '200':
+          description: Subjects assigned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Subjects assigned to class successfully"
+
+  /admin/class-subject/{classId}:
+    get:
+      summary: Get class subjects
+      description: Get all subjects assigned to a class
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/classId'
+      responses:
+        '200':
+          description: Class subjects retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subjects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubjectResponse'
+
+  /admin/class-subject/{classId}/{subjectId}:
+    delete:
+      summary: Remove subject from class
+      description: Unassign a subject from a class
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/classId'
+        - $ref: '#/components/parameters/subjectId'
+      responses:
+        '200':
+          description: Subject removed from class successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Subject removed from class successfully"
+
+  /admin/broadsheet:
+    get:
+      summary: Get admin broadsheet
+      description: Get consolidated results broadsheet for admin review
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: classId
+          in: query
+          schema:
+            type: integer
+          description: Filter by class
+        - name: subjectId
+          in: query
+          schema:
+            type: integer
+          description: Filter by subject
+      responses:
+        '200':
+          description: Broadsheet retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  broadsheet:
+                    type: array
+                    items:
+                      type: object
+
+  /admin/exam/{examId}/schedule:
+    patch:
+      summary: Schedule exam
+      description: Set the scheduled date and time for an exam
+      tags:
+        - Admin - Assessments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: examId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Exam ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - scheduledDate
+              properties:
+                scheduledDate:
+                  type: string
+                  format: date-time
+                  example: "2024-06-15T10:00:00Z"
+      responses:
+        '200':
+          description: Exam scheduled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Exam scheduled successfully"
+
+  # ==================== ADMIN GRADING ====================
+  /admin/grading/create:
+    post:
+      summary: Create grading scheme
+      description: Create a new grading scheme for the school
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGradingSchemeRequest'
+      responses:
+        '201':
+          description: Grading scheme created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Grading scheme created successfully"
+                  data:
+                    type: object
+                    properties:
+                      scheme:
+                        $ref: '#/components/schemas/GradingSchemeResponse'
+                      classIds:
+                        type: array
+                        items:
+                          type: integer
+                      grades:
+                        type: integer
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/grading/{schemeId}:
+    put:
+      summary: Update grading scheme
+      description: Update an existing grading scheme
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/schemeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "Updated Grading System"
+                usePosition:
+                  type: boolean
+                  example: true
+      responses:
+        '200':
+          description: Grading scheme updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Grading scheme updated successfully"
+    delete:
+      summary: Delete grading scheme
+      description: Remove a grading scheme (must not be assigned to any classes)
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/schemeId'
+      responses:
+        '200':
+          description: Grading scheme deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Grading scheme deleted successfully"
+                  data:
+                    type: object
+                    properties:
+                      deleted:
+                        type: boolean
+                        example: true
+                      schemeId:
+                        type: integer
+                        example: 1
+        '400':
+          description: Cannot delete scheme with active class assignments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/grading:
+    get:
+      summary: List grading schemes
+      description: Get all grading schemes for the school
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Grading schemes retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Grading schemes retrieved successfully"
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GradingSchemeResponse'
+
+  /admin/grading/{schemeId}/classes:
+    post:
+      summary: Add classes to grading scheme
+      description: Assign classes to a grading scheme
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/schemeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddGradingClassesRequest'
+      responses:
+        '200':
+          description: Classes added to scheme successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Applicable classes updated"
+                  data:
+                    type: object
+                    properties:
+                      added:
+                        type: integer
+                        example: 3
+                      skipped:
+                        type: integer
+                        example: 0
+
+  /admin/grading/remark/{ruleId}:
+    delete:
+      summary: Delete remark rule
+      description: Remove a remark rule from a remark scheme
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: ruleId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Remark rule ID
+      responses:
+        '200':
+          description: Remark deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Remark deleted successfully"
+                  data:
+                    type: object
+                    properties:
+                      deleted:
+                        type: boolean
+                        example: true
+                      ruleId:
+                        type: integer
+                        example: 1
+
+  /admin/remark-scheme/create:
+    post:
+      summary: Create remark scheme
+      description: Create a new remark scheme for the school
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRemarkSchemeRequest'
+      responses:
+        '201':
+          description: Remark scheme created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Remark scheme created successfully"
+
+  /admin/remark-scheme/{schemeId}/rules:
+    post:
+      summary: Add remark rules
+      description: Add rules to a remark scheme
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: schemeId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Remark scheme ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - rules
+              properties:
+                rules:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - min
+                      - max
+                      - remark
+                    properties:
+                      min:
+                        type: integer
+                      max:
+                        type: integer
+                      remark:
+                        type: string
+      responses:
+        '201':
+          description: Remark rules added successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Remark rules added successfully"
+
+  /admin/remark-scheme:
+    get:
+      summary: Get remark scheme
+      description: Get the school's remark scheme
+      tags:
+        - Admin - Grading
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Remark scheme retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scheme:
+                    type: object
+
+  # ==================== ADMIN RESULTS ====================
+  /admin/results/publish:
+    post:
+      summary: Publish results
+      description: Publish computed results for a class and subject
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishResultsRequest'
+      responses:
+        '200':
+          description: Results published successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Results published successfully"
+                  publishedResult:
+                    $ref: '#/components/schemas/PublishedResultResponse'
+
+  /admin/results:
+    get:
+      summary: Get results by status
+      description: Get results filtered by status (draft, submitted, published, rejected)
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, submitted, published, rejected]
+          description: Filter by result status
+      responses:
+        '200':
+          description: Results retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+
+  /admin/results/submissions:
+    get:
+      summary: Get pending submissions
+      description: Get all pending result submissions awaiting admin approval
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Pending submissions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  submissions:
+                    type: array
+                    items:
+                      type: object
+
+  /admin/results/rejected:
+    get:
+      summary: Get rejected results
+      description: Get all rejected results that need re-entry
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Rejected results retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+
+  /admin/results/submissions/{submissionId}/reject:
+    delete:
+      summary: Reject submission
+      description: Reject a teacher's result submission and send it back for re-entry
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Submission ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for rejection
+                  example: "Incomplete data for some students"
+      responses:
+        '200':
+          description: Submission rejected successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Submission rejected successfully"
+
+  /admin/results/rejected/{submissionId}/restore:
+    put:
+      summary: Restore rejected submission
+      description: Approve and restore a previously rejected submission
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Submission ID
+      responses:
+        '200':
+          description: Submission restored successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Submission restored and published successfully"
+
+  /admin/results/published/{publishedResultId}/unpublish:
+    delete:
+      summary: Unpublish results
+      description: Withdraw published results for re-entry
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: publishedResultId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Published result ID
+      responses:
+        '200':
+          description: Results unpublished successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Results unpublished successfully"
+
+  /admin/result/student:
+    get:
+      summary: Get student results (admin view)
+      description: Admin endpoint to view a student's results
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: studentId
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Student ID
+      responses:
+        '200':
+          description: Student results retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+
+  /admin/result/teacher:
+    get:
+      summary: Get teacher's submitted results
+      description: Admin endpoint to view a teacher's result submissions
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: staffId
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Staff/Teacher ID
+      responses:
+        '200':
+          description: Teacher results retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+
+  /admin/result/student/{studentId}:
+    get:
+      summary: Get complete student result
+      description: Get all results for a specific student across all subjects
+      tags:
+        - Admin - Results
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/studentId'
+      responses:
+        '200':
+          description: Student results retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  student:
+                    $ref: '#/components/schemas/StudentResponse'
+                  results:
+                    type: array
+                    items:
+                      type: object
+
+  # ==================== ADMIN ACADEMIC SETUP ====================
+  /admin/term:
+    post:
+      summary: Create academic term
+      description: Create a new academic term for a session
+      tags:
+        - Admin - Academic Setup
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAcademicTermRequest'
+      responses:
+        '201':
+          description: Academic term created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Term created successfully"
+                  term:
+                    $ref: '#/components/schemas/AcademicTermResponse'
+
+  /admin/term/{id}:
+    put:
+      summary: Update academic term
+      description: Update term information
+      tags:
+        - Admin - Academic Setup
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Term ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAcademicTermRequest'
+      responses:
+        '200':
+          description: Term updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Term updated successfully"
+                  term:
+                    $ref: '#/components/schemas/AcademicTermResponse'
+
+  /admin/term/{id}/activate:
+    patch:
+      summary: Activate academic term
+      description: Set a term as the currently active term
+      tags:
+        - Admin - Academic Setup
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Term ID
+      responses:
+        '200':
+          description: Term activated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Term activated successfully"
+
+  /admin/terms:
+    get:
+      summary: List academic terms
+      description: Get all academic terms for the school
+      tags:
+        - Admin - Academic Setup
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Terms retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  terms:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AcademicTermResponse'
+
+  /admin/active-term:
+    get:
+      summary: Get active term
+      description: Get the currently active academic term
+      tags:
+        - Admin - Academic Setup
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active term retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  term:
+                    $ref: '#/components/schemas/AcademicTermResponse'
+
+  /admin/session:
+    post:
+      summary: Create academic session
+      description: Create a new academic session (e.g., 2023/2024)
+      tags:
+        - Admin - Academic Setup
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAcademicSessionRequest'
+      responses:
+        '201':
+          description: Academic session created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Session created successfully"
+                  session:
+                    $ref: '#/components/schemas/AcademicSessionResponse'
+
+  /admin/sessions:
+    get:
+      summary: List academic sessions
+      description: Get all academic sessions for the school
+      tags:
+        - Admin - Academic Setup
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Sessions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AcademicSessionResponse'
+
+  /admin/school-admins:
+    get:
+      summary: List school admins
+      description: Get all admin users for the school (super_admin only)
+      tags:
+        - Admin - Authentication
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: School admins retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  admins:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        name:
+                          type: string
+                        email:
+                          type: string
+                        role:
+                          type: string
+                        schoolId:
+                          type: integer
+
+  # ==================== TEACHER AUTHENTICATION & PROFILE ====================
+  /teacher/login:
+    post:
+      summary: Teacher login
+      description: Authenticate a teacher and receive a JWT token
+      tags:
+        - Teacher - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeacherLoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+
+  /teacher/profile:
+    get:
+      summary: Get teacher profile
+      description: Get the authenticated teacher's profile information
+      tags:
+        - Teacher - Authentication
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Teacher profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teacher:
+                    $ref: '#/components/schemas/StaffResponse'
+
+  # ==================== TEACHER DASHBOARD ====================
+  /teacher/overview:
+    get:
+      summary: Get teacher overview
+      description: Get teacher dashboard overview with statistics
+      tags:
+        - Teacher - Dashboard
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Overview retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overview:
+                    $ref: '#/components/schemas/TeacherOverviewResponse'
+
+  /teacher/active-term:
+    get:
+      summary: Get active term
+      description: Get the currently active academic term
+      tags:
+        - Teacher - Dashboard
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active term retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  term:
+                    $ref: '#/components/schemas/AcademicTermResponse'
+
+  # ==================== TEACHER CLASSES & STUDENTS ====================
+  /teacher/classes:
+    get:
+      summary: Get teacher's classes
+      description: Get all classes assigned to the teacher
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Classes retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  classes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ClassResponse'
+
+  /teacher/my-students:
+    get:
+      summary: Get students for grading
+      description: Get students in classes assigned to this teacher
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Students retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  students:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StudentResponse'
+
+  /teacher/students:
+    get:
+      summary: Get all students
+      description: Get list of all students in teacher's classes
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Students retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  students:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StudentResponse'
+
+  /teacher/students-with-scores:
+    get:
+      summary: Get students with scores
+      description: Get students with their current CA and exam scores
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Students with scores retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  students:
+                    type: array
+                    items:
+                      type: object
+
+  /teacher/my-subjects:
+    get:
+      summary: Get teacher's subjects
+      description: Get all subjects taught by the teacher
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Subjects retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subjects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubjectResponse'
+
+  /teacher/campuses:
+    get:
+      summary: Get teacher's campus
+      description: Get campus assignment for the teacher
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Campus retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  campus:
+                    $ref: '#/components/schemas/CampusResponse'
+
+  /teacher/class-groups:
+    get:
+      summary: Get teacher's class groups
+      description: Get class groups within assigned classes
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Class groups retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ClassGroupResponse'
+
+  /teacher/sessions:
+    get:
+      summary: Get active session
+      description: Get the currently active academic session
+      tags:
+        - Teacher - Classes & Students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Session retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: '#/components/schemas/AcademicSessionResponse'
+
+  # ==================== TEACHER SCORING ====================
+  /teacher/scores/ca:
+    post:
+      summary: Enter/update CA scores
+      description: Enter or update continuous assessment scores for students
+      tags:
+        - Teacher - Scoring
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertCAScoresRequest'
+      responses:
+        '200':
+          description: CA scores saved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "CA scores saved successfully"
+                  saved:
+                    type: integer
+                    example: 25
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /teacher/scores/exam:
+    post:
+      summary: Enter/update exam scores
+      description: Enter or update exam scores for students
+      tags:
+        - Teacher - Scoring
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertExamScoresRequest'
+      responses:
+        '200':
+          description: Exam scores saved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Exam scores saved successfully"
+                  saved:
+                    type: integer
+                    example: 25
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /teacher/subjects/{subjectId}/cas:
+    get:
+      summary: Get subject CAs
+      description: Get all continuous assessments for a subject
+      tags:
+        - Teacher - Scoring
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/subjectId'
+      responses:
+        '200':
+          description: CAs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cas:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        classId:
+                          type: integer
+                        subjectId:
+                          type: integer
+                        name:
+                          type: string
+                        maxScore:
+                          type: integer
+
+  /teacher/subjects/{subjectId}/exams:
+    get:
+      summary: Get subject exams
+      description: Get all exams for a subject
+      tags:
+        - Teacher - Scoring
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/subjectId'
+      responses:
+        '200':
+          description: Exams retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exams:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        classId:
+                          type: integer
+                        subjectId:
+                          type: integer
+                        name:
+                          type: string
+                        maxScore:
+                          type: integer
+
+  /teacher/ca:
+    get:
+      summary: Get teacher's CAs
+      description: Get all continuous assessments for the teacher's subjects
+      tags:
+        - Teacher - Scoring
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: CAs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cas:
+                    type: array
+                    items:
+                      type: object
+
+  /teacher/exam:
+    get:
+      summary: Get teacher's exams
+      description: Get all exams for the teacher's subjects
+      tags:
+        - Teacher - Scoring
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Exams retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exams:
+                    type: array
+                    items:
+                      type: object
+
+  # ==================== TEACHER RESULTS ====================
+  /teacher/broadsheet:
+    get:
+      summary: Get teacher broadsheet
+      description: Get computed results broadsheet for all student subjects
+      tags:
+        - Teacher - Results
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Broadsheet retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  broadsheet:
+                    type: array
+                    items:
+                      type: object
+
+  /teacher/results:
+    get:
+      summary: Get computed results
+      description: Get computed results for teacher's subjects
+      tags:
+        - Teacher - Results
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Results retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+
+  /teacher/results/submit:
+    post:
+      summary: Submit results
+      description: Submit results for admin review (locks scores for editing)
+      tags:
+        - Teacher - Results
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - classId
+                - subjectId
+              properties:
+                classId:
+                  type: integer
+                  example: 1
+                subjectId:
+                  type: integer
+                  example: 2
+      responses:
+        '200':
+          description: Results submitted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Results submitted successfully"
+                  submission:
+                    type: object
+
+  # ==================== STUDENT AUTHENTICATION ====================
+  /student/login:
+    post:
+      summary: Student login
+      description: Authenticate a student and receive a JWT token
+      tags:
+        - Student - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - registrationNumber
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "chidi@student.com"
+                registrationNumber:
+                  type: string
+                  example: "QXS-2026-001"
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentLoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+
+  # ==================== STUDENT DASHBOARD ====================
+  /dashboard/student/metrics:
+    get:
+      summary: Get student metrics
+      description: Get dashboard metrics for the student
+      tags:
+        - Student - Dashboard
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  metrics:
+                    $ref: '#/components/schemas/StudentDashboardMetricsResponse'
+
+  # ==================== STUDENT RESULTS ====================
+  /dashboard/student/results:
+    get:
+      summary: Get student results
+      description: Get all results for the authenticated student
+      tags:
+        - Student - Results
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Results retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StudentResultResponse'
+
+  /dashboard/student/sessions:
+    get:
+      summary: Get student sessions
+      description: Get all academic sessions the student has results for
+      tags:
+        - Student - Results
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Sessions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AcademicSessionResponse'
+
+  # ==================== SETUP ENDPOINTS ====================
+  /setup/class:
+    post:
+      summary: Setup classes
+      description: Bulk create classes during system setup
+      tags:
+        - Setup
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - classes
+              properties:
+                classes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CreateClassRequest'
+      responses:
+        '201':
+          description: Classes created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Classes created successfully"
+                  classes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ClassResponse'
+
+  /setup/campus:
+    post:
+      summary: Setup campuses
+      description: Bulk create campuses during system setup
+      tags:
+        - Setup
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - campuses
+              properties:
+                campuses:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CreateCampusRequest'
+      responses:
+        '201':
+          description: Campuses created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Campuses created successfully"
+                  campuses:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CampusResponse'
+
+  # ==================== PUBLIC ENDPOINTS ====================
+  /public/schools:
+    get:
+      summary: Get public schools
+      description: Get list of all schools (public endpoint, no auth required)
+      tags:
+        - Public
+      responses:
+        '200':
+          description: Schools retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SchoolResponse'
+
+  /public/assessments:
+    get:
+      summary: Get public assessments
+      description: Get list of public assessments (no auth required)
+      tags:
+        - Public
+      responses:
+        '200':
+          description: Assessments retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assessments:
+                    type: array
+                    items:
+                      type: object

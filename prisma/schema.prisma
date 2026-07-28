@@ -60,6 +60,8 @@ model Admin {
   createdExams                 Exam[]                 @relation("AdminCreatedExams")
 
   publishedResults PublishedResult[]
+  commissions      Commission[]
+  notifications    Notification[]
 
   @@map("admins")
 }
@@ -101,12 +103,15 @@ model School {
 }
 
 model Token {
-  id         Int      @id @default(autoincrement())
-  email      String   @unique @db.VarChar(255) // Unique key to ensure no duplicate email tokens
-  uniqueKey  String   @unique @db.VarChar(255) // Unique key for token generation/validation
-  status     String?  @db.VarChar(50)
-  schoolName String   @db.VarChar(255) // School name associated with the token
-  createdAt  DateTime @default(now()) // Timestamp for when the token was created
+  id         Int       @id @default(autoincrement())
+  email      String    @unique @db.VarChar(255) // Unique key to ensure no duplicate email tokens
+  uniqueKey  String    @unique @db.VarChar(255) // Unique key for token generation/validation
+  status     String?   @db.VarChar(50)
+  schoolName String    @db.VarChar(255) // School name associated with the token
+  createdAt  DateTime  @default(now()) // Timestamp for when the token was created
+  expiresAt  DateTime? // Registration token expiry (Super Admin Portal tokens)
+  usedAt     DateTime? // When the token was consumed to register an admin
+  usedBy     Int?      // ID of the Admin created from this token
 
   @@map("tokens") // Maps to a table named `tokens`
 }
@@ -544,6 +549,105 @@ model AcademicTerm {
 
   @@unique([schoolId, sessionId, name])
   @@map("academic_terms")
+}
+
+// SchoolToken - Assessment/Registration tokens for schools
+// Used by Marketer Portal to generate access codes for schools
+model SchoolToken {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique @db.VarChar(50) // e.g., "TKN-1721472000000"
+  schoolName  String   @db.VarChar(255)
+  schoolEmail String   @db.VarChar(255)
+  pupil       String?  @db.VarChar(255) // Optional pupil name
+  class       String?  @db.VarChar(100)  // Optional class
+  subject     String?  @db.VarChar(100)  // Optional subject
+  status      String   @default("active") @db.VarChar(50) // active, used, revoked, expired
+  issuedDate  DateTime @default(now())
+  expiryDate  DateTime // Token expiration date
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status])
+  @@index([schoolName])
+  @@index([expiryDate])
+  @@map("school_tokens")
+}
+
+// Commission - Marketer commission records
+// Tracks earnings from token sales and school registrations
+model Commission {
+  id          Int      @id @default(autoincrement())
+  marketerId  Int      // Admin with role=marketer
+  amount      Float    @default(0.0)
+  rate        Float    @default(0.0) // Commission rate (e.g., 5.0 = 5%)
+  status      String   @default("pending") @db.VarChar(50) // pending, paid, rejected
+  month       Int      // Month (1-12)
+  year        Int      // Year (e.g., 2026)
+  source      String   @db.VarChar(100) // "Token Sale", "School Registration", etc.
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+
+  @@index([marketerId])
+  @@index([year, month])
+  @@index([status])
+  @@map("commissions")
+}
+
+// Notification - Messages for marketers
+// Alerts about commissions, tokens, account status, etc.
+model Notification {
+  id          Int      @id @default(autoincrement())
+  marketerId  Int      // Admin with role=marketer
+  title       String   @db.VarChar(255)
+  message     String   @db.Text
+  type        String   @db.VarChar(50) // info, success, warning, error
+  isRead      Boolean  @default(false)
+  link        String?  @db.VarChar(255) // URL to navigate to (e.g., "/commissions")
+  relatedId   Int?     // ID of related resource (commission ID, token ID, etc.)
+  relatedType String?  @db.VarChar(50) // commission, token, account, etc.
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+
+  @@index([marketerId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// Platform-wide Settings
+model PlatformSettings {
+  id                    Int      @id @default(autoincrement())
+  commissionRate        Float    @default(5.0) // Default 5%
+  platformName          String   @default("Qalox") @db.VarChar(255)
+  supportEmail          String   @default("support@qalox.com") @db.VarChar(255)
+  maxTokensPerSchool    Int      @default(10)
+  tokenExpirationDays   Int      @default(30)
+  updatedAt             DateTime @updatedAt
+
+  @@map("platform_settings")
+}
+
+// Billing Plans
+model BillingPlan {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique @db.VarChar(255)
+  description   String?  @db.Text
+  monthlyPrice  Float    @default(0.0)
+  annualPrice   Float    @default(0.0)
+  features      String   @db.Text // JSON array stored as text
+  isActive      Boolean  @default(true)
+  highlighted   Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([name])
+  @@map("billing_plans")
 }
 
 
