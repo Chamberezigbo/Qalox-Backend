@@ -271,6 +271,16 @@ router.patch(
 );
 
 /**
+ * PATCH /api/public/schools/:id/sms-quota
+ * Set a school's per-term SMS broadcast quota (Super Admin Portal, service-to-service)
+ */
+router.patch(
+  "/schools/:id/sms-quota",
+  serviceAuth,
+  publicController.updateSchoolSmsQuota
+);
+
+/**
  * DELETE /api/public/schools/:id
  * Permanently delete a school with cascade deletion (service-to-service)
  */

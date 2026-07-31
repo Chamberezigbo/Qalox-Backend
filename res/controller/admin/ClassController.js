@@ -4,21 +4,21 @@ const prisma = require('../../util/prisma');
 exports.createClass = async (req, res, next) => {
        try {
      
-         const { name, campusId, customName, } = req.body;
+         const { name, campusId, customName, department } = req.body;
          const schoolId = req.schoolId; // ✅ from middleware auth
-     
+
          // Check for duplicate class name for same school + campus
          const existingClass = await prisma.class.findFirst({
            where: { schoolId, name, campusId: campusId ?? null },
          });
-     
+
          if (existingClass) {
            return res.status(409).json({
              success: false,
              message: "Class with this name already exists for this school/campus.",
            });
          }
-     
+
          const newClass = await prisma.class.create({
            data: {
              name,
@@ -26,6 +26,7 @@ exports.createClass = async (req, res, next) => {
              schoolId,
              // Save custom class name if provided
              customName: customName ? customName : null,
+             department: department ? department : null,
            },
          });
      
@@ -223,20 +224,20 @@ exports.getClassGroups = async (req, res, next) => {
 exports.updateClass = async (req, res, next) => {
        try {
          const { classId } = req.params;
-         const { name, campusId, customName, } = req.body;
-     
+         const { name, campusId, customName, department } = req.body;
+
          // Ensure class exists
          const existingClass = await prisma.class.findUnique({
            where: { id: Number(classId) },
          });
-     
+
          if (!existingClass) {
            return res.status(404).json({
              success: false,
              message: "Class not found",
            });
          }
-     
+
          // Update class
          const updatedClass = await prisma.class.update({
            where: { id: Number(classId) },
@@ -244,6 +245,7 @@ exports.updateClass = async (req, res, next) => {
              ...(name && { name }),
              ...(campusId && { campusId }),
              ...(customName && { customName: customName }),
+             ...(department !== undefined && { department: department || null }),
            },
          });
      

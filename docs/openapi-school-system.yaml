@@ -30,10 +30,35 @@ tags:
     description: Admin login and account creation
   - name: Admin - School Management
     description: School info, overview, dashboard
+  - name: Admin - Sub Admins
+    description: |
+      Head-admin-only (super_admin/school_admin). Create and manage permission-scoped
+      sub-admins (HR, Secretary, Bursar, Other). Sub-admins are gated per-route via a
+      granted `permissions` list — head admins always have full access regardless.
   - name: Admin - Students
     description: Create, read, update students and class assignments
   - name: Admin - Staff
     description: Create, manage teachers and staff assignments
+  - name: Admin - Fee Management
+    description: |
+      Fee breakdown setup per class/term/session, auto-generated per-student invoices,
+      payment recording, receipt generation, and debt tracking. Gated by
+      PERMISSIONS.FEES_MANAGE for sub-admins; head admins always have full access.
+      Email reminders are stubbed (logged only) until an email provider is configured.
+  - name: Admin - Notices
+    description: |
+      Broadcast announcements (fee/pta/event/general) to parents/teachers/students,
+      always recorded in-app and optionally also sent as real SMS via SmartSMS
+      Nigeria (https://developer.smartsmssolutions.com/). SMS is subject to a
+      per-term quota on the School record, reset when a new AcademicTerm is
+      activated. Gated by PERMISSIONS.SMS_BROADCAST_SEND for sub-admins.
+  - name: Admin - Analytics
+    description: |
+      Per-campus dashboard: pass rate (derived from each class's own GradingScheme —
+      the lowest-scoring tier counts as fail), revenue trend, enrollment growth,
+      outstanding fees, and department breakdown (Class.department, optional).
+      A student/fee/payment without an explicit campusId falls back to their
+      class's campusId for attribution. Gated by PERMISSIONS.ANALYTICS_VIEW.
   - name: Admin - Classes
     description: Create and manage classes, class groups
   - name: Admin - Campuses
@@ -137,6 +162,132 @@ components:
       description: Unique grading scheme identifier
 
   schemas:
+    # ==================== Sub-Admin Schemas ====================
+    SubAdminResponse:
+      type: object
+      properties:
+        id: { type: integer, example: 5 }
+        name: { type: string, example: "Jane Bursar" }
+        email: { type: string, format: email }
+        subAdminType: { type: string, enum: [hr, secretary, bursar, other] }
+        subAdminLabel: { type: string, nullable: true }
+        permissions:
+          type: array
+          items: { type: string }
+          example: [fees.manage]
+        isSuspended: { type: boolean, example: false }
+        createdAt: { type: string, format: date-time }
+
+    # ==================== Analytics Schemas ====================
+    CampusAnalytics:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, example: "Main Campus" }
+        location: { type: string, example: "Ikeja" }
+        totalStudents: { type: integer }
+        passRate: { type: integer, example: 78, description: "0-100. See per-class GradingScheme note above." }
+        outstandingFees: { type: number }
+        totalRevenue: { type: number }
+        revenueTarget: { type: number, example: 45000000, description: "0 if not set — Campus.revenueTarget is admin-optional" }
+        bestDepartment: { type: string, example: "Sciences" }
+        departments:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string, example: "Sciences" }
+              passRate: { type: integer }
+              students: { type: integer }
+        monthlyRevenue:
+          type: array
+          items:
+            type: object
+            properties:
+              month: { type: string, example: "Jul" }
+              amount: { type: number }
+        enrollmentGrowth:
+          type: array
+          items:
+            type: object
+            properties:
+              month: { type: string, example: "Jul" }
+              students: { type: integer }
+
+    # ==================== Notices / Broadcast Schemas ====================
+    BroadcastResponse:
+      type: object
+      properties:
+        id: { type: integer, example: 12 }
+        schoolId: { type: integer }
+        title: { type: string }
+        message: { type: string }
+        category: { type: string, enum: [fee, pta, event, general] }
+        recipientType: { type: string, enum: [all, parents, teachers, students] }
+        smsEnabled: { type: boolean }
+        totalRecipients: { type: integer }
+        smsSentCount: { type: integer }
+        createdByAdminId: { type: integer, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    NoticeHistoryItem:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        message: { type: string }
+        recipientType: { type: string, enum: [all, parents, teachers, students] }
+        category: { type: string, enum: [fee, pta, event, general] }
+        sentAt: { type: string, format: date-time }
+        status: { type: string, example: sent }
+        readCount:
+          type: integer
+          description: Always 0 for now — no in-app read-tracking until the Parent/Student portal exists
+        totalRecipients: { type: integer }
+        smsEnabled: { type: boolean }
+        smsSentCount: { type: integer }
+
+    # ==================== Fee Management Schemas ====================
+    StudentFeeRecord:
+      type: object
+      properties:
+        id: { type: integer, example: 12, description: "StudentFee record ID — used as studentFeeId elsewhere" }
+        studentName: { type: string, example: "Adebayo Oluwatobi" }
+        admissionNo: { type: string, example: "IMMA-7499-STD" }
+        class: { type: string, example: "JSS 3A" }
+        totalFee: { type: number, example: 87000 }
+        amountPaid: { type: number, example: 50000 }
+        outstanding: { type: number, example: 37000 }
+        status: { type: string, enum: [paid, partial, unpaid] }
+        lastPaymentDate: { type: string, format: date-time, nullable: true }
+        parentName: { type: string, nullable: true }
+        parentPhone: { type: string, nullable: true }
+        parentEmail: { type: string, nullable: true }
+
+    PaymentReceipt:
+      type: object
+      properties:
+        receiptNo: { type: string, example: "RCP-2026-0001" }
+        studentName: { type: string }
+        admissionNo: { type: string }
+        class: { type: string }
+        amountPaid: { type: number }
+        paymentDate: { type: string, format: date-time }
+        paymentMethod: { type: string, enum: [Bank Transfer, Cash, Card] }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              amount: { type: number }
+        term: { type: string }
+        session: { type: string }
+        isPartial: { type: boolean }
+        outstanding: { type: number }
+        parentEmail: { type: string, nullable: true }
+        parentPhone: { type: string, nullable: true }
+
     # ==================== Authentication Schemas ====================
     LoginRequest:
       type: object
@@ -1604,7 +1755,544 @@ paths:
                   overview:
                     $ref: '#/components/schemas/SchoolOverviewResponse'
 
+  # ==================== ADMIN SUB-ADMINS ====================
+  /admin/permissions:
+    get:
+      summary: List available permission keys
+      description: Returns all permission keys and sub-admin type presets, for building the sub-admin creation UI
+      tags: [Admin - Sub Admins]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      permissions:
+                        type: array
+                        items: { type: string }
+                        example: [students.manage, staff.manage, classes.manage, subjects.manage, grading.manage, assessments.manage, results.manage, fees.manage, sms_broadcast.send, analytics.view]
+                      subAdminTypes:
+                        type: array
+                        items: { type: string }
+                        example: [hr, secretary, bursar, other]
+
+  /admin/sub-admins/create:
+    post:
+      summary: Create a sub-admin
+      description: Create a permission-scoped sub-admin (HR, Secretary, Bursar, or Other) for the caller's school. Head-admin only.
+      tags: [Admin - Sub Admins]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, subAdminType]
+              properties:
+                name: { type: string, example: "Jane Bursar" }
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 6 }
+                subAdminType: { type: string, enum: [hr, secretary, bursar, other] }
+                subAdminLabel: { type: string, description: "Required when subAdminType is 'other'", example: "Exams Officer" }
+                permissions:
+                  type: array
+                  items: { type: string }
+                  example: [fees.manage]
+      responses:
+        '201':
+          description: Sub-admin created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/SubAdminResponse' }
+        '400':
+          description: Missing/invalid fields, invalid subAdminType, or invalid permission key(s)
+        '409':
+          description: Email already in use
+
+  /admin/sub-admins:
+    get:
+      summary: List sub-admins
+      description: List all sub-admins for the caller's school. Head-admin only.
+      tags: [Admin - Sub Admins]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SubAdminResponse' }
+
+  /admin/sub-admins/{id}:
+    patch:
+      summary: Update a sub-admin
+      description: Update a sub-admin's name, type, permissions, or suspension status. Must belong to caller's school. Head-admin only.
+      tags: [Admin - Sub Admins]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                subAdminType: { type: string, enum: [hr, secretary, bursar, other] }
+                subAdminLabel: { type: string }
+                permissions:
+                  type: array
+                  items: { type: string }
+                isSuspended: { type: boolean }
+      responses:
+        '200':
+          description: Sub-admin updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/SubAdminResponse' }
+        '404':
+          description: Sub-admin not found
+    delete:
+      summary: Delete a sub-admin
+      description: Remove a sub-admin. Must belong to caller's school. Head-admin only.
+      tags: [Admin - Sub Admins]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Sub-admin deleted successfully
+        '404':
+          description: Sub-admin not found
+
+  # ==================== ADMIN FEE MANAGEMENT ====================
+  /admin/fees/structure:
+    post:
+      summary: Create or update a fee breakdown for a class
+      description: |
+        Upserts the fee structure for a class in a given term/session. Auto-generates
+        (or resyncs the total on) a StudentFee invoice for every student currently
+        enrolled in that class. Existing payments are preserved on resync.
+      tags: [Admin - Fee Management]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [classId, term, session, items]
+              properties:
+                classId: { type: integer, example: 5 }
+                term: { type: string, example: "First Term" }
+                session: { type: string, example: "2025/2026" }
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name: { type: string, example: "Tuition Fee" }
+                      amount: { type: number, example: 45000 }
+      responses:
+        '200':
+          description: Fee breakdown saved
+        '400':
+          description: Missing/invalid fields or items
+        '404':
+          description: Class not found
+    get:
+      summary: List fee structures
+      description: Optionally filter by classId, term, session
+      tags: [Admin - Fee Management]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: classId
+          in: query
+          schema: { type: integer }
+        - name: term
+          in: query
+          schema: { type: string }
+        - name: session
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success
+
+  /admin/fees/students:
+    get:
+      summary: List student fee records
+      description: Paginated, filterable by status (paid/partial/unpaid), classId, and search
+      tags: [Admin - Fee Management]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [paid, partial, unpaid] }
+        - name: classId
+          in: query
+          schema: { type: integer }
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/StudentFeeRecord' }
+                  meta:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      page: { type: integer }
+                      limit: { type: integer }
+                      totalPages: { type: integer }
+
+  /admin/fees/debt-summary:
+    get:
+      summary: Get aggregate debt/collection stats
+      tags: [Admin - Fee Management]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      totalExpected: { type: number, example: 833000 }
+                      totalCollected: { type: number, example: 438000 }
+                      totalOutstanding: { type: number, example: 395000 }
+                      paidCount: { type: integer, example: 4 }
+                      partialCount: { type: integer, example: 3 }
+                      unpaidCount: { type: integer, example: 3 }
+
+  /admin/fees/payments:
+    post:
+      summary: Record a payment against a student's fee record
+      description: Creates a Payment record, updates the StudentFee's amountPaid/status, and returns receipt data.
+      tags: [Admin - Fee Management]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studentFeeId, amount, paymentMethod]
+              properties:
+                studentFeeId: { type: integer }
+                amount: { type: number, example: 30000 }
+                paymentMethod: { type: string, enum: [Bank Transfer, Cash, Card] }
+                paymentDate: { type: string, format: date-time, description: "Defaults to now if omitted" }
+      responses:
+        '201':
+          description: Payment recorded, receipt data returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/PaymentReceipt' }
+        '400':
+          description: Missing/invalid fields or payment method
+        '404':
+          description: Student fee record not found
+
+  /admin/fees/receipts/{studentFeeId}:
+    get:
+      summary: Get receipt data for a student's most recent payment
+      tags: [Admin - Fee Management]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: studentFeeId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/PaymentReceipt' }
+        '400':
+          description: No payment recorded for this student yet
+        '404':
+          description: Student fee record not found
+
+  /admin/fees/reminders/send-email:
+    post:
+      summary: Email fee reminders to parents
+      description: |
+        **Email provider not yet configured** — this logs the intended sends and
+        returns per-recipient results without actually dispatching email. See
+        implementation notes in FeeManagementController.sendFeeReminders.
+      tags: [Admin - Fee Management]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studentFeeIds]
+              properties:
+                studentFeeIds:
+                  type: array
+                  items: { type: integer }
+      responses:
+        '200':
+          description: Reminders logged (not actually sent yet)
+        '400':
+          description: studentFeeIds must be a non-empty array
+
+  # ==================== ADMIN NOTICES / SMS BROADCAST ====================
+  /admin/sms/quota:
+    get:
+      summary: Get the school's SMS broadcast quota/usage
+      description: Per-term allowance, reset when a new AcademicTerm is activated.
+      tags: [Admin - Notices]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      quotaPerTerm: { type: integer, example: 300 }
+                      used: { type: integer, example: 42 }
+                      remaining: { type: integer, example: 258 }
+
+  /admin/broadcasts:
+    post:
+      summary: Send a notice/announcement
+      description: |
+        Always recorded in-app. If `sendSms` is true, also sends a real SMS via
+        SmartSMS to the phone numbers on file for the resolved audience
+        (parents: Student.guardianNumber, teachers: Staff.phoneNumber). Rejected
+        with SMS_QUOTA_EXCEEDED if the audience size would exceed the school's
+        remaining per-term quota — checked before any SMS API call is made.
+        SMS is not available for recipientType 'students' (no phone on file).
+      tags: [Admin - Notices]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, message, category, recipientType]
+              properties:
+                title: { type: string, example: "Christmas Holiday Notice" }
+                message: { type: string, example: "School will be closed from Dec 20th." }
+                category: { type: string, enum: [fee, pta, event, general] }
+                recipientType: { type: string, enum: [all, parents, teachers, students] }
+                sendSms: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Notice sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string, example: "Notice sent — 42 SMS delivered to 45 recipients" }
+                  data: { $ref: '#/components/schemas/BroadcastResponse' }
+        '400':
+          description: Missing/invalid fields, SMS unavailable for recipientType, or SMS_QUOTA_EXCEEDED
+        '502':
+          description: SmartSMS provider returned an error (e.g. INSUFFICIENT_CREDIT)
+    get:
+      summary: List notice/broadcast history
+      tags: [Admin - Notices]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/NoticeHistoryItem' }
+                  meta:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      page: { type: integer }
+                      limit: { type: integer }
+                      totalPages: { type: integer }
+
+  # ==================== ADMIN ANALYTICS ====================
+  /admin/analytics/campuses:
+    get:
+      summary: Per-campus analytics dashboard
+      description: |
+        Returns one entry per campus with pass rate, revenue trend (last 6 months),
+        enrollment growth (last 6 months, cumulative), outstanding fees, and a
+        department breakdown. `passRate` is 0 when no published results exist yet,
+        or when none of the campus's classes have a GradingScheme assigned
+        (can't classify pass/fail without one).
+      tags: [Admin - Analytics]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CampusAnalytics' }
+
   # ==================== ADMIN STUDENTS ====================
+  /admin/students/bulk-upload:
+    post:
+      summary: Bulk create students
+      description: |
+        Create up to 500 students from parsed CSV rows in one request. Each row
+        is processed independently — a bad row doesn't block the rest, and the
+        response includes a per-row success/failure breakdown. Requires
+        PERMISSIONS.STUDENTS_MANAGE for sub-admins; head admins always pass.
+      tags:
+        - Admin - Students
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rows]
+              properties:
+                session:
+                  type: string
+                  description: Academic session applied to the whole batch (e.g. "2025/2026"). Falls back to the school's active session if omitted.
+                  example: "2025/2026"
+                rows:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [name, surname, gender, dateOfBirth, className]
+                    properties:
+                      name: { type: string }
+                      surname: { type: string }
+                      otherNames: { type: string }
+                      gender: { type: string, enum: [Male, Female, Other] }
+                      dateOfBirth: { type: string, example: "2012-01-01" }
+                      className:
+                        type: string
+                        description: Matched case-insensitively against existing classes in the school
+                      campusName:
+                        type: string
+                        description: Optional — matched case-insensitively against existing campuses
+                      groupName:
+                        type: string
+                        description: Optional — must belong to the resolved class
+                      guardianName: { type: string }
+                      guardianNumber: { type: string }
+                      email: { type: string, format: email }
+      responses:
+        '200':
+          description: Batch processed (individual rows may still have failed — check data.failureCount)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string, example: "Bulk upload complete: 2 created, 1 failed" }
+                  data:
+                    type: object
+                    properties:
+                      successCount: { type: integer }
+                      failureCount: { type: integer }
+                      results:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            row: { type: integer }
+                            success: { type: boolean }
+                            error: { type: string, nullable: true }
+        '400':
+          description: rows missing/empty, or more than 500 rows
+
   /admin/students:
     get:
       summary: List all students
@@ -1827,6 +2515,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/staff/bulk-upload:
+    post:
+      summary: Bulk create staff
+      description: |
+        Create up to 500 staff from parsed CSV rows in one request. Each row
+        is processed independently — a bad row doesn't block the rest, and the
+        response includes a per-row success/failure breakdown. Requires
+        PERMISSIONS.STAFF_MANAGE for sub-admins; head admins always pass.
+      tags:
+        - Admin - Staff
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rows]
+              properties:
+                rows:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [name, email, duty]
+                    properties:
+                      name: { type: string }
+                      email: { type: string, format: email }
+                      duty: { type: string, example: "Teacher" }
+                      gender: { type: string, enum: [Male, Female, Other] }
+                      phoneNumber: { type: string }
+                      address: { type: string }
+                      nextOfKin: { type: string }
+                      dateEmployed: { type: string, example: "2024-01-15" }
+                      payroll: { type: number }
+                      campusName:
+                        type: string
+                        description: Optional — matched case-insensitively against existing campuses
+      responses:
+        '200':
+          description: Batch processed (individual rows may still have failed — check data.failureCount)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string, example: "Bulk upload complete: 2 created, 1 failed" }
+                  data:
+                    type: object
+                    properties:
+                      successCount: { type: integer }
+                      failureCount: { type: integer }
+                      results:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            row: { type: integer }
+                            success: { type: boolean }
+                            error: { type: string, nullable: true }
+        '400':
+          description: rows missing/empty, or more than 500 rows
 
   /admin/staff:
     get:
@@ -2436,8 +3189,6 @@ paths:
                     example: "CA template created successfully"
                   template:
                     $ref: '#/components/schemas/CATemplateResponse'
-
-  /admin/ca-template:
     get:
       summary: Get CA templates
       description: Retrieve all CA templates for the school

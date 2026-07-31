@@ -53,6 +53,12 @@ model Admin {
   transactionCount    Int      @default(0)
   lastPayoutDate      DateTime?
 
+  // Sub-admin fields (only used when role = sub_admin)
+  subAdminType     String?  @db.VarChar(50) // hr, secretary, bursar, other
+  subAdminLabel    String?  @db.VarChar(100) // custom label when subAdminType = other, e.g. "Exams Officer"
+  createdByAdminId Int? // id of the head admin (super_admin/school_admin) who created this sub-admin
+  permissions      String?  @db.Text // JSON array of granted permission keys, e.g. ["students.manage","fees.manage"]
+
   // Relationships
   school                       School?                @relation(fields: [schoolId], references: [id])
   campus                       Campus?                @relation(fields: [campusId], references: [id])
@@ -67,9 +73,11 @@ model Admin {
 }
 
 enum Role {
-  super_admin
-  school_admin
+  super_admin          // legacy: head admin / owner of an individual school (unchanged, live data)
+  school_admin         // per-school head admin (now fully functional, equivalent to super_admin for school routes)
+  sub_admin            // permission-scoped staff created by a school's head admin (HR, secretary, bursar, other)
   marketer
+  platform_super_admin // Qalox platform operator (Super Admin Portal) — distinct from the legacy school-owner "super_admin"
 }
 
 model School {
@@ -87,6 +95,13 @@ model School {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // SMS broadcast quota — per-term allowance, reset when a new AcademicTerm is
+  // activated. Set directly by Super Admin for now (defaults to Basic-tier
+  // limit of 300). Once schools are formally linked to a BillingPlan, this
+  // should be derived from the plan's smsQuotaPerTerm instead of set ad-hoc.
+  smsQuotaPerTerm Int @default(300)
+  smsUsedThisTerm Int @default(0)
+
   campuses        Campus[]
   admins          Admin[]
   Class           Class[]
@@ -98,6 +113,9 @@ model School {
   AcademicSession AcademicSession[]
   AcademicTerm    AcademicTerm[]
   CATemplate      CATemplate[]
+  feeStructures   FeeStructure[]
+  studentFees     StudentFee[]
+  broadcasts      Broadcast[]
 
   @@map("schools")
 }
@@ -117,13 +135,14 @@ model Token {
 }
 
 model Campus {
-  id          Int      @id @default(autoincrement())
-  schoolId    Int
-  name        String   @db.VarChar(255)
-  address     String?  @db.Text
-  phoneNumber String?  @db.VarChar(50)
-  email       String?  @db.VarChar(255)
-  createdAt   DateTime @default(now())
+  id            Int      @id @default(autoincrement())
+  schoolId      Int
+  name          String   @db.VarChar(255)
+  address       String?  @db.Text
+  phoneNumber   String?  @db.VarChar(50)
+  email         String?  @db.VarChar(255)
+  revenueTarget Float? // optional, admin-set monthly revenue target for analytics
+  createdAt     DateTime @default(now())
 
   school             School              @relation(fields: [schoolId], references: [id])
   admins             Admin[]
@@ -144,6 +163,7 @@ model Class {
   campusId    Int?
   name        String
   customName  String?
+  department  String?      @db.VarChar(100) // e.g. Sciences, Arts, Commercial, Social Sciences — optional, admin-set
   staffId     Int? // Optional, in case a class is created without a teacher assigned
   createdAt   DateTime     @default(now())
   school      School       @relation(fields: [schoolId], references: [id])
@@ -161,6 +181,7 @@ model Class {
   ClassSubject         ClassSubject[]
   publishedResults PublishedResult[]
   resultSubmissions ResultSubmission[]
+  feeStructures FeeStructure[]
 
   // Optionally, add a unique constraint for name, school, and campus
   @@unique([name, schoolId, campusId])
@@ -216,6 +237,7 @@ model Student {
   dateOfBirth       String?
   guardianName      String?
   guardianNumber    String?
+  guardianEmail     String?
   lifestyle         String?
   academicSessionId Int
   email             String?
@@ -234,6 +256,7 @@ model Student {
   CAResult   CAResult[]
   ExamResult ExamResult[]
   publishedResultRows PublishedResultRow[]
+  studentFees StudentFee[]
 
   // ✅ NEW: Unique constraint for registration number per school
   @@unique([schoolId, registrationNumber])
@@ -648,6 +671,113 @@ model BillingPlan {
   @@index([isActive])
   @@index([name])
   @@map("billing_plans")
+}
+
+// ============================================
+// FEE MANAGEMENT
+// ============================================
+
+// A fee breakdown configured for one class, for one term/session.
+// Creating one auto-generates a StudentFee invoice for every student
+// currently enrolled in that class.
+model FeeStructure {
+  id        Int      @id @default(autoincrement())
+  schoolId  Int
+  classId   Int
+  term      String   @db.VarChar(100)
+  session   String   @db.VarChar(50)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school      School             @relation(fields: [schoolId], references: [id])
+  class       Class              @relation(fields: [classId], references: [id])
+  items       FeeStructureItem[]
+  studentFees StudentFee[]
+
+  @@unique([classId, term, session])
+  @@index([schoolId])
+  @@map("fee_structures")
+}
+
+model FeeStructureItem {
+  id             Int      @id @default(autoincrement())
+  feeStructureId Int
+  name           String   @db.VarChar(255)
+  amount         Float
+  createdAt      DateTime @default(now())
+
+  feeStructure FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+
+  @@index([feeStructureId])
+  @@map("fee_structure_items")
+}
+
+// Per-student invoice for a given FeeStructure. `totalFee` is a snapshot
+// taken at creation time so later fee-structure edits don't retroactively
+// change what a student already owes for a term.
+model StudentFee {
+  id             Int      @id @default(autoincrement())
+  schoolId       Int
+  studentId      Int
+  feeStructureId Int
+  totalFee       Float
+  amountPaid     Float    @default(0.0)
+  status         String   @default("unpaid") @db.VarChar(20) // unpaid, partial, paid
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  school       School       @relation(fields: [schoolId], references: [id])
+  student      Student      @relation(fields: [studentId], references: [id])
+  feeStructure FeeStructure @relation(fields: [feeStructureId], references: [id])
+  payments     Payment[]
+
+  @@unique([studentId, feeStructureId])
+  @@index([schoolId])
+  @@index([status])
+  @@map("student_fees")
+}
+
+// A single payment transaction against a StudentFee. Also the source
+// record for receipt generation (one payment = one receipt).
+model Payment {
+  id            Int      @id @default(autoincrement())
+  studentFeeId  Int
+  amount        Float
+  paymentMethod String   @db.VarChar(50) // Bank Transfer, Cash, Card
+  paymentDate   DateTime @default(now())
+  receiptNo     String   @unique @db.VarChar(50)
+  recordedBy    Int? // Admin.id who recorded this payment
+  createdAt     DateTime @default(now())
+
+  studentFee StudentFee @relation(fields: [studentFeeId], references: [id])
+
+  @@index([studentFeeId])
+  @@map("payments")
+}
+
+// ============================================
+// NOTICES / BROADCAST
+// ============================================
+
+// A single notice/announcement. Always visible in-app (once the relevant
+// portal exists); optionally also blasted out as SMS at send time.
+model Broadcast {
+  id              Int      @id @default(autoincrement())
+  schoolId        Int
+  title           String   @db.VarChar(255)
+  message         String   @db.Text
+  category        String   @db.VarChar(20) // fee, pta, event, general
+  recipientType   String   @db.VarChar(20) // all, parents, teachers, students
+  smsEnabled      Boolean  @default(false)
+  totalRecipients Int      @default(0)
+  smsSentCount    Int      @default(0)
+  createdByAdminId Int?
+  createdAt       DateTime @default(now())
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@index([schoolId])
+  @@map("broadcasts")
 }
 
 

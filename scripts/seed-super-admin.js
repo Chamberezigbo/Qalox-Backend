@@ -7,9 +7,9 @@ async function seedSuperAdmin() {
   try {
     console.log("🌱 Seeding super admin user...");
 
-    // Check if super admin already exists
+    // Check if platform super admin already exists
     const existingSuperAdmin = await prisma.admin.findFirst({
-      where: { role: "super_admin" },
+      where: { role: "platform_super_admin" },
     });
 
     if (existingSuperAdmin) {
@@ -27,7 +27,7 @@ async function seedSuperAdmin() {
         email: "super-admin@qalox.com",
         name: "Super Administrator",
         password: hashedPassword,
-        role: "super_admin",
+        role: "platform_super_admin",
         hasLoggedIn: false,
       },
     });

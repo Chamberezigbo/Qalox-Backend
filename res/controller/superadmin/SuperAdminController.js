@@ -19,10 +19,10 @@ const calculateTokenExpiration = () => {
   return date;
 };
 
-// Helper: Create JWT token for super admin
+// Helper: Create JWT token for the platform super admin (Super Admin Portal)
 const createJWT = (adminId) => {
   return jwt.sign(
-    { id: adminId, role: "super_admin" },
+    { id: adminId, role: "platform_super_admin" },
     process.env.JWT_SECRET,
     { expiresIn: "24h" }
   );
@@ -62,9 +62,9 @@ exports.login = async (req, res, next) => {
       },
     });
 
-    // Check if admin exists and is super_admin
-    if (!admin || admin.role !== "super_admin") {
-      logger.warn("[SUPER_ADMIN_LOGIN] Invalid credentials or not super_admin", { email });
+    // Check if admin exists and is platform_super_admin
+    if (!admin || admin.role !== "platform_super_admin") {
+      logger.warn("[SUPER_ADMIN_LOGIN] Invalid credentials or not platform_super_admin", { email });
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -400,7 +400,7 @@ exports.register = async (req, res, next) => {
           email,
           name,
           password: hashedPassword,
-          role: "super_admin",
+          role: "platform_super_admin",
           hasLoggedIn: false,
         },
       });

@@ -72,6 +72,121 @@ exports.createStaff = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/admin/staff/bulk-upload
+ * Create many staff from parsed CSV rows in one request.
+ * Each row is processed independently — a bad row doesn't block the rest.
+ *
+ * Body: { rows: [{ name, email, duty, gender?, phoneNumber?, address?,
+ *   nextOfKin?, dateEmployed?, payroll?, campusName? }] }
+ */
+exports.bulkCreateStaff = async (req, res, next) => {
+  try {
+    const schoolId = req.schoolId;
+    const { rows } = req.body;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "rows must be a non-empty array",
+        code: "MISSING_ROWS",
+      });
+    }
+
+    if (rows.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: "A single bulk upload is limited to 500 rows",
+        code: "TOO_MANY_ROWS",
+      });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { prefix: true },
+    });
+    if (!school) {
+      return res.status(404).json({ success: false, message: "School not found" });
+    }
+
+    // MySQL's Prisma client doesn't support `mode: "insensitive"` (Postgres-only),
+    // so pre-fetch campuses once and match case-insensitively in JS
+    const allCampuses = await prisma.campus.findMany({ where: { schoolId } });
+    const findCampusByName = (n) => allCampuses.find((c) => c.name.trim().toLowerCase() === n.trim().toLowerCase());
+
+    const results = [];
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNumber = i + 1;
+
+      try {
+        const { name, email, duty, gender, phoneNumber, address, nextOfKin, dateEmployed, payroll, campusName } = row;
+
+        if (!name || !email || !duty) {
+          results.push({ row: rowNumber, success: false, error: "Missing required field(s): name, email, duty" });
+          failureCount++;
+          continue;
+        }
+
+        const existingStaff = await prisma.staff.findUnique({ where: { email } });
+        if (existingStaff) {
+          results.push({ row: rowNumber, success: false, error: `A staff with email "${email}" already exists` });
+          failureCount++;
+          continue;
+        }
+
+        let campusId = null;
+        if (campusName) {
+          const campusRecord = findCampusByName(campusName);
+          if (!campusRecord) {
+            results.push({ row: rowNumber, success: false, error: `Campus "${campusName}" not found` });
+            failureCount++;
+            continue;
+          }
+          campusId = campusRecord.id;
+        }
+
+        const uniqueId = generateUniqueIdentifier(school.prefix, "STA");
+
+        const created = await prisma.staff.create({
+          data: {
+            schoolId,
+            campusId,
+            name,
+            email,
+            gender,
+            phoneNumber,
+            address,
+            duty,
+            nextOfKin,
+            registrationNumber: uniqueId,
+            dateEmployed: dateEmployed ? new Date(dateEmployed) : null,
+            payroll,
+          },
+          select: { id: true, name: true, email: true, registrationNumber: true },
+        });
+
+        results.push({ row: rowNumber, success: true, staff: created });
+        successCount++;
+      } catch (rowError) {
+        results.push({ row: rowNumber, success: false, error: rowError.message });
+        failureCount++;
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Bulk upload complete: ${successCount} created, ${failureCount} failed`,
+      data: { successCount, failureCount, results },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.updateStaff = async (req, res, next) => {
   try {
     const { staffId } = req.params;

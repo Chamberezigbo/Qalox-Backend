@@ -17,8 +17,38 @@ const {
 const {
   getStudentDetails, createStudent,
   updateStudent, changeStudentClass,
-  getSingleStudent,
+  getSingleStudent, bulkCreateStudents,
 } = require("../../controller/admin/StudentController");
+
+const {
+  upsertFeeStructure,
+  getFeeStructures,
+  getStudentFees,
+  getDebtSummary,
+  recordPayment,
+  getReceipt,
+  sendFeeReminders,
+} = require("../../controller/admin/FeeManagementController");
+
+const {
+  getSmsQuota,
+  createBroadcast,
+  getBroadcasts,
+} = require("../../controller/admin/NoticeController");
+
+const {
+  getCampusAnalytics,
+} = require("../../controller/admin/AnalyticsController");
+
+const {
+  getAvailablePermissions,
+  createSubAdmin,
+  getSubAdmins,
+  updateSubAdmin,
+  deleteSubAdmin,
+} = require("../../controller/admin/SubAdminController");
+
+const { PERMISSIONS } = require("../../util/permissions");
 
 const {
   createClass,
@@ -40,7 +70,7 @@ const {
   createStaff, updateStaff,
   getStaffDetails, assignTeacher,
   getAllStaff, deleteStaff,
-  reassignTeacher
+  reassignTeacher, bulkCreateStaff
 } = require("../../controller/admin/StaffController")
 
 const {
@@ -92,31 +122,60 @@ router.get("/", checkHealth);
 // My school info for any authenticated admin
 router.get("/my-school", auth.authenticateAdmin, getMySchool);
 
-// Student routes
-router.get("/students", auth.authenticateSuperAdmin, auth.attachSchoolId, getStudentDetails);
+// Student routes — sub-admins need PERMISSIONS.STUDENTS_MANAGE; head admins always pass
+router.get("/students", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, getStudentDetails);
 router.post("/student/create",
   upload.single("passport"),
   validate(studentSchema),
-  auth.authenticateSuperAdmin,
+  auth.authenticateSchoolLevelAdmin,
+  auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE),
   auth.attachSchoolId,
   createStudent
 );
 router.put("/student/:id",
   upload.single("passport"),
-  auth.authenticateSuperAdmin,
+  auth.authenticateSchoolLevelAdmin,
+  auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE),
   updateStudent
 );
 
-router.patch("/student/change-class", auth.authenticateSuperAdmin, changeStudentClass);
-router.get("/student/:id", auth.authenticateSuperAdmin, getSingleStudent);
-// Staff routes
-router.post("/staff/create", validate(staffSchema), auth.authenticateSuperAdmin, auth.attachSchoolId, createStaff);
-router.patch("/staff/:staffId", validate(editStaffSchema), auth.authenticateSuperAdmin, updateStaff);
-router.get("/staff/:staffId", auth.authenticateSuperAdmin, getStaffDetails);
-router.post('/staff/assign-teacher', validate(assignTeacherSchema), auth.authenticateSuperAdmin, assignTeacher);
-router.get("/staff", auth.authenticateSuperAdmin, auth.attachSchoolId, getAllStaff);
-router.delete("/staff/:staffId", auth.authenticateSuperAdmin, deleteStaff);
-router.patch("/staff/reassign-teacher/:assignmentId", auth.authenticateSuperAdmin, auth.attachSchoolId, reassignTeacher);
+router.patch("/student/change-class", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), changeStudentClass);
+router.get("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), getSingleStudent);
+router.post("/students/bulk-upload", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, bulkCreateStudents);
+
+// Sub-admin management routes — head admins only (super_admin/school_admin), not delegable via permissions
+router.get("/permissions", auth.authenticateSuperAdmin, getAvailablePermissions);
+router.post("/sub-admins/create", auth.authenticateSuperAdmin, auth.attachSchoolId, createSubAdmin);
+router.get("/sub-admins", auth.authenticateSuperAdmin, auth.attachSchoolId, getSubAdmins);
+router.patch("/sub-admins/:id", auth.authenticateSuperAdmin, auth.attachSchoolId, updateSubAdmin);
+router.delete("/sub-admins/:id", auth.authenticateSuperAdmin, auth.attachSchoolId, deleteSubAdmin);
+
+// Staff routes — sub-admins need PERMISSIONS.STAFF_MANAGE; head admins always pass
+router.post("/staff/create", validate(staffSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, createStaff);
+router.patch("/staff/:staffId", validate(editStaffSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), updateStaff);
+router.get("/staff/:staffId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), getStaffDetails);
+router.post('/staff/assign-teacher', validate(assignTeacherSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), assignTeacher);
+router.get("/staff", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, getAllStaff);
+router.delete("/staff/:staffId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), deleteStaff);
+router.patch("/staff/reassign-teacher/:assignmentId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, reassignTeacher);
+router.post("/staff/bulk-upload", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, bulkCreateStaff);
+
+// Fee management routes — sub-admins need PERMISSIONS.FEES_MANAGE; head admins always pass
+router.post("/fees/structure", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, upsertFeeStructure);
+router.get("/fees/structure", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getFeeStructures);
+router.get("/fees/students", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getStudentFees);
+router.get("/fees/debt-summary", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getDebtSummary);
+router.post("/fees/payments", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, recordPayment);
+router.get("/fees/receipts/:studentFeeId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getReceipt);
+router.post("/fees/reminders/send-email", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, sendFeeReminders);
+
+// Notices / SMS broadcast routes — sub-admins need PERMISSIONS.SMS_BROADCAST_SEND; head admins always pass
+router.get("/sms/quota", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, getSmsQuota);
+router.post("/broadcasts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, createBroadcast);
+router.get("/broadcasts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, getBroadcasts);
+
+// Analytics routes — sub-admins need PERMISSIONS.ANALYTICS_VIEW; head admins always pass
+router.get("/analytics/campuses", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.ANALYTICS_VIEW), auth.attachSchoolId, getCampusAnalytics);
 
 // Class routes
 router.post("/classes/create", validate(classSchema), auth.authenticateSuperAdmin, auth.attachSchoolId, createClass);

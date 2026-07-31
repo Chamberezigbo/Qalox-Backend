@@ -62,6 +62,11 @@ export class AcademicTermService {
                 where: { id: term.sessionId },
                 data: { isActive: true }
             }),
+            // Reset the SMS broadcast quota for the new term
+            prisma.school.update({
+                where: { id: schoolId },
+                data: { smsUsedThisTerm: 0 }
+            }),
         ]);
 
         const activated = await prisma.academicTerm.findUnique({

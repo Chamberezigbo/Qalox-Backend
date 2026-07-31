@@ -73,6 +73,7 @@ exports.createStudent = async (req, res, next) => {
       dateOfBirth,
       guardianName,
       guardianNumber,
+      guardianEmail,
       lifestyle,
       session,
       email,
@@ -199,6 +200,7 @@ exports.createStudent = async (req, res, next) => {
         dateOfBirth,
         guardianName,
         guardianNumber,
+        guardianEmail,
         lifestyle,
         academicSessionId: resolvedAcademicSession.id,
         // session,
@@ -224,6 +226,171 @@ exports.createStudent = async (req, res, next) => {
   }
 };
 
+
+/**
+ * POST /api/admin/students/bulk-upload
+ * Create many students from parsed CSV rows in one request.
+ * Each row is processed independently — a bad row doesn't block the rest.
+ *
+ * Body: { session?: string, rows: [{ name, surname, otherNames?, gender,
+ *   dateOfBirth, className, campusName?, groupName?, guardianName?,
+ *   guardianNumber?, lifestyle?, email? }] }
+ */
+exports.bulkCreateStudents = async (req, res, next) => {
+  try {
+    const schoolId = req.schoolId;
+    const { session, rows } = req.body;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "rows must be a non-empty array",
+        code: "MISSING_ROWS",
+      });
+    }
+
+    if (rows.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: "A single bulk upload is limited to 500 rows",
+        code: "TOO_MANY_ROWS",
+      });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { prefix: true },
+    });
+    if (!school) {
+      return res.status(404).json({ success: false, message: "School not found" });
+    }
+
+    // Resolve academic session once for the whole batch
+    const trimmedSession = typeof session === "string" ? session.trim() : "";
+    let resolvedSession;
+    if (trimmedSession) {
+      resolvedSession = await prisma.academicSession.upsert({
+        where: { schoolId_name: { schoolId, name: trimmedSession } },
+        update: {},
+        create: { schoolId, name: trimmedSession, isActive: false },
+        select: { id: true },
+      });
+    } else {
+      resolvedSession = await prisma.academicSession.findFirst({
+        where: { schoolId, isActive: true },
+        orderBy: { createdAt: "desc" },
+        select: { id: true },
+      });
+    }
+
+    if (!resolvedSession) {
+      return res.status(400).json({
+        success: false,
+        message: "No academic session provided and no active academic session found for this school",
+        code: "MISSING_SESSION",
+      });
+    }
+
+    // Pre-fetch classes/campuses once — MySQL's Prisma client doesn't support
+    // `mode: "insensitive"` (that's Postgres-only), so we match case-insensitively in JS
+    const [allClasses, allCampuses] = await Promise.all([
+      prisma.class.findMany({ where: { schoolId }, include: { classGroups: true } }),
+      prisma.campus.findMany({ where: { schoolId } }),
+    ]);
+    const findClassByName = (n) => allClasses.find((c) => c.name.trim().toLowerCase() === n.trim().toLowerCase());
+    const findCampusByName = (n) => allCampuses.find((c) => c.name.trim().toLowerCase() === n.trim().toLowerCase());
+
+    const results = [];
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNumber = i + 1;
+
+      try {
+        const { name, surname, otherNames, gender, dateOfBirth, className, campusName, groupName, guardianName, guardianNumber, guardianEmail, lifestyle, email } = row;
+
+        if (!name || !surname || !gender || !dateOfBirth || !className) {
+          results.push({ row: rowNumber, success: false, error: "Missing required field(s): name, surname, gender, dateOfBirth, className" });
+          failureCount++;
+          continue;
+        }
+
+        const classRecord = findClassByName(className);
+        if (!classRecord) {
+          results.push({ row: rowNumber, success: false, error: `Class "${className}" not found` });
+          failureCount++;
+          continue;
+        }
+
+        // Resolve optional campus by name
+        let campusId = null;
+        if (campusName) {
+          const campusRecord = findCampusByName(campusName);
+          if (!campusRecord) {
+            results.push({ row: rowNumber, success: false, error: `Campus "${campusName}" not found` });
+            failureCount++;
+            continue;
+          }
+          campusId = campusRecord.id;
+        }
+
+        // Resolve optional class group by name (must belong to the resolved class)
+        let groupId = null;
+        if (groupName) {
+          const group = classRecord.classGroups.find(
+            (g) => g.name.trim().toLowerCase() === groupName.trim().toLowerCase()
+          );
+          if (!group) {
+            results.push({ row: rowNumber, success: false, error: `Group "${groupName}" not found in class "${className}"` });
+            failureCount++;
+            continue;
+          }
+          groupId = group.id;
+        }
+
+        const uniqueId = generateUniqueIdentifier(school.prefix, "STD");
+
+        const created = await prisma.student.create({
+          data: {
+            name,
+            surname,
+            otherNames: otherNames || "",
+            gender,
+            dateOfBirth,
+            schoolId,
+            campusId,
+            classId: classRecord.id,
+            classGroupId: groupId,
+            guardianName,
+            guardianNumber,
+            guardianEmail,
+            lifestyle,
+            email,
+            academicSessionId: resolvedSession.id,
+            registrationNumber: uniqueId,
+          },
+          select: { id: true, name: true, surname: true, registrationNumber: true },
+        });
+
+        results.push({ row: rowNumber, success: true, student: created });
+        successCount++;
+      } catch (rowError) {
+        results.push({ row: rowNumber, success: false, error: rowError.message });
+        failureCount++;
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Bulk upload complete: ${successCount} created, ${failureCount} failed`,
+      data: { successCount, failureCount, results },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 exports.updateStudent = async (req, res, next) => {
   try {

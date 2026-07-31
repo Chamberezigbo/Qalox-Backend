@@ -40,6 +40,7 @@ exports.studentSchema = Joi.object({
   dateOfBirth: Joi.date().iso().required(),
   guardianName: Joi.string().max(255).optional(),
   guardianNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).optional(), // allows phone numbers
+  guardianEmail: Joi.string().email().max(255).optional(),
   lifestyle: Joi.string().max(255).optional(),
   session: Joi.string().max(50).required(),
 
@@ -104,6 +105,7 @@ exports.classSchema = Joi.object({
   campusId: Joi.number().integer().optional(), // optional since not all schools have campuses
   customName: Joi.string().max(255).optional(), // custom class name (if school uses custom naming)
   staffId: Joi.number().integer().optional(), // optional, assign class teacher at creation
+  department: Joi.string().max(100).optional(), // e.g. Sciences, Arts, Commercial, Social Sciences
 });
 
 // ✅ Validation schema for class groups

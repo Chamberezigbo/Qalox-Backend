@@ -42,19 +42,19 @@ exports.createCampus = async (req, res, next) => {
 exports.updateCampus = async (req, res, next) => {
        try {
          const { campusId } = req.params;
-         const { name, address, phoneNumber, email } = req.body;
-     
+         const { name, address, phoneNumber, email, revenueTarget } = req.body;
+
          const existing = await prisma.campus.findUnique({
            where: { id: Number(campusId) },
          });
-     
+
          if (!existing) {
            return res.status(404).json({
              success: false,
              message: "Campus not found",
            });
          }
-     
+
          const campus = await prisma.campus.update({
            where: { id: Number(campusId) },
            data: {
@@ -62,6 +62,7 @@ exports.updateCampus = async (req, res, next) => {
              ...(address && { address }),
              ...(phoneNumber && { phoneNumber }),
              ...(email && { email }),
+             ...(revenueTarget !== undefined && { revenueTarget: revenueTarget === null ? null : Number(revenueTarget) }),
            },
          });
      

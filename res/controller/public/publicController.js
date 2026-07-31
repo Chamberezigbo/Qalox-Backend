@@ -226,6 +226,56 @@ exports.suspendSchool = async (req, res, next) => {
   }
 };
 
+// PATCH /api/public/schools/:id/sms-quota
+// Set a school's per-term SMS broadcast quota (Super Admin Portal, service-to-service)
+exports.updateSchoolSmsQuota = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { quotaPerTerm } = req.body;
+    const schoolId = parseInt(id, 10);
+
+    if (isNaN(schoolId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid school ID",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    if (typeof quotaPerTerm !== "number" || quotaPerTerm < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "quotaPerTerm must be a non-negative number",
+        code: "INVALID_QUOTA",
+      });
+    }
+
+    const school = await prisma.school.update({
+      where: { id: schoolId },
+      data: { smsQuotaPerTerm: quotaPerTerm },
+      select: { id: true, name: true, smsQuotaPerTerm: true, smsUsedThisTerm: true },
+    });
+
+    logger.info(`[UPDATE_SMS_QUOTA] School SMS quota updated`, { schoolId, quotaPerTerm });
+
+    res.status(200).json({
+      success: true,
+      message: "SMS quota updated successfully",
+      data: school,
+    });
+  } catch (err) {
+    if (err.code === "P2025") {
+      return res.status(404).json({
+        success: false,
+        message: "School not found",
+        code: "SCHOOL_NOT_FOUND",
+      });
+    }
+    logger.error(`[UPDATE_SMS_QUOTA] Error updating quota`, { error: err.message, schoolId: req.params.id });
+    next(err);
+  }
+};
+
 // DELETE /api/public/schools/:id
 // Permanently delete a school with cascade deletion (service-to-service)
 exports.deleteSchool = async (req, res, next) => {

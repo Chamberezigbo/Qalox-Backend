@@ -28,7 +28,11 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
-// middleware to authenticate and authorize super admin
+// Middleware to authenticate and authorize a school's head admin.
+// NOTE: "super_admin" here is the legacy per-school owner role (unrelated to
+// the platform-wide "platform_super_admin" used by the Super Admin Portal).
+// "school_admin" is accepted with full parity so it's a fully functional
+// head-admin role going forward, not just a dormant enum value.
 const authenticateSuperAdmin = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
@@ -38,14 +42,73 @@ const authenticateSuperAdmin = (req, res, next) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    if (decoded.role !== "super_admin") {
-      return next(new AppError("Unauthorized: Only super_admins can access this route", 401));
+    if (!["super_admin", "school_admin"].includes(decoded.role)) {
+      return next(new AppError("Unauthorized: Only school head admins can access this route", 401));
     }
     req.user = decoded;
     next();
   } catch (error) {
     return next(new AppError("Unauthorized: Invalid token", 401));
   }
+};
+
+// Middleware to authenticate any school-level admin, including sub-admins.
+// Attaches full admin record (id, role, schoolId, permissions) to req.user.
+// Use with `requirePermission(key)` to gate specific routes for sub-admins;
+// head admins (super_admin/school_admin) always pass regardless of `key`.
+const authenticateSchoolLevelAdmin = async (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return next(new AppError("Unauthorized: Missing token", 401));
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (!["super_admin", "school_admin", "sub_admin"].includes(decoded.role)) {
+      return next(new AppError("Unauthorized: Only school-level admins can access this route", 401));
+    }
+
+    const admin = await prisma.admin.findUnique({
+      where: { id: decoded.id },
+      select: { id: true, role: true, schoolId: true, permissions: true, isSuspended: true },
+    });
+
+    if (!admin) {
+      return next(new AppError("Unauthorized: Admin not found", 401));
+    }
+
+    if (admin.isSuspended) {
+      return next(new AppError("Unauthorized: Account is suspended", 401));
+    }
+
+    req.user = admin;
+    next();
+  } catch (error) {
+    return next(new AppError("Unauthorized: Invalid token", 401));
+  }
+};
+
+// Middleware factory: gates a route behind a permission key for sub-admins.
+// Head admins (super_admin/school_admin) always pass. Must run after
+// authenticateSchoolLevelAdmin.
+const requirePermission = (permissionKey) => (req, res, next) => {
+  const { role, permissions } = req.user || {};
+
+  if (role === "super_admin" || role === "school_admin") {
+    return next();
+  }
+
+  if (role === "sub_admin") {
+    const { parsePermissions } = require("../util/permissions");
+    const granted = parsePermissions(permissions);
+    if (granted.includes(permissionKey)) {
+      return next();
+    }
+    return next(new AppError(`Unauthorized: Missing permission "${permissionKey}"`, 403));
+  }
+
+  return next(new AppError("Unauthorized", 403));
 };
 
 // Middleware to attach schoolId for school_admin (or super_admin with school, if ever assigned)
@@ -75,5 +138,7 @@ const attachSchoolId = async (req, res, next) => {
 module.exports = {
   authenticateAdmin,
   authenticateSuperAdmin,
+  authenticateSchoolLevelAdmin,
+  requirePermission,
   attachSchoolId
 };

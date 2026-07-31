@@ -352,6 +352,54 @@ paths:
         '404':
           description: Marketer not found
 
+  /schools/{id}/sms-quota:
+    patch:
+      tags:
+        - Super Admin - Platform Management
+      summary: Set a school's per-term SMS broadcast quota
+      description: |
+        Super Admin control over each school's Bulk SMS Broadcast allowance
+        (Phase D). Applied directly to the School record for now — once
+        schools are formally linked to a BillingPlan, this should be derived
+        from the plan's quota instead of set ad-hoc per school.
+      security:
+        - serviceKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quotaPerTerm]
+              properties:
+                quotaPerTerm: { type: integer, minimum: 0, example: 300 }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      name: { type: string }
+                      smsQuotaPerTerm: { type: integer }
+                      smsUsedThisTerm: { type: integer }
+        '400':
+          description: Invalid quotaPerTerm
+        '404':
+          description: School not found
+
   /plans:
     get:
       tags:

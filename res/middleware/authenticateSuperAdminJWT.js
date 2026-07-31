@@ -2,8 +2,14 @@ const jwt = require("jsonwebtoken");
 const logger = require("../config/logger");
 
 /**
- * Middleware to authenticate JWT token for super admin endpoints
- * Checks: Bearer token in Authorization header, valid JWT, super_admin role
+ * Middleware to authenticate JWT token for the Super Admin Portal (platform operators).
+ * Checks: Bearer token in Authorization header, valid JWT, platform_super_admin role.
+ *
+ * NOTE: "platform_super_admin" is distinct from the legacy "super_admin" role,
+ * which means "school owner" elsewhere in this codebase. They previously
+ * shared the same string, which meant any school owner could authenticate
+ * against these platform-wide endpoints — this check now requires the
+ * dedicated platform role.
  */
 const authenticateSuperAdminJWT = (req, res, next) => {
   try {
@@ -47,8 +53,8 @@ const authenticateSuperAdminJWT = (req, res, next) => {
       });
     }
 
-    // Check for super_admin role
-    if (decoded.role !== "super_admin") {
+    // Check for platform_super_admin role
+    if (decoded.role !== "platform_super_admin") {
       logger.warn("[SUPER_ADMIN_JWT_AUTH] Insufficient permissions", {
         role: decoded.role,
       });
