@@ -1,6 +1,6 @@
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
-const smartSms = require("../../services/SmartSmsService");
+const smartSms = require("../../Services/SmartSmsService");
 
 const CATEGORIES = ["fee", "pta", "event", "general"];
 const RECIPIENT_TYPES = ["all", "parents", "teachers", "students"];
