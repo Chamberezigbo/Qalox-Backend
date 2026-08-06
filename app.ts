@@ -10,11 +10,13 @@ const classRoutes = require("./res/routes/class");
 const systemAdmin = require("./res/routes/system-admin/generateToken");
 const studentRoutes = require("./res/routes/student");
 const teacherRoutes = require("./res/routes/teacher");
+const parentRoutes = require("./res/routes/parent");
 const setupRoutes = require("./res/routes/setup");
 const superAdminRoutes = require("./res/routes/superadmin/superadmin");
 const { errorMiddleware } = require("./res/middleware/error");
 const publicRoutes = require("./res/routes/public");
 const publicAPIRoutes = require("./res/routes/publicAPI");
+const webhookRoutes = require("./res/routes/webhooks");
 const { notFound } = require("./res/middleware/404");
 const studentDash = require("./res/routes/studentDashboard");
 const requestLogger = require("./res/middleware/requestLogger");
@@ -53,8 +55,12 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "x-service-key"],
 }));
 
-// Parse JSON bodies
-app.use(express.json());
+// Parse JSON bodies. `verify` stashes the raw request body bytes on req.rawBody
+// before parsing — needed by webhook handlers (e.g. Flutterwave) that must HMAC
+// the exact raw payload, which is no longer available once JSON parsing runs.
+app.use(express.json({
+  verify: (req: any, _res, buf) => { req.rawBody = buf; },
+}));
 
 // Request logging middleware - logs all incoming requests and responses
 app.use(requestLogger);
@@ -80,9 +86,11 @@ app.use("/api/class", classRoutes);
 app.use("/api/system-admin", systemAdmin);
 app.use("/api/student", studentRoutes);
 app.use("/api/teacher", teacherRoutes);
+app.use("/api/parent", parentRoutes);
 app.use("/api/setup", setupRoutes);
 app.use("/api/public", publicRoutes);
 app.use("/api/public", publicAPIRoutes);
+app.use("/api/webhooks", webhookRoutes);
 app.use("/api/dashboard", studentDash);
 app.use("/api", superAdminRoutes);
 

@@ -601,7 +601,7 @@ export class AssessmentService {
 
         const subject = await prisma.subject.findFirst({
             where: { id: subjectId, schoolId },
-            select: { id: true }
+            select: { id: true, name: true }
         });
         if (!subject) throw new Error("Subject not found or does not belong to your school");
 
@@ -674,6 +674,32 @@ export class AssessmentService {
                 }
             });
 
+            // Child Performance Alerts: notify a linked parent when their
+            // child scores below the pass mark (40, matching this codebase's
+            // own default grading scheme) on a newly-published result.
+            const LOW_GRADE_THRESHOLD = 40;
+            const lowScoringStudentIds = computed.rows
+                .filter((row) => (Object.values(row.scores)[0] as { subjectTotal: number }).subjectTotal < LOW_GRADE_THRESHOLD)
+                .map((row) => row.studentId);
+
+            if (lowScoringStudentIds.length > 0) {
+                const linkedStudents = await tx.student.findMany({
+                    where: { id: { in: lowScoringStudentIds }, parentId: { not: null } },
+                    select: { id: true, parentId: true, name: true, surname: true }
+                });
+
+                if (linkedStudents.length > 0) {
+                    await tx.parentAlert.createMany({
+                        data: linkedStudents.map((s) => ({
+                            parentId: s.parentId as number,
+                            studentId: s.id,
+                            type: "low_grade",
+                            message: `${s.name} ${s.surname} scored below the pass mark in ${subject.name}`
+                        }))
+                    });
+                }
+            }
+
             return {
                 publicationId: publication.id,
                 classId,
@@ -682,7 +708,7 @@ export class AssessmentService {
                 publishedAt: publication.publishedAt,
                 totalStudents: computed.rows.length
             };
-        });
+        }, { timeout: 20000 });
     }
 
     async unpublishResults(publishedResultId: number, schoolId: number) {

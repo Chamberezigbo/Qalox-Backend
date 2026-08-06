@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const prisma = require("../../util/prisma");
+const { logLoginEvent } = require("../../util/logLoginEvent");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -142,6 +143,8 @@ exports.loginAdmin = async (req, res, next) => {
     const responseAdmin = firstLogin
       ? { ...admin, hasLoggedIn: true }
       : admin;
+
+    await logLoginEvent({ actorType: "admin", actorId: admin.id, schoolId: admin.schoolId, req });
 
     res.status(200).json({
       message: "Admin logged in successfully",

@@ -3,6 +3,8 @@ const express = require("express");
 const { TeacherAuthController } = require("../controller/auth/TeacherAuthController");
 const { TeacherOverviewController } = require("../controller/teacher/TeacherOverviewController");
 const { TeacherController } = require("../controller/teacher/TeacherController");
+const { AttendanceController } = require("../controller/teacher/AttendanceController");
+const { TeacherAnalyticsController } = require("../controller/teacher/TeacherAnalyticsController");
 const { teacherAuthMiddleware } = require("../middleware/teacherMiddleware");
 
 
@@ -11,6 +13,8 @@ const router = express.Router();
 const teacherAuthController = new TeacherAuthController();
 const teacherOverviewController = new TeacherOverviewController();
 const teacherController = new TeacherController();
+const attendanceController = new AttendanceController();
+const teacherAnalyticsController = new TeacherAnalyticsController();
 
 router.post("/login", teacherAuthController.login);
 router.get("/overview", teacherAuthMiddleware, teacherOverviewController.getOverview);
@@ -51,6 +55,17 @@ router.get("/profile", teacherAuthMiddleware, teacherController.getTeacherDetail
 
 router.get("/ca", teacherAuthMiddleware, teacherController.getCAs);
 router.get("/exam", teacherAuthMiddleware, teacherController.getExams);
+
+// Attendance
+router.post("/attendance/mark", teacherAuthMiddleware, attendanceController.markAttendance);
+router.get("/attendance", teacherAuthMiddleware, attendanceController.getAttendance);
+router.get("/attendance/report", teacherAuthMiddleware, attendanceController.getAttendanceReport);
+
+// Performance Analytics
+router.get("/analytics/overview", teacherAuthMiddleware, teacherAnalyticsController.getOverview);
+router.get("/analytics/best-students", teacherAuthMiddleware, teacherAnalyticsController.getBestStudents);
+router.get("/analytics/weak-students", teacherAuthMiddleware, teacherAnalyticsController.getWeakStudents);
+router.get("/analytics/subject-failure-rates", teacherAuthMiddleware, teacherAnalyticsController.getSubjectFailureRates);
 
 
 module.exports = router;

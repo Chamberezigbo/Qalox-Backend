@@ -1,10 +1,11 @@
 import prisma from "../../util/prisma";
 import { signStudentToken } from "../../util/jwt";
 import { AppError } from "../../util/AppError";
+import { logLoginEvent } from "../../util/logLoginEvent";
 
 export class StudentAuthService {
 
-    async login(registrationNumber: string) {
+    async login(registrationNumber: string, req?: import("express").Request) {
         // Look up the student by their reg number
         const student = await prisma.student.findFirst({
             where: { registrationNumber },
@@ -26,6 +27,8 @@ export class StudentAuthService {
             schoolId: student.schoolId,
             role: "student"
         });
+
+        await logLoginEvent({ actorType: "student", actorId: student.id, schoolId: student.schoolId, req });
 
         return {
             token,

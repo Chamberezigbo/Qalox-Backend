@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { SchoolService } = require("../../Services/SchoolService");
 const logger = require("../../config/logger");
+const { logLoginEvent } = require("../../util/logLoginEvent");
 
 // GET /api/public/schools
 // Returns paginated schools for Super Admin Portal (no auth)
@@ -512,11 +513,26 @@ exports.loginPublic = async (req, res, next) => {
 
     logger.info(`[LOGIN_PUBLIC] ${admin.role} login successful`, { email, adminId: admin.id, role: admin.role });
 
-    // Return user info for JWT generation by calling service
+    // Issue a real session token directly (this endpoint used to just return
+    // user data on the assumption that a middleman backend would mint its own
+    // token after calling it — that middleman no longer exists, so this is
+    // now the actual source of truth for marketer/admin auth tokens).
+    // NOTE: 2FA is not yet enforced here — the 2FA subsystem (setup/verify/
+    // toggle/disable) doesn't persist any state to the database yet, so there
+    // is nothing real to branch on. See follow-up work to make 2FA real.
+    const token = jwt.sign(
+      { id: admin.id, email: admin.email, role: admin.role },
+      process.env.JWT_SECRET || "secret",
+      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+    );
+
+    await logLoginEvent({ actorType: admin.role === "marketer" ? "marketer" : "admin", actorId: admin.id, req });
+
     res.status(200).json({
       success: true,
       message: "Authentication successful",
       data: {
+        token,
         id: admin.id,
         email: admin.email,
         name: admin.name,
@@ -1003,6 +1019,13 @@ exports.getMarketerWallet = async (req, res, next) => {
       });
     }
 
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const thisMonthCredits = await prisma.walletTransaction.aggregate({
+      where: { marketerId, type: "credit", createdAt: { gte: monthStart } },
+      _sum: { amount: true },
+    });
+
     logger.info(`[GET_WALLET] Retrieved wallet for marketer`, { marketerId, balance: marketer.walletBalance });
 
     res.status(200).json({
@@ -1011,9 +1034,10 @@ exports.getMarketerWallet = async (req, res, next) => {
       data: {
         marketerId: marketer.id,
         balance: marketer.walletBalance,
-        pending: marketer.walletPending,
+        pendingBalance: marketer.walletPending,
         totalEarned: marketer.totalEarned,
         totalWithdrawn: marketer.totalWithdrawn,
+        thisMonthEarned: thisMonthCredits._sum.amount || 0,
         transactionCount: marketer.transactionCount,
         lastPayoutDate: marketer.lastPayoutDate,
         commissionRate: marketer.commissionRate,
@@ -1105,23 +1129,35 @@ exports.updateMarketerWallet = async (req, res, next) => {
       newWithdrawn += amount;
     }
 
-    // Update wallet
-    const updatedMarketer = await prisma.admin.update({
-      where: { id: marketerId },
-      data: {
-        walletBalance: newBalance,
-        totalWithdrawn: newWithdrawn,
-        lastPayoutDate: operation === 'payout' ? new Date() : marketer.lastPayoutDate,
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        walletBalance: true,
-        totalWithdrawn: true,
-        lastPayoutDate: true,
-      },
-    });
+    // Update wallet + record the transaction atomically
+    const [updatedMarketer] = await prisma.$transaction([
+      prisma.admin.update({
+        where: { id: marketerId },
+        data: {
+          walletBalance: newBalance,
+          totalWithdrawn: newWithdrawn,
+          transactionCount: { increment: 1 },
+          lastPayoutDate: operation === 'payout' ? new Date() : marketer.lastPayoutDate,
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          walletBalance: true,
+          totalWithdrawn: true,
+          lastPayoutDate: true,
+        },
+      }),
+      prisma.walletTransaction.create({
+        data: {
+          marketerId,
+          type: operation,
+          amount,
+          description: description || null,
+          balanceAfter: newBalance,
+        },
+      }),
+    ], { timeout: 20000 });
 
     logger.info(`[UPDATE_WALLET] Wallet updated successfully`, { marketerId, operation, amount, newBalance });
 
@@ -1147,17 +1183,18 @@ exports.updateMarketerWallet = async (req, res, next) => {
  */
 exports.getGlobalCommission = async (req, res, next) => {
   try {
-    // Store commission in environment or database
-    // For now, return from env or default
-    const commissionRate = parseFloat(process.env.GLOBAL_COMMISSION_RATE || '5');
-    
-    logger.debug(`[GET_COMMISSION] Global commission rate retrieved`, { commissionRate });
+    let settings = await prisma.platformSettings.findFirst();
+    if (!settings) settings = await prisma.platformSettings.create({ data: {} });
+
+    logger.debug(`[GET_COMMISSION] Global commission rates retrieved`, { settingsId: settings.id });
 
     res.status(200).json({
       success: true,
-      message: "Global commission rate retrieved",
+      message: "Global commission rates retrieved",
       data: {
-        commissionRate,
+        commissionRate: settings.commissionRate,
+        firstPaymentCommissionRate: settings.firstPaymentCommissionRate,
+        renewalCommissionRate: settings.renewalCommissionRate,
       },
     });
   } catch (err) {
@@ -1168,30 +1205,44 @@ exports.getGlobalCommission = async (req, res, next) => {
 
 /**
  * PATCH /api/public/settings/commission
- * Set global commission rate (Super Admin configures)
+ * Set global commission rate(s) — persisted on PlatformSettings, the single
+ * source of truth for platform-default marketer commission rates. An
+ * individual marketer's Admin.commissionRate, when set, overrides these.
  */
 exports.setGlobalCommission = async (req, res, next) => {
   try {
-    const { commissionRate } = req.body;
+    const { commissionRate, firstPaymentCommissionRate, renewalCommissionRate } = req.body;
 
-    if (typeof commissionRate !== 'number' || commissionRate < 0 || commissionRate > 100) {
-      logger.warn(`[SET_COMMISSION] Invalid commission rate`, { commissionRate });
-      return res.status(400).json({
-        success: false,
-        message: "Commission rate must be between 0 and 100",
-        code: "INVALID_RATE",
-      });
+    for (const [key, value] of Object.entries({ commissionRate, firstPaymentCommissionRate, renewalCommissionRate })) {
+      if (value !== undefined && (typeof value !== 'number' || value < 0 || value > 100)) {
+        logger.warn(`[SET_COMMISSION] Invalid commission rate`, { key, value });
+        return res.status(400).json({
+          success: false,
+          message: `${key} must be a number between 0 and 100`,
+          code: "INVALID_RATE",
+        });
+      }
     }
 
-    // In production, store this in database or Redis for persistence
-    // For now, log it
-    logger.info(`[SET_COMMISSION] Global commission rate updated`, { commissionRate });
+    let settings = await prisma.platformSettings.findFirst();
+    if (!settings) settings = await prisma.platformSettings.create({ data: {} });
+
+    const updateData = {};
+    if (commissionRate !== undefined) updateData.commissionRate = commissionRate;
+    if (firstPaymentCommissionRate !== undefined) updateData.firstPaymentCommissionRate = firstPaymentCommissionRate;
+    if (renewalCommissionRate !== undefined) updateData.renewalCommissionRate = renewalCommissionRate;
+
+    const updated = await prisma.platformSettings.update({ where: { id: settings.id }, data: updateData });
+
+    logger.info(`[SET_COMMISSION] Global commission rates updated`, { settingsId: updated.id });
 
     res.status(200).json({
       success: true,
-      message: "Global commission rate updated successfully",
+      message: "Global commission rates updated successfully",
       data: {
-        commissionRate,
+        commissionRate: updated.commissionRate,
+        firstPaymentCommissionRate: updated.firstPaymentCommissionRate,
+        renewalCommissionRate: updated.renewalCommissionRate,
       },
     });
   } catch (err) {
@@ -1206,7 +1257,17 @@ exports.setGlobalCommission = async (req, res, next) => {
  */
 exports.createSchoolToken = async (req, res, next) => {
   try {
+    const marketerId = req.user?.id || req.marketer?.id;
     const { schoolName, schoolEmail, pupil, class: className, subject } = req.body;
+
+    if (!marketerId) {
+      logger.warn(`[CREATE_TOKEN] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
 
     if (!schoolName || !schoolEmail) {
       logger.warn(`[CREATE_TOKEN] Missing required fields`, { schoolName, schoolEmail });
@@ -1218,18 +1279,21 @@ exports.createSchoolToken = async (req, res, next) => {
     }
 
     const code = `TKN-${Date.now()}`;
-    const uniqueKey = code;
     const issuedDate = new Date();
     const expiryDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
 
-    // Save to database
-    const token = await prisma.token.create({
+    const token = await prisma.schoolToken.create({
       data: {
-        email: schoolEmail,
-        uniqueKey,
-        status: "active",
+        marketerId,
+        code,
         schoolName,
-        createdAt: issuedDate,
+        schoolEmail,
+        pupil: pupil || null,
+        class: className || null,
+        subject: subject || null,
+        status: "active",
+        issuedDate,
+        expiryDate,
       },
     });
 
@@ -1237,23 +1301,24 @@ exports.createSchoolToken = async (req, res, next) => {
       tokenId: token.id,
       code,
       schoolName,
-      schoolEmail
+      schoolEmail,
+      marketerId,
     });
 
     res.status(201).json({
       success: true,
       message: "Token created successfully",
       data: {
-        _id: token.id.toString(),
-        code,
-        schoolName,
-        schoolEmail,
-        pupil: pupil || "",
-        class: className || "",
-        subject: subject || "",
-        issuedDate: issuedDate.toISOString(),
-        expiryDate: expiryDate.toISOString(),
-        status: "active",
+        id: token.id,
+        code: token.code,
+        schoolName: token.schoolName,
+        schoolEmail: token.schoolEmail,
+        pupil: token.pupil || "",
+        class: token.class || "",
+        subject: token.subject || "",
+        issuedDate: token.issuedDate.toISOString(),
+        expiryDate: token.expiryDate.toISOString(),
+        status: token.status,
       },
     });
   } catch (err) {
@@ -1268,18 +1333,29 @@ exports.createSchoolToken = async (req, res, next) => {
  */
 exports.getSchoolTokens = async (req, res, next) => {
   try {
+    const marketerId = req.user?.id || req.marketer?.id;
+
+    if (!marketerId) {
+      logger.warn(`[GET_TOKENS] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
     const page = parseInt(req.query.page || 1, 10);
     const limit = parseInt(req.query.limit || 20, 10);
     const skip = (Math.max(page, 1) - 1) * limit;
     const search = req.query.search || "";
     const status = req.query.status || "";
 
-    // Build WHERE clause with optional filters
-    const where = {};
+    // Build WHERE clause with optional filters, always scoped to this marketer
+    const where = { marketerId };
     if (search) {
       where.OR = [
-        { schoolName: { contains: search, mode: "insensitive" } },
-        { email: { contains: search, mode: "insensitive" } },
+        { schoolName: { contains: search } },
+        { schoolEmail: { contains: search } },
       ];
     }
     if (status) {
@@ -1287,34 +1363,29 @@ exports.getSchoolTokens = async (req, res, next) => {
     }
 
     const [tokens, total] = await Promise.all([
-      prisma.token.findMany({
+      prisma.schoolToken.findMany({
         where,
         skip,
         take: limit,
         orderBy: { createdAt: "desc" },
       }),
-      prisma.token.count({ where }),
+      prisma.schoolToken.count({ where }),
     ]);
 
-    logger.debug(`[GET_TOKENS] Fetching tokens`, { page, limit, count: tokens.length, search, status });
+    logger.debug(`[GET_TOKENS] Fetching tokens`, { marketerId, page, limit, count: tokens.length, search, status });
 
-    const formattedTokens = tokens.map(t => {
-      const issuedDate = t.createdAt ? new Date(t.createdAt) : new Date();
-      const expiryDate = new Date(issuedDate.getTime() + 365 * 24 * 60 * 60 * 1000);
-
-      return {
-        _id: t.id.toString(),
-        code: t.uniqueKey,
-        schoolName: t.schoolName,
-        schoolEmail: t.email,
-        pupil: "",
-        class: "",
-        subject: "",
-        issuedDate: issuedDate.toISOString(),
-        expiryDate: expiryDate.toISOString(),
-        status: t.status,
-      };
-    });
+    const formattedTokens = tokens.map(t => ({
+      id: t.id,
+      code: t.code,
+      schoolName: t.schoolName,
+      schoolEmail: t.schoolEmail,
+      pupil: t.pupil || "",
+      class: t.class || "",
+      subject: t.subject || "",
+      issuedDate: t.issuedDate.toISOString(),
+      expiryDate: t.expiryDate.toISOString(),
+      status: t.status,
+    }));
 
     res.status(200).json({
       success: true,
@@ -1338,19 +1409,30 @@ exports.getSchoolTokens = async (req, res, next) => {
  */
 exports.getSchoolTokenStats = async (req, res, next) => {
   try {
-    const total = await prisma.token.count();
-    const active = await prisma.token.count({ where: { status: "active" } });
+    const marketerId = req.user?.id || req.marketer?.id;
 
-    logger.debug(`[TOKEN_STATS] Token statistics retrieved`, { total, active });
+    if (!marketerId) {
+      logger.warn(`[TOKEN_STATS] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    const [total, active, used, expired, revoked] = await Promise.all([
+      prisma.schoolToken.count({ where: { marketerId } }),
+      prisma.schoolToken.count({ where: { marketerId, status: "active" } }),
+      prisma.schoolToken.count({ where: { marketerId, status: "used" } }),
+      prisma.schoolToken.count({ where: { marketerId, status: "expired" } }),
+      prisma.schoolToken.count({ where: { marketerId, status: "revoked" } }),
+    ]);
+
+    logger.debug(`[TOKEN_STATS] Token statistics retrieved`, { marketerId, total, active });
 
     res.status(200).json({
       success: true,
-      data: {
-        total,
-        active,
-        used: 0,
-        unused: total - active,
-      },
+      data: { total, active, used, expired, revoked },
     });
   } catch (err) {
     logger.error(`[TOKEN_STATS] Error fetching stats`, { error: err.message });
@@ -1501,7 +1583,7 @@ exports.getMarketerSchools = async (req, res, next) => {
     }
 
     const [schools, total] = await Promise.all([
-      prisma.school.findMany({
+      prisma.marketerSchoolLead.findMany({
         where: { marketerId },
         select: {
           id: true,
@@ -1510,13 +1592,20 @@ exports.getMarketerSchools = async (req, res, next) => {
           location: true,
           state: true,
           registrationNumber: true,
+          type: true,
+          contactPerson: true,
+          phone: true,
+          tokensIssued: true,
+          totalRevenue: true,
+          totalCommission: true,
+          status: true,
           createdAt: true,
         },
         skip: (page - 1) * limit,
         take: limit,
         orderBy: { createdAt: "desc" },
       }),
-      prisma.school.count({ where: { marketerId } }),
+      prisma.marketerSchoolLead.count({ where: { marketerId } }),
     ]);
 
     logger.debug(`[MARKETER_SCHOOLS] Schools retrieved`, { marketerId, count: schools.length });
@@ -1554,14 +1643,14 @@ exports.createMarketerSchool = async (req, res, next) => {
       });
     }
 
-    const school = await prisma.school.create({
+    const school = await prisma.marketerSchoolLead.create({
       data: {
         marketerId: parseInt(marketerId),
         name,
         email,
-        location: location || "",
-        state: state || "",
-        registrationNumber: registrationNumber || "",
+        location: location || null,
+        state: state || null,
+        registrationNumber: registrationNumber || null,
       },
       select: {
         id: true,
@@ -1570,6 +1659,13 @@ exports.createMarketerSchool = async (req, res, next) => {
         location: true,
         state: true,
         registrationNumber: true,
+        type: true,
+        contactPerson: true,
+        phone: true,
+        tokensIssued: true,
+        totalRevenue: true,
+        totalCommission: true,
+        status: true,
         createdAt: true,
       },
     });
@@ -1594,7 +1690,7 @@ exports.createMarketerSchool = async (req, res, next) => {
 exports.updateMarketerSchool = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, email, location, state, registrationNumber } = req.body;
+    const { name, email, location, state, registrationNumber, type, contactPerson, phone, status } = req.body;
 
     if (!id) {
       return res.status(400).json({
@@ -1604,7 +1700,7 @@ exports.updateMarketerSchool = async (req, res, next) => {
       });
     }
 
-    const school = await prisma.school.update({
+    const school = await prisma.marketerSchoolLead.update({
       where: { id: parseInt(id) },
       data: {
         ...(name && { name }),
@@ -1612,6 +1708,10 @@ exports.updateMarketerSchool = async (req, res, next) => {
         ...(location && { location }),
         ...(state && { state }),
         ...(registrationNumber && { registrationNumber }),
+        ...(type && { type }),
+        ...(contactPerson && { contactPerson }),
+        ...(phone && { phone }),
+        ...(status && { status }),
       },
       select: {
         id: true,
@@ -1620,6 +1720,13 @@ exports.updateMarketerSchool = async (req, res, next) => {
         location: true,
         state: true,
         registrationNumber: true,
+        type: true,
+        contactPerson: true,
+        phone: true,
+        tokensIssued: true,
+        totalRevenue: true,
+        totalCommission: true,
+        status: true,
         createdAt: true,
       },
     });
@@ -1750,7 +1857,7 @@ exports.verify2FA = async (req, res, next) => {
 
     // Get marketer details
     const marketer = await prisma.admin.findUnique({
-      where: { id: decoded.userId },
+      where: { id: decoded.id },
       select: {
         id: true,
         email: true,
@@ -1761,7 +1868,7 @@ exports.verify2FA = async (req, res, next) => {
     });
 
     if (!marketer) {
-      logger.warn(`[AUTH_2FA_VERIFY] Marketer not found`, { userId: decoded.userId });
+      logger.warn(`[AUTH_2FA_VERIFY] Marketer not found`, { userId: decoded.id });
       return res.status(404).json({
         success: false,
         message: "Marketer not found",
@@ -1769,9 +1876,11 @@ exports.verify2FA = async (req, res, next) => {
       });
     }
 
-    // Generate new JWT token
+    // Generate new JWT token — claim key standardized to `id` to match every
+    // other marketer-facing token (signup, login) and every endpoint that
+    // reads req.user?.id
     const token = jwt.sign(
-      { userId: marketer.id, email: marketer.email, role: marketer.role },
+      { id: marketer.id, email: marketer.email, role: marketer.role },
       process.env.JWT_SECRET || "your-secret-key",
       { expiresIn: "7d" }
     );
@@ -1797,111 +1906,27 @@ exports.verify2FA = async (req, res, next) => {
 };
 
 /**
- * POST /api/public/marketers/:marketerId/wallet
- * Withdraw or credit funds
- */
-exports.marketerWalletOperation = async (req, res, next) => {
-  try {
-    const { marketerId } = req.params;
-    const { amount, operation } = req.body;
-    const id = parseInt(marketerId, 10);
-
-    logger.debug(`[WALLET_OPERATION] Processing wallet operation`, { marketerId: id, operation, amount });
-
-    if (!amount || !operation) {
-      logger.warn(`[WALLET_OPERATION] Missing required fields`, { operation, amount });
-      return res.status(400).json({
-        success: false,
-        message: "amount and operation are required",
-        code: "MISSING_FIELDS",
-      });
-    }
-
-    if (operation !== "withdraw" && operation !== "credit") {
-      logger.warn(`[WALLET_OPERATION] Invalid operation`, { operation });
-      return res.status(400).json({
-        success: false,
-        message: "operation must be 'withdraw' or 'credit'",
-        code: "INVALID_OPERATION",
-      });
-    }
-
-    const marketer = await prisma.admin.findUnique({
-      where: { id },
-    });
-
-    if (!marketer) {
-      logger.warn(`[WALLET_OPERATION] Marketer not found`, { marketerId: id });
-      return res.status(404).json({
-        success: false,
-        message: "Marketer not found",
-        code: "NOT_FOUND",
-      });
-    }
-
-    if (marketer.role !== "marketer") {
-      logger.warn(`[WALLET_OPERATION] User is not a marketer`, { marketerId: id, role: marketer.role });
-      return res.status(400).json({
-        success: false,
-        message: "User is not a marketer",
-        code: "INVALID_USER_TYPE",
-      });
-    }
-
-    let newBalance = marketer.walletBalance || 0;
-    let newTotalWithdrawn = marketer.totalWithdrawn || 0;
-
-    if (operation === "withdraw") {
-      if (amount > newBalance) {
-        logger.warn(`[WALLET_OPERATION] Insufficient balance`, { marketerId: id, requested: amount, available: newBalance });
-        return res.status(400).json({
-          success: false,
-          message: "Insufficient balance",
-          code: "INSUFFICIENT_BALANCE",
-        });
-      }
-      newBalance -= amount;
-      newTotalWithdrawn += amount;
-    } else if (operation === "credit") {
-      newBalance += amount;
-    }
-
-    const updated = await prisma.admin.update({
-      where: { id },
-      data: {
-        walletBalance: newBalance,
-        ...(operation === "withdraw" && { totalWithdrawn: newTotalWithdrawn, lastPayoutDate: new Date() }),
-      },
-    });
-
-    logger.info(`[WALLET_OPERATION] Wallet ${operation} processed`, { marketerId: id, amount, newBalance });
-
-    res.status(200).json({
-      success: true,
-      message: `${operation.charAt(0).toUpperCase() + operation.slice(1)} processed`,
-      data: {
-        marketerId: id,
-        balance: updated.walletBalance,
-        totalWithdrawn: updated.totalWithdrawn,
-        lastPayoutDate: updated.lastPayoutDate,
-      },
-    });
-  } catch (err) {
-    logger.error(`[WALLET_OPERATION] Wallet operation failed`, { marketerId: req.params.marketerId, error: err.message });
-    next(err);
-  }
-};
-
-/**
  * GET /api/public/school-tokens/by-school
  * Get count of tokens issued per school
  */
 exports.getTokensBySchool = async (req, res, next) => {
   try {
-    logger.debug(`[TOKENS_BY_SCHOOL] Fetching token counts by school`);
+    const marketerId = req.user?.id || req.marketer?.id;
+
+    if (!marketerId) {
+      logger.warn(`[TOKENS_BY_SCHOOL] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    logger.debug(`[TOKENS_BY_SCHOOL] Fetching token counts by school`, { marketerId });
 
     const tokenCounts = await prisma.schoolToken.groupBy({
       by: ["schoolName"],
+      where: { marketerId },
       _count: {
         id: true,
       },
@@ -1935,10 +1960,20 @@ exports.getTokensBySchool = async (req, res, next) => {
  */
 exports.revokeSchoolToken = async (req, res, next) => {
   try {
+    const marketerId = req.user?.id || req.marketer?.id;
     const { id } = req.params;
     const tokenId = parseInt(id, 10);
 
-    logger.debug(`[REVOKE_TOKEN] Revoking token`, { tokenId });
+    logger.debug(`[REVOKE_TOKEN] Revoking token`, { tokenId, marketerId });
+
+    if (!marketerId) {
+      logger.warn(`[REVOKE_TOKEN] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
 
     if (isNaN(tokenId)) {
       logger.warn(`[REVOKE_TOKEN] Invalid token ID`, { id });
@@ -1959,6 +1994,15 @@ exports.revokeSchoolToken = async (req, res, next) => {
         success: false,
         message: "Token not found",
         code: "NOT_FOUND",
+      });
+    }
+
+    if (token.marketerId !== marketerId) {
+      logger.warn(`[REVOKE_TOKEN] Forbidden - token belongs to another marketer`, { tokenId, marketerId, ownerId: token.marketerId });
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to revoke this token",
+        code: "FORBIDDEN",
       });
     }
 
@@ -2609,8 +2653,10 @@ exports.getTransactions = async (req, res, next) => {
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 20));
     // Extract marketerId from JWT token, not query params
     const marketerId = req.user?.id || req.marketer?.id;
+    const type = req.query.type || "";
+    const search = req.query.search || "";
 
-    logger.debug(`[GET_TRANSACTIONS] Fetching transactions`, { page, limit, marketerId });
+    logger.debug(`[GET_TRANSACTIONS] Fetching transactions`, { page, limit, marketerId, type, search });
 
     if (!marketerId) {
       logger.warn(`[GET_TRANSACTIONS] Unauthorized - no marketerId in token`);
@@ -2621,17 +2667,30 @@ exports.getTransactions = async (req, res, next) => {
       });
     }
 
-    // TODO: Implement Transaction model and query
-    logger.info(`[GET_TRANSACTIONS] Transactions retrieved`, { marketerId });
+    const where = { marketerId };
+    if (type) where.type = type;
+    if (search) where.description = { contains: search };
+
+    const [transactions, total] = await Promise.all([
+      prisma.walletTransaction.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.walletTransaction.count({ where }),
+    ]);
+
+    logger.info(`[GET_TRANSACTIONS] Transactions retrieved`, { marketerId, count: transactions.length });
 
     res.status(200).json({
       success: true,
       data: {
-        transactions: [],
-        total: 0,
+        transactions,
+        total,
         page,
         limit,
-        pages: 0,
+        pages: Math.ceil(total / limit),
       },
     });
   } catch (err) {
@@ -2660,15 +2719,24 @@ exports.getTransactionStats = async (req, res, next) => {
       });
     }
 
-    // TODO: Implement Transaction model and aggregation
-    logger.info(`[TRANSACTION_STATS] Transaction stats retrieved`, { marketerId });
+    const [aggregates, transactionCount] = await Promise.all([
+      prisma.walletTransaction.aggregate({
+        where: { marketerId },
+        _sum: { amount: true },
+      }),
+      prisma.walletTransaction.count({ where: { marketerId } }),
+    ]);
+
+    const totalAmount = aggregates._sum.amount || 0;
+
+    logger.info(`[TRANSACTION_STATS] Transaction stats retrieved`, { marketerId, transactionCount });
 
     res.status(200).json({
       success: true,
       data: {
-        totalAmount: 0,
-        transactionCount: 0,
-        averageTransaction: 0,
+        totalAmount,
+        transactionCount,
+        averageTransaction: transactionCount > 0 ? totalAmount / transactionCount : 0,
       },
     });
   } catch (err) {
@@ -2957,7 +3025,7 @@ exports.getMonthlyCommissionChart = async (req, res, next) => {
 
       data.push({
         month: date.toLocaleString("en-US", { month: "short" }),
-        amount: monthData._sum.amount || 0,
+        commission: monthData._sum.amount || 0,
       });
     }
 
@@ -2993,18 +3061,25 @@ exports.getMarketerSchoolsStats = async (req, res, next) => {
       });
     }
 
-    // TODO: Implement school statistics query
-    // For now, return mock data
-    logger.info(`[MARKETER_SCHOOLS_STATS] School statistics retrieved`, { marketerId });
+    const [totalSchools, activeSchools, aggregates] = await Promise.all([
+      prisma.marketerSchoolLead.count({ where: { marketerId } }),
+      prisma.marketerSchoolLead.count({ where: { marketerId, status: "active" } }),
+      prisma.marketerSchoolLead.aggregate({
+        where: { marketerId },
+        _sum: { tokensIssued: true, totalRevenue: true },
+      }),
+    ]);
+
+    logger.info(`[MARKETER_SCHOOLS_STATS] School statistics retrieved`, { marketerId, totalSchools });
 
     res.status(200).json({
       success: true,
       data: {
-        totalSchools: 5,
-        activeSchools: 4,
-        suspendedSchools: 1,
-        totalTokensIssued: 150,
-        totalRevenue: 500000,
+        totalSchools,
+        activeSchools,
+        suspendedSchools: totalSchools - activeSchools,
+        totalTokensIssued: aggregates._sum.tokensIssued || 0,
+        totalRevenue: aggregates._sum.totalRevenue || 0,
       },
     });
   } catch (err) {

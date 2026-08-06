@@ -13,7 +13,7 @@ export class StudentAuthController {
                 throw new Error("registrationNumber is required");
             }
 
-            const result = await this.studentAuthService.login(registrationNumber);
+            const result = await this.studentAuthService.login(registrationNumber, req);
 
             res.status(200).json({
                 success: true,

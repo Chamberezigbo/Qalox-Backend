@@ -579,16 +579,6 @@ router.post(
 );
 
 /**
- * POST /api/public/marketers/:marketerId/wallet
- * Withdraw or credit funds (withdraw operation)
- */
-router.post(
-  "/marketers/:marketerId/wallet",
-  serviceAuth,
-  publicController.marketerWalletOperation
-);
-
-/**
  * GET /api/public/school-tokens/by-school
  * Get count of tokens issued per school
  */

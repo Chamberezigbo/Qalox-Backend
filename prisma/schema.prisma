@@ -68,6 +68,12 @@ model Admin {
   publishedResults PublishedResult[]
   commissions      Commission[]
   notifications    Notification[]
+  marketerSchoolLeads MarketerSchoolLead[]
+  walletTransactions  WalletTransaction[]
+  schoolTokens        SchoolToken[]
+  platformCommunications  PlatformCommunication[]
+  systemNotifications     SystemNotification[]
+  systemNotificationReads SystemNotificationRead[]
 
   @@map("admins")
 }
@@ -102,21 +108,31 @@ model School {
   smsQuotaPerTerm Int @default(300)
   smsUsedThisTerm Int @default(0)
 
-  campuses        Campus[]
-  admins          Admin[]
-  Class           Class[]
-  Staff           Staff[]
-  Student         Student[]
-  Subject         Subject[]
-  GradingScheme   GradingScheme[]
-  RemarkScheme    RemarkScheme?
-  AcademicSession AcademicSession[]
-  AcademicTerm    AcademicTerm[]
-  CATemplate      CATemplate[]
-  feeStructures   FeeStructure[]
-  studentFees     StudentFee[]
-  broadcasts      Broadcast[]
+  // Current active billing plan (denormalized convenience alongside
+  // SchoolSubscription, which holds the full billing-cycle history).
+  billingPlanId Int?
+  billingPlan   BillingPlan? @relation(fields: [billingPlanId], references: [id])
 
+  campuses            Campus[]
+  admins              Admin[]
+  Class               Class[]
+  Staff               Staff[]
+  Student             Student[]
+  Subject             Subject[]
+  GradingScheme       GradingScheme[]
+  RemarkScheme        RemarkScheme?
+  AcademicSession     AcademicSession[]
+  AcademicTerm        AcademicTerm[]
+  CATemplate          CATemplate[]
+  feeStructures       FeeStructure[]
+  studentFees         StudentFee[]
+  broadcasts          Broadcast[]
+  subscriptions       SchoolSubscription[]
+  payments            SchoolPayment[]
+  marketerLead        MarketerSchoolLead?
+  loginEvents         LoginEvent[]
+
+  @@index([billingPlanId])
   @@map("schools")
 }
 
@@ -182,6 +198,7 @@ model Class {
   publishedResults PublishedResult[]
   resultSubmissions ResultSubmission[]
   feeStructures FeeStructure[]
+  attendance    Attendance[]
 
   // Optionally, add a unique constraint for name, school, and campus
   @@unique([name, schoolId, campusId])
@@ -219,6 +236,7 @@ model Staff {
   classes     Class[] // if staff is a teacher, they can have classes
   assignments TeacherAssignment[] // All class+subject+campus teaching assignments
   resultSubmissions ResultSubmission[]
+  markedAttendance Attendance[]
 
   @@unique([schoolId, registrationNumber])
   @@map("staffs")
@@ -242,6 +260,7 @@ model Student {
   academicSessionId Int
   email             String?
   classGroupId      Int? // ✅ optional since not all students must have a group
+  parentId          Int? // linked once a parent account claims this child via /api/parent/link-child
 
   academicSession    AcademicSession @relation(fields: [academicSessionId], references: [id])
   classGroup         ClassGroup?     @relation(fields: [classGroupId], references: [id])
@@ -253,14 +272,50 @@ model Student {
   school     School       @relation(fields: [schoolId], references: [id])
   campus     Campus?      @relation(fields: [campusId], references: [id])
   class      Class        @relation(fields: [classId], references: [id])
+  parent     Parent?      @relation(fields: [parentId], references: [id])
   CAResult   CAResult[]
   ExamResult ExamResult[]
   publishedResultRows PublishedResultRow[]
   studentFees StudentFee[]
+  attendance  Attendance[]
+  parentAlerts ParentAlert[]
 
   // ✅ NEW: Unique constraint for registration number per school
   @@unique([schoolId, registrationNumber])
+  @@index([parentId])
   @@map("students")
+}
+
+model Parent {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique @db.VarChar(255)
+  password  String
+  phone     String?  @db.VarChar(50)
+  name      String   @db.VarChar(255)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  children Student[]
+  alerts   ParentAlert[]
+
+  @@map("parents")
+}
+
+model ParentAlert {
+  id        Int      @id @default(autoincrement())
+  parentId  Int
+  studentId Int
+  type      String   @db.VarChar(20) // absence, low_grade, fee_reminder, general
+  message   String   @db.Text
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  parent  Parent  @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([parentId])
+  @@index([studentId])
+  @@map("parent_alerts")
 }
 
 model Subject {
@@ -298,6 +353,25 @@ model TeacherAssignment {
 
   @@index([staffId, classId, subjectId, campusId], name: "TeacherAssignment_unique") // Unique index
   @@map("teacher_assignments")
+}
+
+model Attendance {
+  id             Int      @id @default(autoincrement())
+  studentId      Int
+  classId        Int
+  date           DateTime @db.Date
+  status         String   @db.VarChar(10) // present, absent, late
+  markedByStaffId Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  student      Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  class        Class   @relation(fields: [classId], references: [id])
+  markedByStaff Staff  @relation(fields: [markedByStaffId], references: [id])
+
+  @@unique([studentId, date])
+  @@index([classId, date])
+  @@map("attendance")
 }
 
 // School-level default CA structure
@@ -578,6 +652,7 @@ model AcademicTerm {
 // Used by Marketer Portal to generate access codes for schools
 model SchoolToken {
   id          Int      @id @default(autoincrement())
+  marketerId  Int
   code        String   @unique @db.VarChar(50) // e.g., "TKN-1721472000000"
   schoolName  String   @db.VarChar(255)
   schoolEmail String   @db.VarChar(255)
@@ -590,6 +665,9 @@ model SchoolToken {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+
+  @@index([marketerId])
   @@index([status])
   @@index([schoolName])
   @@index([expiryDate])
@@ -645,7 +723,9 @@ model Notification {
 // Platform-wide Settings
 model PlatformSettings {
   id                    Int      @id @default(autoincrement())
-  commissionRate        Float    @default(5.0) // Default 5%
+  commissionRate        Float    @default(5.0) // Default 5% (legacy — see firstPaymentCommissionRate/renewalCommissionRate)
+  firstPaymentCommissionRate Float @default(40.0) // % a marketer earns on a school's first payment
+  renewalCommissionRate      Float @default(5.0)  // % a marketer earns on every subsequent renewal
   platformName          String   @default("Qalox") @db.VarChar(255)
   supportEmail          String   @default("support@qalox.com") @db.VarChar(255)
   maxTokensPerSchool    Int      @default(10)
@@ -668,9 +748,55 @@ model BillingPlan {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  schools       School[]
+  subscriptions SchoolSubscription[]
+
   @@index([isActive])
   @@index([name])
   @@map("billing_plans")
+}
+
+model SchoolSubscription {
+  id               Int       @id @default(autoincrement())
+  schoolId         Int
+  billingPlanId    Int
+  billingCycle     String    @db.VarChar(20) // monthly, annual
+  status           String    @default("active") @db.VarChar(20) // active, cancelled, past_due
+  startedAt        DateTime  @default(now())
+  nextBillingDate  DateTime?
+  flwCustomerId       String? @db.VarChar(100) // Flutterwave customer id (cus_...), reused across renewals
+  flwPaymentMethodId  String? @db.VarChar(100) // Flutterwave payment_method id (pmd_...), reused across renewals
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  school      School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  billingPlan BillingPlan   @relation(fields: [billingPlanId], references: [id])
+  payments    SchoolPayment[]
+
+  @@index([schoolId])
+  @@index([billingPlanId])
+  @@index([status])
+  @@map("school_subscriptions")
+}
+
+model SchoolPayment {
+  id             Int       @id @default(autoincrement())
+  schoolId       Int
+  subscriptionId Int?
+  amount         Float
+  flwReference   String    @unique @db.VarChar(100) // our reference, sent as `reference` to Flutterwave
+  flwChargeId    String?   @db.VarChar(100) // Flutterwave's charge id (chg_...), for reconciliation
+  status         String    @default("pending") @db.VarChar(20) // pending, success, failed
+  isFirstPayment Boolean   @default(false)
+  paidAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  school       School              @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  subscription SchoolSubscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([schoolId])
+  @@index([subscriptionId])
+  @@map("school_payments")
 }
 
 // ============================================
@@ -778,6 +904,145 @@ model Broadcast {
 
   @@index([schoolId])
   @@map("broadcasts")
+}
+
+// ============================================
+// MARKETER SCHOOL LEADS
+// ============================================
+
+// A school a marketer is tracking/onboarding — NOT the same as the real
+// School tenant table (which has campuses, classes, prefix, etc). A marketer
+// manages a list of these as their own CRM; a lead becoming a real, live
+// School tenant happens separately via the Token-based onboarding flow.
+model MarketerSchoolLead {
+  id                 Int      @id @default(autoincrement())
+  marketerId         Int
+  schoolId           Int?     @unique // set once this lead converts into a real, paying School
+  name               String   @db.VarChar(255)
+  email              String   @db.VarChar(255)
+  location           String?  @db.VarChar(255)
+  state              String?  @db.VarChar(100)
+  registrationNumber String?  @db.VarChar(100)
+  type               String?  @db.VarChar(20) // Private, Public
+  contactPerson      String?  @db.VarChar(255)
+  phone              String?  @db.VarChar(50)
+  tokensIssued       Int      @default(0)
+  totalRevenue       Float    @default(0.0)
+  totalCommission    Float    @default(0.0)
+  status             String   @default("active") @db.VarChar(20) // active, inactive
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  marketer Admin   @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+  school   School? @relation(fields: [schoolId], references: [id])
+
+  @@index([marketerId])
+  @@map("marketer_school_leads")
+}
+
+// ============================================
+// MARKETER WALLET TRANSACTIONS
+// ============================================
+
+// One row per wallet operation (credit/debit/payout), created by
+// updateMarketerWallet. balanceAfter is a snapshot at the time of the
+// transaction, used to render the wallet's balance-history chart without a
+// separate query.
+model WalletTransaction {
+  id            Int      @id @default(autoincrement())
+  marketerId    Int
+  type          String   @db.VarChar(20) // credit, debit, payout
+  amount        Float
+  description   String?  @db.VarChar(255)
+  balanceAfter  Float
+  createdAt     DateTime @default(now())
+
+  marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+
+  @@index([marketerId])
+  @@map("wallet_transactions")
+}
+
+// ============================================
+// SUPER ADMIN: COMMUNICATIONS / NOTIFICATIONS / ANALYTICS
+// ============================================
+
+// A platform-wide message to school admins. recipientCount/status are
+// computed at creation time from real School/Admin data; actual dispatch
+// (email/SMS provider) is not yet wired up, so status reflects that rather
+// than claiming a send that didn't happen.
+model PlatformCommunication {
+  id              Int      @id @default(autoincrement())
+  type            String   @db.VarChar(10) // email, sms
+  subject         String?  @db.VarChar(255)
+  message         String   @db.Text
+  recipientTarget String   @db.VarChar(50) // all_schools, specific_schools
+  targetSchoolIds String?  @db.Text // JSON array of School ids, when recipientTarget = specific_schools
+  recipientCount  Int      @default(0)
+  status          String   @default("pending") @db.VarChar(20) // pending, sent, failed, partial
+  createdByAdminId Int
+  sentAt          DateTime?
+  createdAt       DateTime @default(now())
+
+  createdByAdmin Admin @relation(fields: [createdByAdminId], references: [id])
+
+  @@index([createdByAdminId])
+  @@map("platform_communications")
+}
+
+// A platform-wide in-app notification to school admins. One row fans out to
+// many recipients; SystemNotificationRead tracks per-admin read state.
+model SystemNotification {
+  id              Int       @id @default(autoincrement())
+  type            String    @db.VarChar(20) // maintenance, announcement, token_expiry, security, update
+  title           String    @db.VarChar(255)
+  message         String    @db.Text
+  recipientTarget String    @db.VarChar(50) // all_schools, specific_schools
+  targetSchoolIds String?   @db.Text // JSON array of School ids, when recipientTarget = specific_schools
+  recipientCount  Int       @default(0)
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+  createdByAdminId Int
+  createdAt       DateTime  @default(now())
+
+  createdByAdmin Admin @relation(fields: [createdByAdminId], references: [id])
+  reads          SystemNotificationRead[]
+
+  @@index([createdByAdminId])
+  @@map("system_notifications")
+}
+
+model SystemNotificationRead {
+  id             Int      @id @default(autoincrement())
+  notificationId Int
+  adminId        Int
+  readAt         DateTime @default(now())
+
+  notification SystemNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  admin        Admin               @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, adminId])
+  @@map("system_notification_reads")
+}
+
+// One row per successful login, across all actor types. Written going
+// forward only — there is no historical login data to backfill, so
+// analytics built on this will only reflect activity from the day it ships.
+model LoginEvent {
+  id        Int      @id @default(autoincrement())
+  actorType String   @db.VarChar(20) // admin, marketer, teacher, student, parent
+  actorId   Int
+  schoolId  Int?
+  ip        String?  @db.VarChar(64)
+  userAgent String?  @db.VarChar(255)
+  createdAt DateTime @default(now())
+
+  school School? @relation(fields: [schoolId], references: [id])
+
+  @@index([actorType, actorId])
+  @@index([schoolId])
+  @@index([createdAt])
+  @@map("login_events")
 }
 
 

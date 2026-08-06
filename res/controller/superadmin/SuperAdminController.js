@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const logger = require("../../config/logger");
 const crypto = require("crypto");
+const { logLoginEvent } = require("../../util/logLoginEvent");
 
 // Helper: Generate TKN-XXXXXX registration token
 // (matches the format already used by res/controller/system-admin/generateToken.js
@@ -93,6 +94,8 @@ exports.login = async (req, res, next) => {
 
     // Create JWT token
     const token = createJWT(admin.id);
+
+    await logLoginEvent({ actorType: "admin", actorId: admin.id, req });
 
     logger.info("[SUPER_ADMIN_LOGIN] Login successful", { adminId: admin.id, email });
 
@@ -728,6 +731,8 @@ exports.getSettings = async (req, res, next) => {
       data: {
         id: settings.id,
         commissionRate: settings.commissionRate,
+        firstPaymentCommissionRate: settings.firstPaymentCommissionRate,
+        renewalCommissionRate: settings.renewalCommissionRate,
         platformName: settings.platformName,
         supportEmail: settings.supportEmail,
         maxTokensPerSchool: settings.maxTokensPerSchool,
@@ -748,7 +753,7 @@ exports.getSettings = async (req, res, next) => {
 exports.updateSettings = async (req, res, next) => {
   try {
     const adminId = req.admin?.id;
-    const { commissionRate, platformName, supportEmail, maxTokensPerSchool, tokenExpirationDays } = req.body;
+    const { commissionRate, firstPaymentCommissionRate, renewalCommissionRate, platformName, supportEmail, maxTokensPerSchool, tokenExpirationDays } = req.body;
 
     logger.debug("[SUPER_ADMIN_UPDATE_SETTINGS] Updating platform settings", { adminId });
 
@@ -774,6 +779,8 @@ exports.updateSettings = async (req, res, next) => {
     // Build update data
     const updateData = {};
     if (commissionRate !== undefined) updateData.commissionRate = commissionRate;
+    if (firstPaymentCommissionRate !== undefined) updateData.firstPaymentCommissionRate = firstPaymentCommissionRate;
+    if (renewalCommissionRate !== undefined) updateData.renewalCommissionRate = renewalCommissionRate;
     if (platformName !== undefined) updateData.platformName = platformName;
     if (supportEmail !== undefined) updateData.supportEmail = supportEmail;
     if (maxTokensPerSchool !== undefined) updateData.maxTokensPerSchool = maxTokensPerSchool;
@@ -793,6 +800,8 @@ exports.updateSettings = async (req, res, next) => {
       data: {
         id: updatedSettings.id,
         commissionRate: updatedSettings.commissionRate,
+        firstPaymentCommissionRate: updatedSettings.firstPaymentCommissionRate,
+        renewalCommissionRate: updatedSettings.renewalCommissionRate,
         platformName: updatedSettings.platformName,
         supportEmail: updatedSettings.supportEmail,
         maxTokensPerSchool: updatedSettings.maxTokensPerSchool,

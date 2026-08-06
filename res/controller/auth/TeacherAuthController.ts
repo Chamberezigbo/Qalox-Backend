@@ -12,7 +12,7 @@ export class TeacherAuthController {
                 throw new Error("registrationNumber is required");
             }
 
-            const result = await this.teacherAuthService.login({ registrationNumber });
+            const result = await this.teacherAuthService.login({ registrationNumber }, req);
 
             res.status(200).json({
                 success: true,

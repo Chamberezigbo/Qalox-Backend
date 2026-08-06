@@ -109,6 +109,22 @@ const updateSettingsSchema = Joi.object({
       "number.min": "Commission rate must be between 0 and 100",
       "number.max": "Commission rate must be between 0 and 100",
     }),
+  firstPaymentCommissionRate: Joi.number()
+    .min(0)
+    .max(100)
+    .optional()
+    .messages({
+      "number.min": "First-payment commission rate must be between 0 and 100",
+      "number.max": "First-payment commission rate must be between 0 and 100",
+    }),
+  renewalCommissionRate: Joi.number()
+    .min(0)
+    .max(100)
+    .optional()
+    .messages({
+      "number.min": "Renewal commission rate must be between 0 and 100",
+      "number.max": "Renewal commission rate must be between 0 and 100",
+    }),
   platformName: Joi.string()
     .max(255)
     .optional()

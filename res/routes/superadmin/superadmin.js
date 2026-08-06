@@ -16,6 +16,22 @@ const {
   resetSchoolAdminPassword,
   getMarketerStats,
 } = require("../../controller/superadmin/SuperAdminController");
+const {
+  initializePayment,
+  getBillingStats,
+  getSubscriptions,
+  updateSubscription,
+  createBillingPlan,
+  updateBillingPlan,
+} = require("../../controller/superadmin/BillingController");
+const { getCommunications, sendCommunication } = require("../../controller/superadmin/CommunicationsController");
+const { getSystemNotifications, sendSystemNotification } = require("../../controller/superadmin/NotificationsController");
+const {
+  getAnalyticsStats,
+  getSchoolActivities,
+  getLoginRecords,
+  getFeatureUsage,
+} = require("../../controller/superadmin/AnalyticsController");
 const authenticateSuperAdminJWT = require("../../middleware/authenticateSuperAdminJWT");
 const validate = require("../../middleware/validator");
 const {
@@ -97,5 +113,38 @@ router.post("/admins/:id/reset", authenticateSuperAdminJWT, resetSchoolAdminPass
 
 // Get platform-wide marketer statistics - Requires super_admin JWT
 router.get("/marketers/stats", authenticateSuperAdminJWT, getMarketerStats);
+
+// ============================================
+// BILLING (Flutterwave)
+// ============================================
+
+// Initialize a school's subscription payment (bank transfer) - Requires super_admin JWT
+router.post("/billing/initialize-payment", authenticateSuperAdminJWT, initializePayment);
+
+router.get("/billing/stats", authenticateSuperAdminJWT, getBillingStats);
+router.get("/billing/subscriptions", authenticateSuperAdminJWT, getSubscriptions);
+router.patch("/billing/subscriptions/:id", authenticateSuperAdminJWT, updateSubscription);
+router.post("/billing/plans", authenticateSuperAdminJWT, createBillingPlan);
+router.patch("/billing/plans/:id", authenticateSuperAdminJWT, updateBillingPlan);
+
+// ============================================
+// COMMUNICATIONS
+// ============================================
+router.get("/communications", authenticateSuperAdminJWT, getCommunications);
+router.post("/communications", authenticateSuperAdminJWT, sendCommunication);
+
+// ============================================
+// SYSTEM NOTIFICATIONS
+// ============================================
+router.get("/notifications", authenticateSuperAdminJWT, getSystemNotifications);
+router.post("/notifications", authenticateSuperAdminJWT, sendSystemNotification);
+
+// ============================================
+// ANALYTICS
+// ============================================
+router.get("/analytics/stats", authenticateSuperAdminJWT, getAnalyticsStats);
+router.get("/analytics/schools", authenticateSuperAdminJWT, getSchoolActivities);
+router.get("/analytics/logins", authenticateSuperAdminJWT, getLoginRecords);
+router.get("/analytics/features", authenticateSuperAdminJWT, getFeatureUsage);
 
 module.exports = router;
