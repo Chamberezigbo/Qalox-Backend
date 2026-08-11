@@ -320,6 +320,26 @@ router.post(
 );
 
 /**
+ * POST /api/public/auth/forgot-password
+ * Sends a password reset link by email if the address has an account.
+ */
+router.post(
+  "/auth/forgot-password",
+  serviceAuth,
+  publicController.forgotPassword
+);
+
+/**
+ * POST /api/public/auth/reset-password
+ * Consumes the token from the forgot-password email to set a new password.
+ */
+router.post(
+  "/auth/reset-password",
+  serviceAuth,
+  publicController.resetPassword
+);
+
+/**
  * ============================================
  * MARKETER ENDPOINTS
  * ============================================

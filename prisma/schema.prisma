@@ -39,6 +39,10 @@ model Admin {
   isSuspended     Boolean  @default(false)
   suspendedAt     DateTime?
 
+  // Password reset (stores a SHA-256 hash of the raw token sent by email, never the raw token itself)
+  resetPasswordToken   String?   @db.VarChar(255)
+  resetPasswordExpires DateTime?
+
   // Marketer Commission & Wallet Fields (only for role=marketer)
   commissionRate      Float?   @default(0.0)  // Commission percentage (e.g., 5.0 = 5%)
   commissionStructure String?  @db.VarChar(50) // 'flat', 'tiered', 'performance'

@@ -1,9 +1,11 @@
 const prisma = require("../../util/prisma");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const { SchoolService } = require("../../Services/SchoolService");
 const logger = require("../../config/logger");
 const { logLoginEvent } = require("../../util/logLoginEvent");
+const emailService = require("../../Services/EmailService");
 
 // GET /api/public/schools
 // Returns paginated schools for Super Admin Portal (no auth)
@@ -544,6 +546,117 @@ exports.loginPublic = async (req, res, next) => {
     });
   } catch (err) {
     logger.error(`[LOGIN_PUBLIC] Error during login`, { error: err.message, email: req.body?.email });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/public/auth/forgot-password
+ * Body: { email }
+ * Always responds with the same generic message regardless of whether the
+ * email exists — this avoids leaking which emails have accounts. The raw
+ * reset token is only ever sent by email, never returned in the response;
+ * only its SHA-256 hash is persisted, so a database leak alone can't be
+ * used to reset an account.
+ */
+exports.forgotPassword = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required", code: "MISSING_EMAIL" });
+    }
+
+    const genericResponse = {
+      success: true,
+      message: "If an account exists for that email, a password reset link has been sent.",
+    };
+
+    const admin = await prisma.admin.findUnique({ where: { email } });
+    if (!admin) {
+      logger.debug(`[FORGOT_PASSWORD] No account for email`, { email });
+      return res.status(200).json(genericResponse);
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await prisma.admin.update({
+      where: { id: admin.id },
+      data: { resetPasswordToken: hashedToken, resetPasswordExpires },
+    });
+
+    const portalUrl = admin.role === "marketer"
+      ? (process.env.MARKETER_PORTAL_URL || "http://localhost:9990")
+      : (process.env.SUPER_ADMIN_PORTAL_URL || "http://localhost:9991");
+    const resetLink = `${portalUrl}/reset-password?token=${rawToken}`;
+
+    try {
+      await emailService.sendEmail({
+        to: admin.email,
+        subject: "Reset your Qalox password",
+        html: `<p>Hi ${admin.name},</p><p>We received a request to reset your password. This link expires in 1 hour:</p><p><a href="${resetLink}">${resetLink}</a></p><p>If you didn't request this, you can safely ignore this email.</p>`,
+      });
+      logger.info(`[FORGOT_PASSWORD] Reset email sent`, { email, adminId: admin.id });
+    } catch (emailErr) {
+      logger.error(`[FORGOT_PASSWORD] Failed to send reset email`, { email, error: emailErr.message });
+    }
+
+    res.status(200).json(genericResponse);
+  } catch (err) {
+    logger.error(`[FORGOT_PASSWORD] Error`, { error: err.message, email: req.body?.email });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/public/auth/reset-password
+ * Body: { token, newPassword }
+ */
+exports.resetPassword = async (req, res, next) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Token and newPassword are required",
+        code: "MISSING_FIELDS",
+      });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must be at least 8 characters",
+        code: "WEAK_PASSWORD",
+      });
+    }
+
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+    const admin = await prisma.admin.findFirst({
+      where: { resetPasswordToken: hashedToken, resetPasswordExpires: { gt: new Date() } },
+    });
+
+    if (!admin) {
+      logger.warn(`[RESET_PASSWORD] Invalid or expired token`);
+      return res.status(400).json({
+        success: false,
+        message: "This reset link is invalid or has expired",
+        code: "INVALID_OR_EXPIRED_TOKEN",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    await prisma.admin.update({
+      where: { id: admin.id },
+      data: { password: hashedPassword, resetPasswordToken: null, resetPasswordExpires: null },
+    });
+
+    logger.info(`[RESET_PASSWORD] Password reset successfully`, { adminId: admin.id });
+    res.status(200).json({ success: true, message: "Password reset successfully" });
+  } catch (err) {
+    logger.error(`[RESET_PASSWORD] Error`, { error: err.message });
     next(err);
   }
 };

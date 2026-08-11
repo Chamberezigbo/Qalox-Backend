@@ -54,4 +54,21 @@ const sendBulkEmail = async ({ recipients, subject, html }) => {
   return { sent, failed: errors.length, errors };
 };
 
-module.exports = { sendBulkEmail };
+/**
+ * Send a single email.
+ * @param {{to: string, subject: string, html: string}} params
+ */
+const sendEmail = async ({ to, subject, html }) => {
+  const resend = getClient();
+  const { data, error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html });
+
+  if (error) {
+    logger.warn("[EMAIL] Send failed", { to, error: error.message });
+    throw new Error(error.message || "Failed to send email");
+  }
+
+  logger.info("[EMAIL] Sent", { to, id: data?.id });
+  return data;
+};
+
+module.exports = { sendBulkEmail, sendEmail };
