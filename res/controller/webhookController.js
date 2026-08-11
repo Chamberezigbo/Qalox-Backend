@@ -134,6 +134,7 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
         prisma.commission.create({
           data: {
             marketerId: marketer.id,
+            schoolId: payment.schoolId,
             amount: commissionAmount,
             rate: commissionRate,
             status: "paid",

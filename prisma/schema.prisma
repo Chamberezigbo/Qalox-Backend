@@ -135,6 +135,7 @@ model School {
   payments            SchoolPayment[]
   marketerLead        MarketerSchoolLead?
   loginEvents         LoginEvent[]
+  commissions         Commission[]
 
   @@index([billingPlanId])
   @@map("schools")
@@ -683,6 +684,7 @@ model SchoolToken {
 model Commission {
   id          Int      @id @default(autoincrement())
   marketerId  Int      // Admin with role=marketer
+  schoolId    Int?     // The school whose payment generated this commission (null for older rows predating this field)
   amount      Float    @default(0.0)
   rate        Float    @default(0.0) // Commission rate (e.g., 5.0 = 5%)
   status      String   @default("pending") @db.VarChar(50) // pending, paid, rejected
@@ -693,9 +695,11 @@ model Commission {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+  marketer Admin   @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+  school   School? @relation(fields: [schoolId], references: [id])
 
   @@index([marketerId])
+  @@index([schoolId])
   @@index([year, month])
   @@index([status])
   @@map("commissions")

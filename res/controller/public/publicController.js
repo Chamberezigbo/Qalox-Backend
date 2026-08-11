@@ -2208,11 +2208,6 @@ exports.getCommissionSummary = async (req, res, next) => {
   try {
     // Extract marketerId from JWT token, not query params
     const marketerId = req.user?.id || req.marketer?.id;
-    const currentDate = new Date();
-    const currentMonth = currentDate.getMonth() + 1;
-    const currentYear = currentDate.getFullYear();
-    const lastMonth = currentMonth === 1 ? 12 : currentMonth - 1;
-    const lastMonthYear = currentMonth === 1 ? currentYear - 1 : currentYear;
 
     logger.debug(`[COMMISSION_SUMMARY] Fetching commission summary`, { marketerId });
 
@@ -2225,35 +2220,53 @@ exports.getCommissionSummary = async (req, res, next) => {
       });
     }
 
-    // Get all summaries in one query
-    const [thisMonthData, lastMonthData, totalData, pendingData] = await Promise.all([
-      prisma.commission.aggregate({
-        where: { marketerId, month: currentMonth, year: currentYear },
-        _sum: { amount: true },
-      }),
-      prisma.commission.aggregate({
-        where: { marketerId, month: lastMonth, year: lastMonthYear },
-        _sum: { amount: true },
-      }),
+    const [totalData, paidData, pendingData, bySchoolGroups] = await Promise.all([
       prisma.commission.aggregate({
         where: { marketerId },
+        _sum: { amount: true },
+      }),
+      prisma.commission.aggregate({
+        where: { marketerId, status: "paid" },
         _sum: { amount: true },
       }),
       prisma.commission.aggregate({
         where: { marketerId, status: "pending" },
         _sum: { amount: true },
       }),
+      // schoolId is only populated on commissions created after this field was
+      // added — older rows (schoolId: null) are excluded from the breakdown
+      // since there's no reliable way to attribute them to a specific school.
+      prisma.commission.groupBy({
+        by: ["schoolId"],
+        where: { marketerId, schoolId: { not: null } },
+        _sum: { amount: true },
+        orderBy: { _sum: { amount: "desc" } },
+      }),
     ]);
+
+    const schools = await prisma.school.findMany({
+      where: { id: { in: bySchoolGroups.map((g) => g.schoolId) } },
+      select: { id: true, name: true },
+    });
+    const schoolNameById = new Map(schools.map((s) => [s.id, s.name]));
+
+    const bySchool = bySchoolGroups.map((g) => ({
+      _id: String(g.schoolId),
+      schoolName: schoolNameById.get(g.schoolId) || "Unknown school",
+      totalCommission: g._sum.amount || 0,
+    }));
 
     logger.info(`[COMMISSION_SUMMARY] Commission summary retrieved`, { marketerId });
 
     res.status(200).json({
       success: true,
       data: {
-        thisMonth: thisMonthData._sum.amount || 0,
-        lastMonth: lastMonthData._sum.amount || 0,
-        total: totalData._sum.amount || 0,
-        pending: pendingData._sum.amount || 0,
+        summary: {
+          totalCommission: totalData._sum.amount || 0,
+          paidCommission: paidData._sum.amount || 0,
+          pendingCommission: pendingData._sum.amount || 0,
+        },
+        bySchool,
       },
     });
   } catch (err) {
