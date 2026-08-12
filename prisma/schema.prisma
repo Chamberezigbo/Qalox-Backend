@@ -43,6 +43,11 @@ model Admin {
   resetPasswordToken   String?   @db.VarChar(255)
   resetPasswordExpires DateTime?
 
+  // Set at signup when this account was created by redeeming a marketer-issued
+  // SchoolToken, so the school created in the later setup step can be
+  // attributed back to that marketer (MarketerSchoolLead). Cleared once consumed.
+  pendingSchoolTokenId Int?
+
   // Marketer Commission & Wallet Fields (only for role=marketer)
   commissionRate      Float?   @default(0.0)  // Commission percentage (e.g., 5.0 = 5%)
   commissionStructure String?  @db.VarChar(50) // 'flat', 'tiered', 'performance'

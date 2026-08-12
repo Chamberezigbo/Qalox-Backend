@@ -1,6 +1,7 @@
 // controllers/schoolController.js
 const processImage = require("../../config/compress");
 const prisma = require("../../util/prisma");
+const logger = require("../../config/logger");
 
 const { incrementAdminStep } = require("../../util/adminStep");
 
@@ -116,10 +117,56 @@ exports.setupSchool = async (req, res, next) => {
       },
     });
 
-    await prisma.admin.update({
+    const updatedAdmin = await prisma.admin.update({
       where: { id: req.user.id },
       data: { schoolId: newSchool.id },
     });
+
+    // If this admin signed up by redeeming a marketer-issued SchoolToken,
+    // attribute the newly created school back to that marketer so future
+    // payments generate real commission for them. Failure here shouldn't
+    // block school creation — it's logged and can be reconciled manually.
+    if (updatedAdmin.pendingSchoolTokenId) {
+      try {
+        const schoolToken = await prisma.schoolToken.findUnique({
+          where: { id: updatedAdmin.pendingSchoolTokenId },
+        });
+
+        if (schoolToken) {
+          const existingLead = await prisma.marketerSchoolLead.findFirst({
+            where: { marketerId: schoolToken.marketerId, email: schoolToken.schoolEmail, schoolId: null },
+          });
+
+          if (existingLead) {
+            await prisma.marketerSchoolLead.update({
+              where: { id: existingLead.id },
+              data: { schoolId: newSchool.id, status: "active" },
+            });
+          } else {
+            await prisma.marketerSchoolLead.create({
+              data: {
+                marketerId: schoolToken.marketerId,
+                schoolId: newSchool.id,
+                name: newSchool.name,
+                email: schoolToken.schoolEmail,
+                status: "active",
+              },
+            });
+          }
+        }
+
+        await prisma.admin.update({
+          where: { id: req.user.id },
+          data: { pendingSchoolTokenId: null },
+        });
+      } catch (attributionErr) {
+        logger.error("[SETUP_SCHOOL] Failed to attribute school to marketer", {
+          schoolId: newSchool.id,
+          pendingSchoolTokenId: updatedAdmin.pendingSchoolTokenId,
+          error: attributionErr.message,
+        });
+      }
+    }
 
     await incrementAdminStep(adminId);
 

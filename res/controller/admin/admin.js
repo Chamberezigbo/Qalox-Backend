@@ -29,6 +29,7 @@ exports.createAdmin = async (req, res, next) => {
     }
 
     //for super admin,validate the uniqueKey
+    let matchedSchoolToken = null;
     if (role == "super_admin") {
       if (!uniqueKey) {
         return res.status(400).json({
@@ -40,36 +41,56 @@ exports.createAdmin = async (req, res, next) => {
         where: { email },
       });
 
-      //check if token exist
-      if (!tokenRecord) {
-        return res
-          .status(404)
-          .json({ message: "Token not found for the provided email" });
-      }
+      if (tokenRecord) {
+        // validate unique key and email match
+        if (tokenRecord.uniqueKey !== uniqueKey || tokenRecord.email !== email) {
+          return res.status(400).json({
+            message:
+              "Invalid unique key or Email does not match the token record.",
+          });
+        }
 
-      // validate unique key and email match
-      if (tokenRecord.uniqueKey !== uniqueKey || tokenRecord.email !== email) {
-        return res.status(400).json({
-          message:
-            "Invalid unique key or Email does not match the token record.",
+        // Check if token is still active (not already used)
+        if (tokenRecord.status !== 'active') {
+          return res.status(400).json({
+            message:
+              "Token is no longer active. It may have already been used.",
+          });
+        }
+
+        // After successfully validation,update token status to'inactive'
+        await prisma.token.update({
+          where: { email },
+          data: {
+            status: "inactive",
+          },
+        });
+      } else {
+        // No legacy Token match — check whether this is a marketer-issued
+        // SchoolToken instead (generated via the Marketer Portal, keyed by
+        // code + schoolEmail rather than email + uniqueKey).
+        matchedSchoolToken = await prisma.schoolToken.findUnique({
+          where: { code: uniqueKey },
+        });
+
+        if (!matchedSchoolToken || matchedSchoolToken.schoolEmail !== email) {
+          return res
+            .status(404)
+            .json({ message: "Token not found for the provided email" });
+        }
+
+        if (matchedSchoolToken.status !== "active") {
+          return res.status(400).json({
+            message:
+              "Token is no longer active. It may have already been used.",
+          });
+        }
+
+        await prisma.schoolToken.update({
+          where: { id: matchedSchoolToken.id },
+          data: { status: "used" },
         });
       }
-
-      // Check if token is still active (not already used)
-      if (tokenRecord.status !== 'active') {
-        return res.status(400).json({
-          message:
-            "Token is no longer active. It may have already been used.",
-        });
-      }
-
-      // After successfully validation,update token status to'inactive'
-      await prisma.token.update({
-        where: { email },
-        data: {
-          status: "inactive",
-        },
-      });
     }
 
     //Hash password//
@@ -83,6 +104,7 @@ exports.createAdmin = async (req, res, next) => {
       role,
       schoolId: role === "super_admin" ? null : schoolId,
       campusId: role === "super_admin" ? null : campusId,
+      pendingSchoolTokenId: matchedSchoolToken ? matchedSchoolToken.id : null,
     };
 
     // Set steps only for super_admin
