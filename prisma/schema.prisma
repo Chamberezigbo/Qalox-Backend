@@ -753,9 +753,12 @@ model BillingPlan {
   id            Int      @id @default(autoincrement())
   name          String   @unique @db.VarChar(255)
   description   String?  @db.Text
-  monthlyPrice  Float    @default(0.0)
-  annualPrice   Float    @default(0.0)
+  monthlyPrice  Float    @default(0.0) // billed "per term" in the UI — internal name unchanged to avoid touching the live Flutterwave/webhook code
+  annualPrice   Float    @default(0.0) // billed "per session" in the UI
   features      String   @db.Text // JSON array stored as text
+  minStudents   Int      @default(0)
+  maxStudents   Int?     // null = unlimited (Premium)
+  maxSubAdmins  Int?     // null = unlimited (Premium)
   isActive      Boolean  @default(true)
   highlighted   Boolean  @default(false)
   createdAt     DateTime @default(now())
@@ -774,11 +777,13 @@ model SchoolSubscription {
   schoolId         Int
   billingPlanId    Int
   billingCycle     String    @db.VarChar(20) // monthly, annual
-  status           String    @default("active") @db.VarChar(20) // active, cancelled, past_due
+  status           String    @default("active") @db.VarChar(20) // active, cancelled, past_due, trialing
   startedAt        DateTime  @default(now())
   nextBillingDate  DateTime?
   flwCustomerId       String? @db.VarChar(100) // Flutterwave customer id (cus_...), reused across renewals
   flwPaymentMethodId  String? @db.VarChar(100) // Flutterwave payment_method id (pmd_...), reused across renewals
+  trialEndsAt          DateTime? // set when status = "trial"; lazily checked, no cron
+  trialGrantedByAdminId Int?     // Super Admin who started the trial, for audit
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 

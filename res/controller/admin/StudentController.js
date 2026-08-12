@@ -6,6 +6,7 @@ const processImage = require("../../config/compress");
 
 const { generateUniqueIdentifier } = require("../../Models/generateUniqueIdentifier");
 const { academicSession } = require("../../util/prisma");
+const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
 
 exports.getStudentDetails = async (req, res, next) => {
   try {
@@ -96,6 +97,19 @@ exports.createStudent = async (req, res, next) => {
     });
     if (!school) {
       return res.status(404).json({ message: "School not found" });
+    }
+
+    // Enforce the school's plan cap on student count. Schools with no
+    // active plan yet (predating this feature) are not blocked.
+    const plan = await getActivePlanForSchool(schoolId);
+    if (plan && plan.maxStudents != null) {
+      const studentCount = await prisma.student.count({ where: { schoolId } });
+      if (studentCount >= plan.maxStudents) {
+        return res.status(403).json({
+          message: `Your plan (${plan.name}) allows up to ${plan.maxStudents} students. Upgrade your plan to add more.`,
+          code: "STUDENT_LIMIT_REACHED",
+        });
+      }
     }
 
     const uniqueId = generateUniqueIdentifier(school.prefix, "STD");
@@ -263,6 +277,21 @@ exports.bulkCreateStudents = async (req, res, next) => {
     });
     if (!school) {
       return res.status(404).json({ success: false, message: "School not found" });
+    }
+
+    // Enforce the school's plan cap on student count for the whole batch —
+    // reject upfront rather than partially succeeding past the limit.
+    const plan = await getActivePlanForSchool(schoolId);
+    if (plan && plan.maxStudents != null) {
+      const studentCount = await prisma.student.count({ where: { schoolId } });
+      const remaining = plan.maxStudents - studentCount;
+      if (remaining < rows.length) {
+        return res.status(403).json({
+          success: false,
+          message: `Your plan (${plan.name}) allows up to ${plan.maxStudents} students. You have ${Math.max(remaining, 0)} slot(s) left, but this upload has ${rows.length} row(s). Upgrade your plan or reduce the batch size.`,
+          code: "STUDENT_LIMIT_REACHED",
+        });
+      }
     }
 
     // Resolve academic session once for the whole batch
