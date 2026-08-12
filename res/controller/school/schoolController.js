@@ -191,7 +191,7 @@ exports.listSchools = async (req, res, next) => {
     const search = req.query.search || '';
 
     const where = search
-      ? { name: { contains: search, mode: 'insensitive' } }
+      ? { name: { contains: search } } // MySQL's default collation is already case-insensitive; `mode` is Postgres-only
       : {};
 
     const [schools, total] = await Promise.all([

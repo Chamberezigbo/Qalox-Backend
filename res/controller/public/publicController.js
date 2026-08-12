@@ -17,11 +17,12 @@ exports.getSchoolsPublic = async (req, res, next) => {
     const skip = (page - 1) * take;
     const search = req.query.search || "";
 
+    // MySQL's default collation is already case-insensitive; `mode` is Postgres-only
     const where = search
       ? {
           OR: [
-            { name: { contains: search, mode: "insensitive" } },
-            { email: { contains: search, mode: "insensitive" } },
+            { name: { contains: search } },
+            { email: { contains: search } },
           ],
         }
       : {};
@@ -759,12 +760,13 @@ exports.listMarketers = async (req, res, next) => {
 
     const skip = (Math.max(page, 1) - 1) * limit;
 
+    // MySQL's default collation is already case-insensitive; `mode` is Postgres-only
     const where = {
       role: "marketer",
       ...(search && {
         OR: [
-          { name: { contains: search, mode: "insensitive" } },
-          { email: { contains: search, mode: "insensitive" } },
+          { name: { contains: search } },
+          { email: { contains: search } },
         ],
       }),
     };
