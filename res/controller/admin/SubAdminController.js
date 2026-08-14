@@ -1,6 +1,7 @@
 const prisma = require("../../util/prisma");
 const bcrypt = require("bcryptjs");
 const logger = require("../../config/logger");
+const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
 const {
   ALL_PERMISSIONS,
   PERMISSION_LABELS,
@@ -92,6 +93,20 @@ exports.createSubAdmin = async (req, res, next) => {
         message: "Email already in use",
         code: "EMAIL_EXISTS",
       });
+    }
+
+    // Enforce the school's plan cap on sub-admin count. Schools with no
+    // active plan yet (predating this feature) are not blocked.
+    const plan = await getActivePlanForSchool(schoolId);
+    if (plan && plan.maxSubAdmins != null) {
+      const subAdminCount = await prisma.admin.count({ where: { schoolId, role: "sub_admin" } });
+      if (subAdminCount >= plan.maxSubAdmins) {
+        return res.status(403).json({
+          success: false,
+          message: `Your plan (${plan.name}) allows up to ${plan.maxSubAdmins} sub-admin(s). Upgrade your plan to add more.`,
+          code: "SUB_ADMIN_LIMIT_REACHED",
+        });
+      }
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);

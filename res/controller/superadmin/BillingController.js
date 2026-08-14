@@ -144,10 +144,11 @@ exports.getBillingStats = async (req, res, next) => {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    const [cancelledThisMonth, totalRevenueAgg, activeCount] = await Promise.all([
+    const [cancelledThisMonth, totalRevenueAgg, activeCount, trialCount] = await Promise.all([
       prisma.schoolSubscription.count({ where: { status: "cancelled", updatedAt: { gte: startOfMonth } } }),
       prisma.schoolPayment.aggregate({ where: { status: "success" }, _sum: { amount: true } }),
       prisma.schoolSubscription.count({ where: { status: "active" } }),
+      prisma.schoolSubscription.count({ where: { status: "trial" } }),
     ]);
 
     // Real revenue trend for the last 6 months, from actual successful payments.
@@ -172,7 +173,7 @@ exports.getBillingStats = async (req, res, next) => {
         mrr: Math.round(mrr),
         arr: Math.round(mrr * 12),
         activeSubscriptions: activeCount,
-        trialSubscriptions: 0, // no trial concept in this schema
+        trialSubscriptions: trialCount,
         cancelledThisMonth,
         totalRevenue: totalRevenueAgg._sum.amount || 0,
         revenueByPlan: [...revenueByPlanMap.values()].map((r) => ({ ...r, amount: Math.round(r.amount) })),
@@ -222,6 +223,7 @@ exports.getSubscriptions = async (req, res, next) => {
       status: s.status,
       startDate: s.startedAt,
       nextBillingDate: s.nextBillingDate,
+      trialEndsAt: s.trialEndsAt,
       region: "",
     }));
 
@@ -272,7 +274,7 @@ exports.updateSubscription = async (req, res, next) => {
  */
 exports.createBillingPlan = async (req, res, next) => {
   try {
-    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted } = req.body;
+    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins } = req.body;
     if (!name) {
       return res.status(400).json({ success: false, message: "name is required" });
     }
@@ -286,6 +288,9 @@ exports.createBillingPlan = async (req, res, next) => {
         features: JSON.stringify(features || []),
         isActive: isActive ?? true,
         highlighted: highlighted ?? false,
+        minStudents: minStudents || 0,
+        maxStudents: maxStudents === "" || maxStudents == null ? null : maxStudents,
+        maxSubAdmins: maxSubAdmins === "" || maxSubAdmins == null ? null : maxSubAdmins,
       },
     });
 
@@ -303,7 +308,7 @@ exports.createBillingPlan = async (req, res, next) => {
 exports.updateBillingPlan = async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted } = req.body;
+    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins } = req.body;
 
     const updateData = {};
     if (name !== undefined) updateData.name = name;
@@ -313,6 +318,9 @@ exports.updateBillingPlan = async (req, res, next) => {
     if (features !== undefined) updateData.features = JSON.stringify(features);
     if (isActive !== undefined) updateData.isActive = isActive;
     if (highlighted !== undefined) updateData.highlighted = highlighted;
+    if (minStudents !== undefined) updateData.minStudents = minStudents || 0;
+    if (maxStudents !== undefined) updateData.maxStudents = maxStudents === "" || maxStudents == null ? null : maxStudents;
+    if (maxSubAdmins !== undefined) updateData.maxSubAdmins = maxSubAdmins === "" || maxSubAdmins == null ? null : maxSubAdmins;
 
     const plan = await prisma.billingPlan.update({ where: { id }, data: updateData });
 
@@ -322,6 +330,74 @@ exports.updateBillingPlan = async (req, res, next) => {
     res.json({ success: true, message: "Plan updated", data: { ...plan, features: parsePlanFeatures(plan.features) } });
   } catch (err) {
     logger.error("[BILLING] Failed to update plan", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/billing/schools/:schoolId/start-trial
+ * Super Admin grants a school a free trial directly — no redeemable code,
+ * just a direct action with an audit trail (trialGrantedByAdminId).
+ */
+exports.startTrial = async (req, res, next) => {
+  try {
+    const schoolId = parseInt(req.params.schoolId, 10);
+    const { billingPlanId, durationDays } = req.body;
+    const adminId = req.admin?.id;
+
+    if (!billingPlanId) {
+      return res.status(400).json({ success: false, message: "billingPlanId is required" });
+    }
+
+    const school = await prisma.school.findUnique({ where: { id: schoolId } });
+    if (!school) {
+      return res.status(404).json({ success: false, message: "School not found", code: "SCHOOL_NOT_FOUND" });
+    }
+
+    const plan = await prisma.billingPlan.findUnique({ where: { id: billingPlanId } });
+    if (!plan) {
+      return res.status(404).json({ success: false, message: "Billing plan not found", code: "PLAN_NOT_FOUND" });
+    }
+
+    const trialEndsAt = new Date(Date.now() + (durationDays || 90) * 24 * 60 * 60 * 1000);
+
+    let subscription = await prisma.schoolSubscription.findFirst({
+      where: { schoolId },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (subscription) {
+      subscription = await prisma.schoolSubscription.update({
+        where: { id: subscription.id },
+        data: {
+          billingPlanId,
+          status: "trial",
+          trialEndsAt,
+          trialGrantedByAdminId: adminId,
+        },
+      });
+    } else {
+      subscription = await prisma.schoolSubscription.create({
+        data: {
+          schoolId,
+          billingPlanId,
+          billingCycle: "monthly",
+          status: "trial",
+          trialEndsAt,
+          trialGrantedByAdminId: adminId,
+        },
+      });
+    }
+
+    logger.info("[BILLING] Trial started", { schoolId, billingPlanId, trialEndsAt, adminId });
+
+    res.json({
+      success: true,
+      message: `Trial started for ${school.name}, ends ${trialEndsAt.toISOString().slice(0, 10)}`,
+      data: { id: subscription.id, schoolId, billingPlanId, status: "trial", trialEndsAt },
+    });
+  } catch (err) {
+    logger.error("[BILLING] Failed to start trial", { error: err.message });
     next(err);
   }
 };

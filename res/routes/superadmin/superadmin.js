@@ -23,6 +23,7 @@ const {
   updateSubscription,
   createBillingPlan,
   updateBillingPlan,
+  startTrial,
 } = require("../../controller/superadmin/BillingController");
 const { getCommunications, sendCommunication } = require("../../controller/superadmin/CommunicationsController");
 const { getSystemNotifications, sendSystemNotification } = require("../../controller/superadmin/NotificationsController");
@@ -126,6 +127,7 @@ router.get("/billing/subscriptions", authenticateSuperAdminJWT, getSubscriptions
 router.patch("/billing/subscriptions/:id", authenticateSuperAdminJWT, updateSubscription);
 router.post("/billing/plans", authenticateSuperAdminJWT, createBillingPlan);
 router.patch("/billing/plans/:id", authenticateSuperAdminJWT, updateBillingPlan);
+router.post("/billing/schools/:schoolId/start-trial", authenticateSuperAdminJWT, startTrial);
 
 // ============================================
 // COMMUNICATIONS

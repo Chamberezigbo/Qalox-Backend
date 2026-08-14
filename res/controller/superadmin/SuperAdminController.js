@@ -885,6 +885,7 @@ exports.getSchoolAdmins = async (req, res, next) => {
     // MySQL's default collation is already case-insensitive.
     const where = {
       role: "school_admin",
+      // MySQL's default collation is already case-insensitive; `mode` is Postgres-only
       ...(search && {
         OR: [
           { name: { contains: search } },

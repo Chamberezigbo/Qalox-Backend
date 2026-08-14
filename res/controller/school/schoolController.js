@@ -196,7 +196,7 @@ exports.setupSchool = async (req, res, next) => {
       },
     });
 
-    await prisma.admin.update({
+    const updatedAdmin = await prisma.admin.update({
       where: { id: req.user.id },
       data: { schoolId: newSchool.id },
     });
