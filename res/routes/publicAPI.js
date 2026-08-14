@@ -4,7 +4,12 @@
  */
 
 const express = require("express");
-const { serviceAuth } = require("../middleware/serviceAuth");
+const { serviceAuth, requirePlatformSuperAdmin } = require("../middleware/serviceAuth");
+const { signedDocumentAccess } = require("../middleware/signedDocumentAccess");
+const { single: uploadKycSingle } = require("../middleware/uploadKyc");
+const { single: uploadAvatarSingle } = require("../middleware/uploadAvatar");
+const payoutRequestController = require("../controller/public/payoutRequestController");
+const twoFactorController = require("../controller/public/twoFactorController");
 const validate = require("../middleware/validator");
 const prisma = require("../util/prisma");
 const publicController = require("../controller/public/publicController");
@@ -266,6 +271,7 @@ router.get("/schools/:id", serviceAuth, publicController.getSchoolById);
 router.patch(
   "/schools/:id/suspend",
   serviceAuth,
+  requirePlatformSuperAdmin,
   validate(suspendSchoolSchema),
   publicController.suspendSchool
 );
@@ -277,6 +283,7 @@ router.patch(
 router.patch(
   "/schools/:id/sms-quota",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.updateSchoolSmsQuota
 );
 
@@ -287,6 +294,7 @@ router.patch(
 router.delete(
   "/schools/:id",
   serviceAuth,
+  requirePlatformSuperAdmin,
   validate(deleteSchoolSchema),
   publicController.deleteSchool
 );
@@ -298,6 +306,7 @@ router.delete(
 router.post(
   "/admins",
   serviceAuth,
+  requirePlatformSuperAdmin,
   validate(createAdminSchema),
   publicController.createAdmin
 );
@@ -352,6 +361,7 @@ router.post(
 router.post(
   "/marketers",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.createMarketer
 );
 
@@ -362,7 +372,24 @@ router.post(
 router.get(
   "/marketers",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.listMarketers
+);
+
+/**
+ * GET /api/public/marketers/documents/pending?page=&limit=
+ * Verification queue — pending documents across all marketers, newest first.
+ *
+ * Registered above the /marketers/:id block on purpose. It doesn't actually
+ * collide today (Express matches on segment count, and no :id route has
+ * "documents/pending" as its tail), but the ordering here is the same defensive
+ * habit as /marketers/me/wallet below: literal paths before parameterised ones.
+ */
+router.get(
+  "/marketers/documents/pending",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  publicController.getPendingMarketerDocuments
 );
 
 /**
@@ -372,7 +399,51 @@ router.get(
 router.get(
   "/marketers/:id",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.getMarketerById
+);
+
+/**
+ * Streams a marketer document — what the `url` field on every document object
+ * resolves to. The files sit outside res/uploads precisely so that reaching
+ * them requires passing this gate.
+ *
+ * Two shapes, one handler:
+ *
+ *   .../documents/:documentId/signed/:exp/:sig/file.jpg   (what the API mints)
+ *   .../documents/:documentId/file                        (header auth)
+ *
+ * signedDocumentAccess, not serviceAuth: the portal renders documents with
+ * <img src> / <iframe src> / target="_blank", none of which can send an
+ * Authorization header. A valid short-lived signature authorises those; header
+ * auth still works for API clients. See res/middleware/signedDocumentAccess.js.
+ *
+ * The signature sits in the PATH rather than a query string so the URL ends in
+ * the real file extension — the portal picks its renderer with regexes anchored
+ * by $, and "file.jpg?exp=..&sig=.." fails them. The .:ext variants are
+ * separate registrations because the extension is optional: every minted URL
+ * has one, hand-written curl calls do not.
+ */
+router.get(
+  [
+    "/marketers/:id/documents/:documentId/signed/:exp/:sig/file",
+    "/marketers/:id/documents/:documentId/signed/:exp/:sig/file.:ext",
+    "/marketers/:id/documents/:documentId/file",
+    "/marketers/:id/documents/:documentId/file.:ext",
+  ],
+  signedDocumentAccess,
+  publicController.getMarketerDocumentFile
+);
+
+/**
+ * PATCH /api/public/marketers/:id/documents/:documentId
+ * Approve or reject one marketer document.
+ */
+router.patch(
+  "/marketers/:id/documents/:documentId",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  publicController.reviewMarketerDocument
 );
 
 /**
@@ -382,6 +453,7 @@ router.get(
 router.patch(
   "/marketers/:id",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.updateMarketer
 );
 
@@ -392,6 +464,7 @@ router.patch(
 router.patch(
   "/marketers/:id/suspend",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.suspendMarketer
 );
 
@@ -403,6 +476,7 @@ router.patch(
 router.patch(
   "/marketers/:id/status",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.suspendMarketer
 );
 
@@ -419,16 +493,32 @@ router.patch(
 router.patch(
   "/marketers/:id/commission",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.setMarketerCommission
 );
 
 /**
+ * GET /api/public/marketers/me/wallet
+ * Marketer reads their own wallet; identity comes from the Bearer token.
+ *
+ * MUST stay registered above /marketers/:id/wallet — Express matches in
+ * registration order, so the :id route would otherwise capture this path with
+ * id="me" and reject it via requirePlatformSuperAdmin.
+ */
+router.get(
+  "/marketers/me/wallet",
+  serviceAuth,
+  publicController.getMyWallet
+);
+
+/**
  * GET /api/public/marketers/:id/wallet
- * Get marketer wallet and financial information
+ * Get marketer wallet and financial information (Super Admin only)
  */
 router.get(
   "/marketers/:id/wallet",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.getMarketerWallet
 );
 
@@ -439,6 +529,7 @@ router.get(
 router.patch(
   "/marketers/:id/wallet",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.updateMarketerWallet
 );
 
@@ -465,6 +556,7 @@ router.get(
 router.patch(
   "/settings/commission",
   serviceAuth,
+  requirePlatformSuperAdmin,
   publicController.setGlobalCommission
 );
 
@@ -523,6 +615,17 @@ router.post(
 /**
  * GET /api/public/auth/profile/:marketerId
  * Get marketer profile (Marketer Portal)
+ */
+router.get(
+  "/auth/profile",
+  serviceAuth,
+  publicController.getMarketerProfile
+);
+
+/**
+ * GET /api/public/auth/profile/:marketerId
+ * Legacy form. Kept for the Marketer Portal's cached-id flow; the id must
+ * match the caller's token or the request is rejected with 403.
  */
 router.get(
   "/auth/profile/:marketerId",
@@ -595,7 +698,7 @@ router.get(
 router.post(
   "/auth/2fa/verify",
   serviceAuth,
-  publicController.verify2FA
+  twoFactorController.verify2FA
 );
 
 /**
@@ -686,12 +789,103 @@ router.put(
 
 /**
  * POST /api/public/users/avatar
- * Upload marketer avatar
+ * Upload marketer avatar (multipart/form-data, field "avatar").
+ *
+ * The upload middleware is required: without it req.file is always undefined
+ * and this endpoint could only ever answer 400 NO_FILE.
  */
 router.post(
   "/users/avatar",
   serviceAuth,
+  uploadAvatarSingle("avatar"),
   publicController.uploadAvatar
+);
+
+/**
+ * ============================================
+ * MARKETER PAYOUT REQUESTS
+ * ============================================
+ *
+ * The /marketers/me/* paths are registered here rather than being folded into
+ * /marketers/:id — "me" resolves from the token, and the :id routes are Super
+ * Admin-only, so a marketer hitting them would get a 403 instead of their own
+ * data.
+ */
+
+/**
+ * POST /api/public/marketers/me/payout-request
+ * Marketer raises a withdrawal request. Bearer required.
+ */
+router.post(
+  "/marketers/me/payout-request",
+  serviceAuth,
+  payoutRequestController.createPayoutRequest
+);
+
+/**
+ * GET /api/public/marketers/me/payout-requests
+ * Marketer lists their own requests. Bearer required.
+ */
+router.get(
+  "/marketers/me/payout-requests",
+  serviceAuth,
+  payoutRequestController.getMyPayoutRequests
+);
+
+/**
+ * GET /api/public/payout-requests
+ * Super Admin lists all requests across marketers.
+ */
+router.get(
+  "/payout-requests",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  payoutRequestController.getAllPayoutRequests
+);
+
+/**
+ * PATCH /api/public/payout-requests/:id
+ * Super Admin approves (pays out) or rejects a request.
+ */
+router.patch(
+  "/payout-requests/:id",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  payoutRequestController.reviewPayoutRequest
+);
+
+/**
+ * POST /api/public/users/verification-document
+ * Marketer uploads a KYC document (multipart/form-data: document, documentType).
+ * Bearer required — the handler rejects a service-key-only call.
+ */
+router.post(
+  "/users/verification-document",
+  serviceAuth,
+  uploadKycSingle("document"),
+  publicController.uploadVerificationDocument
+);
+
+/**
+ * GET /api/public/marketers/:id/verification-document
+ * Streams the stored KYC document. Super Admin only.
+ */
+router.get(
+  "/marketers/:id/verification-document",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  publicController.getVerificationDocument
+);
+
+/**
+ * PATCH /api/public/marketers/:id/verification
+ * Super Admin approves or rejects a marketer's KYC submission.
+ */
+router.patch(
+  "/marketers/:id/verification",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  publicController.reviewVerification
 );
 
 /**
@@ -755,14 +949,14 @@ router.get(
 );
 
 /**
- * POST /api/public/settings/2fa/toggle
- * Enable or disable 2FA
+ * POST /api/public/settings/2fa/toggle — REMOVED
+ *
+ * Superseded by the three-step flow below (setup → verify-setup → disable),
+ * which is what the Marketer Portal actually calls. It also took ?marketerId
+ * from the query string, so it let any caller flip another marketer's 2FA flag
+ * with no proof of identity. Nothing calls it; the controller is retained only
+ * as history and is marked deprecated.
  */
-router.post(
-  "/settings/2fa/toggle",
-  serviceAuth,
-  publicController.toggle2FA
-);
 
 /**
  * ============================================
@@ -777,27 +971,37 @@ router.post(
 router.post(
   "/settings/2fa/setup",
   serviceAuth,
-  publicController.setup2FA
+  twoFactorController.setup2FA
 );
 
 /**
- * POST /api/public/settings/2fa/verify-setup
- * Verify 2FA setup and enable it
+ * POST /api/public/settings/2fa/verify-setup   { code }
+ * Verify the enrolment code, enable 2FA, return one-time recovery codes.
  */
 router.post(
   "/settings/2fa/verify-setup",
   serviceAuth,
-  publicController.verifySetup2FA
+  twoFactorController.verifySetup2FA
 );
 
 /**
- * POST /api/public/settings/2fa/disable
- * Disable 2FA
+ * POST /api/public/settings/2fa/disable   { password }
+ * Password re-authentication required, so a hijacked session cannot strip 2FA.
  */
 router.post(
   "/settings/2fa/disable",
   serviceAuth,
-  publicController.disable2FA
+  twoFactorController.disable2FA
+);
+
+/**
+ * POST /api/public/settings/2fa/recovery-codes/regenerate   { password }
+ * Issues a fresh set and invalidates the previous one.
+ */
+router.post(
+  "/settings/2fa/recovery-codes/regenerate",
+  serviceAuth,
+  twoFactorController.regenerateRecoveryCodes
 );
 
 /**
@@ -851,14 +1055,18 @@ router.patch(
 );
 
 /**
- * DELETE /api/public/marketer-schools/:id
- * Delete a marketer's school
+ * DELETE /api/public/marketer-schools/:id — REMOVED (unsafe, was broken)
+ *
+ * Pulled deliberately. publicController.deleteMarketerSchool operated on the
+ * `School` tenant table, not `MarketerSchoolLead`, and had no ownership check:
+ * a marketer passing a *lead* id suspended an unrelated *live school*, and any
+ * marketer could suspend any school by guessing a sequential integer id.
+ *
+ * The Marketer Portal has no wired delete button, so nothing depends on it.
+ * Do not re-mount without rewriting the controller against MarketerSchoolLead
+ * plus a marketerId ownership guard. Suspending a real school is a Super Admin
+ * action and already exists at PATCH /api/public/schools/:id/suspend.
  */
-router.delete(
-  "/marketer-schools/:id",
-  serviceAuth,
-  publicController.deleteMarketerSchool
-);
 
 /**
  * GET /api/public/marketer/:marketerId/earnings

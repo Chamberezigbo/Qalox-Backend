@@ -23,9 +23,24 @@ const serviceAuth = (req, res, next) => {
       req.service = { authenticated: false }; // User, not service
       return next();
     } catch (error) {
-      // If that fails, try Marketer Portal's JWT_SECRET (for frontend clients)
+      // If that fails, try Marketer Portal's JWT_SECRET (for frontend clients).
+      //
+      // NO literal fallback here. This previously read
+      //   process.env.MARKETER_PORTAL_JWT_SECRET || 'your-strong-random-secret-here'
+      // which publishes a signing key in the source tree: anyone who can read
+      // the repo could mint a token with any payload — including
+      // role: 'platform_super_admin' — and pass requirePlatformSuperAdmin.
+      // When the var is missing we now skip this branch and fall through to
+      // the service-key check, i.e. fail closed instead of trusting a
+      // well-known string.
+      const marketerPortalSecret = process.env.MARKETER_PORTAL_JWT_SECRET;
+
       try {
-        const decoded = jwt.verify(token, process.env.MARKETER_PORTAL_JWT_SECRET || 'your-strong-random-secret-here');
+        if (!marketerPortalSecret) {
+          throw new Error('MARKETER_PORTAL_JWT_SECRET is not configured');
+        }
+
+        const decoded = jwt.verify(token, marketerPortalSecret);
         req.user = decoded;
         req.service = { authenticated: false, source: 'marketer-portal' }; // Frontend client
         return next();
@@ -69,4 +84,33 @@ const serviceAuth = (req, res, next) => {
   });
 };
 
-module.exports = { serviceAuth };
+/**
+ * Authorization layer for Super Admin-only routes under /api/public.
+ *
+ * serviceAuth only proves *identity* — that a valid token or a known service
+ * key was presented. It does not check *authority*, so on its own it lets any
+ * signed-in marketer reach Super Admin endpoints (marketer bank details,
+ * wallet mutation, school suspend/delete). Chain this after it on every route
+ * that only the platform super admin may call.
+ *
+ * Accepts:
+ *   - a Bearer token whose role is platform_super_admin, or
+ *   - a request carrying the SUPER_ADMIN_SERVICE_KEY and no user token
+ *     (back-compat for service-to-service calls that send no Bearer).
+ */
+const requirePlatformSuperAdmin = (req, res, next) => {
+  if (req.user?.role === 'platform_super_admin') return next();
+
+  // No user identity, but authenticated as the Super Admin service itself.
+  if (!req.user && req.service?.authenticated && req.service.type === 'super-admin') {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: 'Only super admins can access this resource',
+    code: 'FORBIDDEN'
+  });
+};
+
+module.exports = { serviceAuth, requirePlatformSuperAdmin };

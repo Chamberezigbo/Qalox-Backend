@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const flutterwave = require("../../Services/FlutterwaveService");
+const { parsePlanFeatures } = require("../../util/planFeatures");
 
 /**
  * POST /api/billing/initialize-payment
@@ -316,7 +317,9 @@ exports.updateBillingPlan = async (req, res, next) => {
     const plan = await prisma.billingPlan.update({ where: { id }, data: updateData });
 
     logger.info("[BILLING] Plan updated", { planId: id });
-    res.json({ success: true, message: "Plan updated", data: { ...plan, features: JSON.parse(plan.features) } });
+    // Safe parse: when the caller omits `features`, plan.features is whatever
+    // was already stored, which may not be valid JSON.
+    res.json({ success: true, message: "Plan updated", data: { ...plan, features: parsePlanFeatures(plan.features) } });
   } catch (err) {
     logger.error("[BILLING] Failed to update plan", { error: err.message });
     next(err);

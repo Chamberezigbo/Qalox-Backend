@@ -55,3 +55,12 @@ firebase-debug.log
 
 # Node version
 .nvmrc
+
+# KYC identity documents — must never be committed
+uploads-private/
+
+# Runtime user uploads (avatars). The folder itself is tracked via .gitkeep so
+# the app can write into a fresh checkout, but the uploaded files are user data
+# and must not enter git history.
+res/uploads/avatars/*
+!res/uploads/avatars/.gitkeep

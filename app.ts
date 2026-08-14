@@ -28,14 +28,20 @@ const app = express();
 // Enable CORS with configurable origins from .env
 const corsCredentials = process.env.CORS_CREDENTIALS === "true";
 
-// In development, allow all localhost variants for easier testing
+// Deliberately NOT defaulted to "development": an unset NODE_ENV must fail
+// closed onto the CORS_ORIGIN allowlist, never onto the permissive localhost
+// branch. The startup banner below reports this same value, so what is logged
+// and what CORS actually enforces can no longer disagree.
+const NODE_ENV = process.env.NODE_ENV || "";
+const isDevelopment = NODE_ENV === "development";
+
 const corsOrigin = (origin, callback) => {
-  if (process.env.NODE_ENV === "development") {
+  if (isDevelopment) {
     // Allow all localhost variants in development
     if (!origin || origin.includes("localhost") || origin.includes("127.0.0.1")) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      callback(new Error(`Not allowed by CORS: ${origin} (NODE_ENV=development allows localhost only)`));
     }
   } else {
     // In production, use specific origins from .env
@@ -43,7 +49,7 @@ const corsOrigin = (origin, callback) => {
     if (allowedOrigins.includes(origin) || !origin) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      callback(new Error(`Not allowed by CORS: ${origin} (allowed: ${allowedOrigins.join(", ") || "none configured"})`));
     }
   }
 };
@@ -70,7 +76,10 @@ documentationMiddleware(app);
 
 // Log server startup
 logger.info("✅ Qalox Backend Server Starting", {
-  environment: process.env.NODE_ENV || "development",
+  environment: NODE_ENV || "(NODE_ENV not set — CORS uses the CORS_ORIGIN allowlist)",
+  corsMode: isDevelopment
+    ? "development: localhost origins allowed"
+    : `allowlist: ${process.env.CORS_ORIGIN || "none configured"}`,
   port: process.env.PORT || 3000,
   docsEnabled: process.env.ENABLE_DOCS === "true" ? "✅ Yes (/docs)" : "❌ No (set ENABLE_DOCS=true)",
 });

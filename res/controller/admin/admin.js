@@ -9,7 +9,10 @@ const JWT_SECRET = process.env.JWT_SECRET;
 exports.createAdmin = async (req, res, next) => {
   try {
     // For super_admin, ensure schoolId is not provided
-    const { email, password, role, uniqueKey, schoolId, name } = req.body;
+    // campusId must be destructured here: createAdminSchema requires it for
+    // school_admin, and line ~86 reads it. Without it that read is an
+    // undeclared identifier and creating a school_admin throws ReferenceError.
+    const { email, password, role, uniqueKey, schoolId, campusId, name } = req.body;
     if (role === "super_admin" && schoolId) {
       return res.status(400).json({
         message: "School ID should not be provided for super admin",
@@ -139,10 +142,15 @@ exports.loginAdmin = async (req, res, next) => {
       { expiresIn: "1d" }
     );
 
+    // Strip the bcrypt hash — `admin` is a bare findUnique with no `select`, so
+    // it carries every column including `password`. Everything else on the
+    // record (role, permissions, schoolId) is what the portals branch on.
+    const { password: _password, ...safeAdmin } = admin;
+
     // Optionally re-fetch updated admin if you want hasLoggedIn true reflected immediately
     const responseAdmin = firstLogin
-      ? { ...admin, hasLoggedIn: true }
-      : admin;
+      ? { ...safeAdmin, hasLoggedIn: true }
+      : safeAdmin;
 
     await logLoginEvent({ actorType: "admin", actorId: admin.id, schoolId: admin.schoolId, req });
 

@@ -179,6 +179,32 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
 
     await prisma.$transaction(writes, { timeout: 20000 });
 
+    // Tell the marketer they've been paid. Deliberately OUTSIDE the transaction
+    // above and swallowed on failure: the money is already credited at this
+    // point, and a notification is a courtesy. It must never roll back a
+    // payment or turn a successful charge into a 500 that Flutterwave retries.
+    if (marketer) {
+      try {
+        await prisma.notification.create({
+          data: {
+            marketerId: marketer.id,
+            title: isFirstPayment ? "New commission earned" : "Renewal commission earned",
+            message: `You earned ₦${commissionAmount.toLocaleString("en-NG", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })} from ${school?.name ?? "a school"}.`,
+            type: "success",
+            link: "/commissions",
+            relatedType: "commission",
+          },
+        });
+      } catch (notifyErr) {
+        logger.error("[FLW_WEBHOOK] Commission notification failed (payment unaffected)", {
+          reference, marketerId: marketer.id, error: notifyErr.message,
+        });
+      }
+    }
+
     logger.info("[FLW_WEBHOOK] Payment processed", {
       reference, schoolId: payment.schoolId, isFirstPayment, marketerId: marketer?.id, commissionAmount,
     });

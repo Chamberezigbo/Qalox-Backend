@@ -1,7 +1,13 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: ['**/__tests__/**/*.test.ts', '**/?(*.)+(spec|test).ts'],
+  // The codebase is deliberately mixed JS/TS, so tests are matched in both.
+  testMatch: [
+    '**/__tests__/**/*.test.ts',
+    '**/?(*.)+(spec|test).ts',
+    '**/__tests__/**/*.test.js',
+    '**/?(*.)+(spec|test).js',
+  ],
   moduleFileExtensions: ['ts', 'js', 'json'],
   collectCoverageFrom: [
     'res/**/*.ts',

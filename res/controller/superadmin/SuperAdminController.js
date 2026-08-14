@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const logger = require("../../config/logger");
 const crypto = require("crypto");
 const { logLoginEvent } = require("../../util/logLoginEvent");
+const { parsePlanFeatures } = require("../../util/planFeatures");
 
 // Helper: Generate TKN-XXXXXX registration token
 // (matches the format already used by res/controller/system-admin/generateToken.js
@@ -842,10 +843,12 @@ exports.getBillingPlans = async (req, res, next) => {
       ],
     });
 
-    // Parse features JSON for each plan
+    // Parse features JSON for each plan. parsePlanFeatures is used instead of a
+    // bare JSON.parse so a single malformed row can't 500 the whole endpoint —
+    // this feeds the Marketer Portal's read-only pricing page.
     const parsedPlans = plans.map((plan) => ({
       ...plan,
-      features: plan.features ? JSON.parse(plan.features) : [],
+      features: parsePlanFeatures(plan.features),
     }));
 
     logger.info("[SUPER_ADMIN_GET_PLANS] Plans retrieved", { count: parsedPlans.length });
@@ -877,12 +880,15 @@ exports.getSchoolAdmins = async (req, res, next) => {
 
     logger.debug("[SUPER_ADMIN_GET_ADMINS] Fetching school admins", { page, limit, search, status, adminId });
 
+    // No `mode: "insensitive"` — MySQL's Prisma client doesn't generate
+    // QueryMode, so passing it threw a validation error (500) on any ?search=.
+    // MySQL's default collation is already case-insensitive.
     const where = {
       role: "school_admin",
       ...(search && {
         OR: [
-          { name: { contains: search, mode: "insensitive" } },
-          { email: { contains: search, mode: "insensitive" } },
+          { name: { contains: search } },
+          { email: { contains: search } },
         ],
       }),
       ...(status === "active" && { isSuspended: false }),
@@ -1073,7 +1079,11 @@ exports.getMarketerStats = async (req, res, next) => {
         prisma.admin.count({ where: { role: "marketer", tier: "bronze" } }),
         prisma.admin.count({ where: { role: "marketer", tier: "silver" } }),
         prisma.admin.count({ where: { role: "marketer", tier: "gold" } }),
-        prisma.admin.count({ where: { role: "marketer", isEmailVerified: false } }),
+        // Documents awaiting review — NOT unverified emails, which is what this
+        // counted before. The portal renders it on a "Pending Verifications"
+        // stat card next to a queue the operator can actually work through, so
+        // it has to be the same number as that queue's length.
+        prisma.marketerDocument.count({ where: { status: "pending" } }),
         prisma.schoolToken.count(),
       ]);
 

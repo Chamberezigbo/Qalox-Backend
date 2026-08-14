@@ -38,6 +38,44 @@ model Admin {
   isEmailVerified Boolean  @default(false)
   isSuspended     Boolean  @default(false)
   suspendedAt     DateTime?
+  // Audit trail for suspension. suspendedBy is the Admin id taken from the
+  // verified Bearer token (req.user.id), never from the request body — a
+  // service key alone proves "a known app called", not who clicked the button.
+  suspensionReason String?  @db.VarChar(500)
+  suspendedBy      Int?
+
+  // Marketer settings. notificationPreferences is a JSON blob in Text, matching
+  // the `permissions` precedent above. twoFactorEnabled records only whether the
+  // marketer has switched 2FA on — the code-verification step is still a stub,
+  // so this flag must NOT be treated as a real second factor.
+  notificationPreferences String?  @db.Text
+
+  // ---- TOTP two-factor (RFC 6238) ----
+  // Secrets are AES-256-GCM encrypted at rest; never stored or returned as
+  // plaintext base32 after enrolment.
+  twoFactorEnabled          Boolean   @default(false)
+  twoFactorSecret           String?   @db.Text // encrypted, active
+  twoFactorPendingSecret    String?   @db.Text // encrypted, awaiting verify-setup
+  twoFactorPendingExpiresAt DateTime?
+  // Last accepted 30s time-step. A code from a step <= this is a replay and is
+  // refused, so a valid code cannot be used twice.
+  twoFactorLastUsedStep     BigInt?
+  // jti of the outstanding login tempToken. Cleared on use, which makes the
+  // tempToken single-use rather than merely short-lived.
+  twoFactorTempTokenId      String?   @db.VarChar(64)
+  // Throttling state for 2FA challenges (verify, verify-setup, disable).
+  twoFactorFailedAttempts   Int       @default(0)
+  twoFactorLockedUntil      DateTime?
+
+  // KYC verification (marketers). The document itself is stored outside the
+  // statically-served uploads folder — see res/uploads-private/kyc — and is
+  // only reachable through an authenticated Super Admin route.
+  verificationStatus       String?   @default("pending") @db.VarChar(20) // pending | approved | rejected
+  verificationDocumentType String?   @db.VarChar(20)  // nin | passport | drivers | voters
+  verificationDocumentPath String?   @db.VarChar(255) // relative path on disk, never a public URL
+  verificationSubmittedAt  DateTime?
+  verificationReviewedAt   DateTime?
+  verificationRejectionReason String? @db.Text
 
   // Password reset (stores a SHA-256 hash of the raw token sent by email, never the raw token itself)
   resetPasswordToken   String?   @db.VarChar(255)
@@ -74,7 +112,11 @@ model Admin {
   notifications    Notification[]
   marketerSchoolLeads MarketerSchoolLead[]
   walletTransactions  WalletTransaction[]
+  payoutRequests      PayoutRequest[]
+  recoveryCodes       TwoFactorRecoveryCode[]
+  securityEvents      SecurityEvent[]
   schoolTokens        SchoolToken[]
+  marketerDocuments   MarketerDocument[]
   platformCommunications  PlatformCommunication[]
   systemNotifications     SystemNotification[]
   systemNotificationReads SystemNotificationRead[]
@@ -661,9 +703,6 @@ model SchoolToken {
   code        String   @unique @db.VarChar(50) // e.g., "TKN-1721472000000"
   schoolName  String   @db.VarChar(255)
   schoolEmail String   @db.VarChar(255)
-  pupil       String?  @db.VarChar(255) // Optional pupil name
-  class       String?  @db.VarChar(100)  // Optional class
-  subject     String?  @db.VarChar(100)  // Optional subject
   status      String   @default("active") @db.VarChar(50) // active, used, revoked, expired
   issuedDate  DateTime @default(now())
   expiryDate  DateTime // Token expiration date
@@ -948,6 +987,37 @@ model MarketerSchoolLead {
   @@map("marketer_school_leads")
 }
 
+/// A marketer's uploaded identity document, one row per upload.
+///
+/// Supersedes the single-document `verification*` columns on Admin, which are
+/// still written in parallel so the Marketer Portal's existing profile view
+/// keeps working. Admin mirrors the LATEST document; this table is the record.
+///
+/// `path` is a filename inside res/uploads-private/kyc — NOT a public URL.
+/// These files are deliberately outside res/uploads (which app.ts serves
+/// statically with no auth), so a government ID scan is never fetchable by URL
+/// alone. Reads go through GET /marketers/:id/documents/:documentId/file,
+/// which is Super Admin-gated.
+model MarketerDocument {
+  id              Int       @id @default(autoincrement())
+  marketerId      Int
+  type            String    @db.VarChar(30) // id_card | passport | utility_bill | cac | other
+  path            String    @db.VarChar(255)
+  status          String    @default("pending") @db.VarChar(20) // pending | approved | rejected
+  rejectionReason String?   @db.Text
+  reviewedAt      DateTime?
+  reviewedBy      Int? // Admin id of the reviewing super admin, from the Bearer token
+  uploadedAt      DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+
+  marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+
+  @@index([marketerId])
+  // Serves the pending-verification queue: filter by status, newest first.
+  @@index([status, uploadedAt])
+  @@map("marketer_documents")
+}
+
 // ============================================
 // MARKETER WALLET TRANSACTIONS
 // ============================================
@@ -956,6 +1026,72 @@ model MarketerSchoolLead {
 // updateMarketerWallet. balanceAfter is a snapshot at the time of the
 // transaction, used to render the wallet's balance-history chart without a
 // separate query.
+/// Single-use 2FA recovery codes. Stored as bcrypt hashes only — the plaintext
+/// is shown to the user exactly once, in the verify-setup response.
+model TwoFactorRecoveryCode {
+  id       Int       @id @default(autoincrement())
+  adminId  Int
+  codeHash String    @db.VarChar(255)
+  usedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@map("two_factor_recovery_codes")
+}
+
+/// Security-relevant account events (2FA enabled/disabled, recovery codes
+/// regenerated or consumed). Append-only; nothing in the app updates a row.
+model SecurityEvent {
+  id        Int      @id @default(autoincrement())
+  adminId   Int
+  event     String   @db.VarChar(64)
+  detail    String?  @db.VarChar(255)
+  ipAddress String?  @db.VarChar(64)
+  userAgent String?  @db.Text
+  createdAt DateTime @default(now())
+
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([event])
+  @@map("security_events")
+}
+
+/// A marketer-initiated withdrawal request awaiting Super Admin action.
+/// WalletTransaction records money that has ALREADY moved and has no status
+/// field, so it cannot represent "pending approval" — hence a separate model.
+/// Funds are NOT reserved when a request is raised; the balance is re-checked
+/// at approval time, and only one pending request per marketer is allowed.
+model PayoutRequest {
+  id         Int      @id @default(autoincrement())
+  marketerId Int
+  amount     Float
+  status     String   @default("pending") @db.VarChar(20) // pending | approved | rejected
+
+  // Snapshot of the destination account as it was when the request was raised,
+  // so a later bank-details change cannot silently redirect an approved payout.
+  bankName          String? @db.VarChar(100)
+  bankAccountNumber String? @db.VarChar(50)
+  bankAccountName   String? @db.VarChar(255)
+
+  note              String?   @db.VarChar(255)
+  rejectionReason   String?   @db.Text
+  reviewedByAdminId Int?
+  reviewedAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)
+
+  @@index([marketerId])
+  @@index([status])
+  @@map("payout_requests")
+}
+
 model WalletTransaction {
   id            Int      @id @default(autoincrement())
   marketerId    Int
@@ -963,6 +1099,10 @@ model WalletTransaction {
   amount        Float
   description   String?  @db.VarChar(255)
   balanceAfter  Float
+  // Super Admin who performed the operation, from the verified Bearer token.
+  // Nullable: rows predating this column, and service-key-only calls that
+  // carry no user identity, legitimately have no actor.
+  performedByAdminId Int?
   createdAt     DateTime @default(now())
 
   marketer Admin @relation(fields: [marketerId], references: [id], onDelete: Cascade)

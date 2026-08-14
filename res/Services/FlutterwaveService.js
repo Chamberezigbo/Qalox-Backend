@@ -99,8 +99,50 @@ const verifyWebhookSignature = (signatureHeader) => {
   return !!signatureHeader && signatureHeader === secretHash;
 };
 
+/**
+ * Live list of Nigerian banks with their NIP codes.
+ * GET /banks/NG -> { data: [ { id, code, name } ] }
+ *
+ * Fetched rather than hardcoded because the code is what a transfer is
+ * actually routed on: a stale or wrong code sends a payout to the wrong
+ * institution or fails outright.
+ * @returns {Promise<Array<{code: string, name: string}>>}
+ */
+const listBanks = async () => {
+  const json = await request("/banks/NG");
+  const banks = (json.data || [])
+    .map((b) => ({ code: String(b.code), name: b.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  logger.info("[FLUTTERWAVE] Bank list retrieved", { count: banks.length });
+  return banks;
+};
+
+/**
+ * Resolve a bank account number to its registered account name.
+ * POST /accounts/resolve -> { data: { account_number, account_name } }
+ *
+ * @param {{accountNumber: string, bankCode: string}} params
+ * @returns {Promise<{accountNumber: string, accountName: string}>}
+ * @throws when Flutterwave cannot resolve the account — callers MUST treat a
+ *   throw as "not verified" and never fall back to reporting success.
+ */
+const resolveAccount = async ({ accountNumber, bankCode }) => {
+  const json = await request("/accounts/resolve", {
+    method: "POST",
+    body: { account_number: accountNumber, account_bank: bankCode },
+  });
+
+  return {
+    accountNumber: json.data?.account_number || accountNumber,
+    accountName: json.data?.account_name,
+  };
+};
+
 module.exports = {
   createBankTransferCharge,
   verifyTransaction,
   verifyWebhookSignature,
+  listBanks,
+  resolveAccount,
 };

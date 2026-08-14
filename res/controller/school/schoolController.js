@@ -1,8 +1,88 @@
 // controllers/schoolController.js
 const processImage = require("../../config/compress");
 const prisma = require("../../util/prisma");
+const logger = require("../../config/logger");
 
 const { incrementAdminStep } = require("../../util/adminStep");
+
+/**
+ * Link a freshly created School back to the marketer who referred it.
+ *
+ * The chain is exact, not a guess:
+ *   Admin.email  →  Token.uniqueKey  →  SchoolToken.code  →  SchoolToken.marketerId
+ *
+ * Registration validates a `Token` row by email, and a marketer-issued token
+ * writes the same code into both `Token.uniqueKey` and `SchoolToken.code` (see
+ * createSchoolToken). So if no SchoolToken carries that code, the school was
+ * onboarded by the Super Admin Portal and there is no marketer to credit.
+ *
+ * Sets MarketerSchoolLead.schoolId, which is the join the payment webhook uses
+ * to award commission. Without it every marketer earns nothing.
+ *
+ * Returns the lead id when attribution happened, otherwise null. Never throws —
+ * a back-office attribution problem must not fail a school's onboarding.
+ */
+const attributeSchoolToMarketer = async (adminId, school) => {
+  try {
+    const admin = await prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { email: true },
+    });
+    if (!admin) return null;
+
+    const registrationToken = await prisma.token.findUnique({
+      where: { email: admin.email },
+      select: { uniqueKey: true },
+    });
+    if (!registrationToken) return null;
+
+    const schoolToken = await prisma.schoolToken.findUnique({
+      where: { code: registrationToken.uniqueKey },
+      select: { marketerId: true },
+    });
+    if (!schoolToken) return null; // Super Admin-issued token — nobody to credit
+
+    // The marketer may already track this school as a manual lead
+    // (POST /api/public/marketer-schools). Link that row rather than creating a
+    // duplicate their dashboard would list twice.
+    const existingLead = await prisma.marketerSchoolLead.findFirst({
+      where: { marketerId: schoolToken.marketerId, schoolId: null, email: admin.email },
+      select: { id: true },
+    });
+
+    const lead = existingLead
+      ? await prisma.marketerSchoolLead.update({
+          where: { id: existingLead.id },
+          data: { schoolId: school.id, status: "active" },
+        })
+      : await prisma.marketerSchoolLead.create({
+          data: {
+            marketerId: schoolToken.marketerId,
+            schoolId: school.id,
+            name: school.name,
+            email: admin.email,
+            status: "active",
+          },
+        });
+
+    logger.info("[ATTRIBUTE_SCHOOL] School attributed to marketer", {
+      schoolId: school.id,
+      marketerId: schoolToken.marketerId,
+      leadId: lead.id,
+      linkedExistingLead: Boolean(existingLead),
+    });
+
+    return lead.id;
+  } catch (err) {
+    // Loud, because a silent miss here means a marketer is never paid.
+    logger.error("[ATTRIBUTE_SCHOOL] Failed to attribute school to marketer", {
+      schoolId: school?.id,
+      adminId,
+      error: err.message,
+    });
+    return null;
+  }
+};
 
 // Normalize to 4 uppercase alphanumeric chars
 const normalizePrefix = (value) =>
@@ -121,6 +201,9 @@ exports.setupSchool = async (req, res, next) => {
       data: { schoolId: newSchool.id },
     });
 
+    // Credit the referring marketer, if this school arrived via a marketer token.
+    await attributeSchoolToMarketer(adminId, newSchool);
+
     await incrementAdminStep(adminId);
 
     return res.status(201).json({ 
@@ -143,9 +226,11 @@ exports.listSchools = async (req, res, next) => {
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 20));
     const search = req.query.search || '';
 
-    const where = search
-      ? { name: { contains: search, mode: 'insensitive' } }
-      : {};
+    // No `mode: 'insensitive'` — the datasource is MySQL, for which Prisma does
+    // not generate QueryMode, so passing it is a validation error at runtime
+    // (this endpoint returned 500 for any ?search=). MySQL's default collation
+    // is already case-insensitive.
+    const where = search ? { name: { contains: search } } : {};
 
     const [schools, total] = await Promise.all([
       prisma.school.findMany({

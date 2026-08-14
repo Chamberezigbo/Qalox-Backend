@@ -38,7 +38,7 @@ class SchoolService {
     schoolId: number,
     reason?: string
   ) {
-    const school = await prisma.school.findUnique({
+    const school = await this.prisma.school.findUnique({
       where: { id: schoolId },
     });
 
@@ -46,7 +46,7 @@ class SchoolService {
       throw new Error("School not found");
     }
 
-    const updated = await prisma.school.update({
+    const updated = await this.prisma.school.update({
       where: { id: schoolId },
       data: {
         isSuspended: true,
@@ -63,7 +63,7 @@ class SchoolService {
    * Reactivate a school (mark as isSuspended = false)
    */
   async reactivateSchool(schoolId: number) {
-    const school = await prisma.school.findUnique({
+    const school = await this.prisma.school.findUnique({
       where: { id: schoolId },
     });
 
@@ -71,7 +71,7 @@ class SchoolService {
       throw new Error("School not found");
     }
 
-    const updated = await prisma.school.update({
+    const updated = await this.prisma.school.update({
       where: { id: schoolId },
       data: {
         isSuspended: false,
@@ -89,7 +89,7 @@ class SchoolService {
    * CRITICAL: Must delete in correct order due to foreign keys
    */
   async deleteSchoolCascade(schoolId: number, reason?: string) {
-    const school = await prisma.school.findUnique({
+    const school = await this.prisma.school.findUnique({
       where: { id: schoolId },
     });
 

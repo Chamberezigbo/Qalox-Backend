@@ -2,10 +2,139 @@ const prisma = require("../../util/prisma");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const fs = require("fs");
+const fsp = require("fs").promises;
+const path = require("path");
 const { SchoolService } = require("../../Services/SchoolService");
 const logger = require("../../config/logger");
 const { logLoginEvent } = require("../../util/logLoginEvent");
 const emailService = require("../../Services/EmailService");
+const twoFactorService = require("../../Services/TwoFactorService");
+const twoFactorTempToken = require("../../util/twoFactorTempToken");
+const processImage = require("../../config/compress");
+const flutterwave = require("../../Services/FlutterwaveService");
+const { generateUniqueReferralCode } = require("../../util/referralCode");
+const { signDocumentUrl } = require("../../util/documentUrlSignature");
+
+// The tiers the Super Admin Portal filters on. `tier` is a free-text VarChar in
+// the schema (whose comment also mentions "platinum"), but nothing issues a
+// platinum tier today and the portal has no filter for it — so this list is the
+// contract, and anything outside it is a client mistake worth a 422. Add
+// "platinum" here first if a platinum tier is ever introduced.
+const MARKETER_TIERS = ["bronze", "silver", "gold"];
+
+// ============================================
+// MARKETER DOCUMENT HELPERS
+// ============================================
+
+// The portal's document vocabulary. The Marketer Portal's upload form still
+// posts the older nin/drivers/voters names, so uploads accept both and
+// normaliseDocumentType() folds them into these five before storage.
+const MARKETER_DOCUMENT_TYPES = ["id_card", "passport", "utility_bill", "cac", "other"];
+
+const LEGACY_DOCUMENT_TYPE_MAP = {
+  nin: "id_card",
+  drivers: "id_card",
+  voters: "id_card",
+  passport: "passport",
+};
+
+const normaliseDocumentType = (type) => {
+  if (MARKETER_DOCUMENT_TYPES.includes(type)) return type;
+  return LEGACY_DOCUMENT_TYPE_MAP[type] || null;
+};
+
+/**
+ * Wire shape for one marketer document (§2.3 of the Super Admin contract).
+ *
+ * `url` points at the signed stream route, NOT at /api/uploads — that mount is
+ * plain express.static with no middleware, so anything under it is
+ * world-readable by URL forever. Returning a path relative to /api (no leading
+ * slash) for every row keeps the form consistent, which is what the portal
+ * normalises against.
+ *
+ * Two details the Super Admin Portal depends on:
+ *
+ *   1. The signature query string. The portal previews documents with
+ *      <img src> / <iframe src> / target="_blank", none of which can carry an
+ *      Authorization header — so the URL has to authorise itself.
+ *
+ *   2. The real file extension at the very END of the URL. The portal chooses
+ *      its renderer with /\.(png|jpe?g|gif|webp)$/i and /\.pdf$/i — both
+ *      anchored with $. That anchor is why the signature lives in the PATH and
+ *      not in a query string: "file.jpg?exp=..&sig=.." does not end in ".jpg",
+ *      so a query-string signature silently degrades every preview to
+ *      "Cannot preview this file type". The extension is load-bearing.
+ */
+const serialiseMarketerDocument = (doc) => {
+  // path.extname on the stored filename, which was built from the upload's
+  // mime type — not from anything the client named. Falls back to no extension
+  // rather than guessing if a legacy row has none.
+  const ext = path.extname(doc.path || "");
+  const { exp, sig } = signDocumentUrl(doc.marketerId, doc.id);
+
+  return {
+    id: doc.id,
+    type: doc.type,
+    url: `public/marketers/${doc.marketerId}/documents/${doc.id}/signed/${exp}/${sig}/file${ext}`,
+    status: doc.status,
+    rejectionReason: doc.rejectionReason || null,
+    reviewedAt: doc.reviewedAt ? doc.reviewedAt.toISOString() : null,
+    reviewedBy: doc.reviewedBy ?? null,
+    uploadedAt: doc.uploadedAt.toISOString(),
+  };
+};
+
+/**
+ * Documents for a set of marketers, grouped by marketerId.
+ *
+ * One query for the whole page rather than one per row — the list is paginated
+ * at 20/page, and a per-row lookup would be 20 extra round trips (the classic
+ * N+1). Returns a Map so the caller's merge stays O(1) per row.
+ */
+const fetchDocumentsByMarketer = async (marketerIds) => {
+  const grouped = new Map(marketerIds.map((id) => [id, []]));
+  if (marketerIds.length === 0) return grouped;
+
+  const docs = await prisma.marketerDocument.findMany({
+    where: { marketerId: { in: marketerIds } },
+    orderBy: { uploadedAt: "desc" },
+  });
+
+  for (const doc of docs) {
+    grouped.get(doc.marketerId)?.push(serialiseMarketerDocument(doc));
+  }
+
+  return grouped;
+};
+
+/**
+ * Is this the marketer's most recent upload?
+ *
+ * Reviewing a document mirrors its verdict onto the legacy verification*
+ * columns on Admin, which still drive the Marketer Portal's profile screen and
+ * the payout KYC gate in updateMarketerWallet. Only the latest document may do
+ * that — rejecting an old ID card must not downgrade a marketer whose newer
+ * one was already approved.
+ *
+ * Deliberately called BEFORE opening the transaction, not inside it: the
+ * database is remote, and every extra round trip between BEGIN and COMMIT
+ * counts against the transaction timeout.
+ */
+const isLatestMarketerDocument = async (marketerId, documentId) => {
+  const latest = await prisma.marketerDocument.findFirst({
+    where: { marketerId },
+    orderBy: { uploadedAt: "desc" },
+    select: { id: true },
+  });
+
+  return latest?.id === documentId;
+};
+
+// Prisma's default transaction timeout is 5s, which a remote MySQL can exceed
+// on a multi-statement write. Matches the existing allowance in
+// updateMarketerWallet rather than inventing a second number.
+const TX_OPTIONS = { timeout: 20000 };
 
 // GET /api/public/schools
 // Returns paginated schools for Super Admin Portal (no auth)
@@ -17,11 +146,14 @@ exports.getSchoolsPublic = async (req, res, next) => {
     const skip = (page - 1) * take;
     const search = req.query.search || "";
 
+    // No `mode: "insensitive"` — MySQL's Prisma client doesn't generate
+    // QueryMode, so passing it threw a validation error (500) on any ?search=.
+    // MySQL's default collation is already case-insensitive.
     const where = search
       ? {
           OR: [
-            { name: { contains: search, mode: "insensitive" } },
-            { email: { contains: search, mode: "insensitive" } },
+            { name: { contains: search } },
+            { email: { contains: search } },
           ],
         }
       : {};
@@ -479,6 +611,10 @@ exports.loginPublic = async (req, res, next) => {
         referralCode: true,
         isEmailVerified: true,
         isSuspended: true,
+        // Required for the 2FA branch below. Without these the flag reads as
+        // undefined and every account silently logs in without a challenge.
+        twoFactorEnabled: true,
+        twoFactorLockedUntil: true,
       },
     });
 
@@ -513,15 +649,40 @@ exports.loginPublic = async (req, res, next) => {
       });
     }
 
+    // 2FA challenge. The password was correct, but no session token is issued
+    // until the second factor is verified — the caller gets a temp token that
+    // is only accepted by POST /auth/2fa/verify.
+    if (admin.twoFactorEnabled) {
+      if (twoFactorService.isLockedOut(admin)) {
+        return res.status(429).json({
+          success: false,
+          message: "Too many failed two-factor attempts. Try again later.",
+          code: "TWO_FACTOR_LOCKED",
+          data: { retryAfterSeconds: twoFactorService.lockoutSecondsRemaining(admin) },
+        });
+      }
+
+      const { token: tempToken, jti } = twoFactorTempToken.issue(admin.id);
+      await prisma.admin.update({
+        where: { id: admin.id },
+        data: { twoFactorTempTokenId: jti },
+      });
+
+      logger.info(`[LOGIN_PUBLIC] Password OK, 2FA challenge issued`, { adminId: admin.id });
+
+      return res.status(200).json({
+        success: true,
+        message: "Two-factor authentication required",
+        data: { requiresTwoFactor: true, tempToken },
+      });
+    }
+
     logger.info(`[LOGIN_PUBLIC] ${admin.role} login successful`, { email, adminId: admin.id, role: admin.role });
 
     // Issue a real session token directly (this endpoint used to just return
     // user data on the assumption that a middleman backend would mint its own
     // token after calling it — that middleman no longer exists, so this is
     // now the actual source of truth for marketer/admin auth tokens).
-    // NOTE: 2FA is not yet enforced here — the 2FA subsystem (setup/verify/
-    // toggle/disable) doesn't persist any state to the database yet, so there
-    // is nothing real to branch on. See follow-up work to make 2FA real.
     const token = jwt.sign(
       { id: admin.id, email: admin.email, role: admin.role },
       process.env.JWT_SECRET || "secret",
@@ -705,7 +866,10 @@ exports.createMarketer = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 12);
     logger.debug(`[CREATE_MARKETER] Password hashed`, { email });
 
-    // Create marketer
+    // Create marketer. A caller-supplied referralCode still wins (Super Admin
+    // may be migrating a code from elsewhere); otherwise generate the QAL-XXXXXX
+    // form. The old `REF_prisca_1723459200` fallback is gone — it leaked the
+    // email local-part and the signup timestamp into a code marketers hand out.
     const newMarketer = await prisma.admin.create({
       data: {
         email,
@@ -713,7 +877,7 @@ exports.createMarketer = async (req, res, next) => {
         name,
         role: "marketer",
         tier: tier || "bronze",
-        referralCode: referralCode || `REF_${email.split("@")[0]}_${Date.now()}`,
+        referralCode: referralCode || (await generateUniqueReferralCode(prisma)),
         isEmailVerified: false,
         isSuspended: false,
       },
@@ -754,17 +918,33 @@ exports.listMarketers = async (req, res, next) => {
     const page = parseInt(req.query.page || 1, 10);
     const limit = parseInt(req.query.limit || 20, 10);
     const search = req.query.search || "";
+    const tier = req.query.tier;
 
-    logger.debug(`[LIST_MARKETERS] Fetching marketers`, { page, limit, search });
+    logger.debug(`[LIST_MARKETERS] Fetching marketers`, { page, limit, search, tier });
+
+    // An unrecognised tier is rejected rather than dropped. A filter that
+    // silently returns everything looks to the operator like "there are no
+    // gold marketers yet" when it actually means "the filter did nothing".
+    if (tier !== undefined && !MARKETER_TIERS.includes(tier)) {
+      logger.warn(`[LIST_MARKETERS] Unknown tier filter`, { tier });
+      return res.status(422).json({
+        success: false,
+        message: `tier must be one of: ${MARKETER_TIERS.join(", ")}`,
+        code: "INVALID_TIER",
+        data: null,
+      });
+    }
 
     const skip = (Math.max(page, 1) - 1) * limit;
 
+    // No `mode: "insensitive"` — see getSchoolsPublic; it 500s on MySQL.
     const where = {
       role: "marketer",
+      ...(tier && { tier }),
       ...(search && {
         OR: [
-          { name: { contains: search, mode: "insensitive" } },
-          { email: { contains: search, mode: "insensitive" } },
+          { name: { contains: search } },
+          { email: { contains: search } },
         ],
       }),
     };
@@ -789,13 +969,52 @@ exports.listMarketers = async (req, res, next) => {
       prisma.admin.count({ where }),
     ]);
 
-    logger.info(`[LIST_MARKETERS] Retrieved ${marketers.length} marketers`, { page, limit, total });
+    const marketerIds = marketers.map((m) => m.id);
+
+    // Three grouped queries for the whole page, not three per row. groupBy
+    // returns one row per marketer that has any matching record; marketers
+    // with none are simply absent, which is why the lookups below default to 0
+    // rather than assuming every id is present.
+    const [tokenCounts, schoolCounts, documentsByMarketer] = await Promise.all([
+      marketerIds.length
+        ? prisma.schoolToken.groupBy({
+            by: ["marketerId"],
+            where: { marketerId: { in: marketerIds } },
+            _count: { _all: true },
+          })
+        : [],
+      marketerIds.length
+        ? prisma.marketerSchoolLead.groupBy({
+            by: ["marketerId"],
+            // A lead only counts as "registered" once it converted into a real
+            // School tenant — schoolId is set at that point and not before.
+            where: { marketerId: { in: marketerIds }, schoolId: { not: null } },
+            _count: { _all: true },
+          })
+        : [],
+      fetchDocumentsByMarketer(marketerIds),
+    ]);
+
+    const tokensByMarketer = new Map(tokenCounts.map((r) => [r.marketerId, r._count._all]));
+    const schoolsByMarketer = new Map(schoolCounts.map((r) => [r.marketerId, r._count._all]));
+
+    const rows = marketers.map((marketer) => ({
+      ...marketer,
+      // isActive is derived, not stored. isSuspended stays in the payload —
+      // other portals already read it and renaming it would break them.
+      isActive: !marketer.isSuspended,
+      documents: documentsByMarketer.get(marketer.id) || [],
+      tokensGenerated: tokensByMarketer.get(marketer.id) || 0,
+      schoolsRegistered: schoolsByMarketer.get(marketer.id) || 0,
+    }));
+
+    logger.info(`[LIST_MARKETERS] Retrieved ${rows.length} marketers`, { page, limit, total, tier });
 
     res.status(200).json({
       success: true,
       // Nested shape expected by Super Admin Portal's qaloxApiClient
       data: {
-        data: marketers,
+        data: rows,
         meta: {
           page: Math.max(page, 1),
           limit,
@@ -858,11 +1077,28 @@ exports.getMarketerById = async (req, res, next) => {
       });
     }
 
+    // Same derived fields the list returns, so a row and its detail view never
+    // disagree. Counts are cheap here — one marketer, not a page of them.
+    const [documents, tokensGenerated, schoolsRegistered] = await Promise.all([
+      prisma.marketerDocument.findMany({
+        where: { marketerId },
+        orderBy: { uploadedAt: "desc" },
+      }),
+      prisma.schoolToken.count({ where: { marketerId } }),
+      prisma.marketerSchoolLead.count({ where: { marketerId, schoolId: { not: null } } }),
+    ]);
+
     logger.info(`[GET_MARKETER] Retrieved marketer`, { marketerId, email: marketer.email });
 
     res.status(200).json({
       success: true,
-      data: marketer,
+      data: {
+        ...marketer,
+        isActive: !marketer.isSuspended,
+        documents: documents.map(serialiseMarketerDocument),
+        tokensGenerated,
+        schoolsRegistered,
+      },
     });
   } catch (err) {
     logger.error(`[GET_MARKETER] Error fetching marketer`, { error: err.message, marketerId: req.params.id });
@@ -953,10 +1189,15 @@ exports.updateMarketer = async (req, res, next) => {
 exports.suspendMarketer = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { suspend } = req.body;
+    const { suspend, reason } = req.body;
     const marketerId = parseInt(id, 10);
+    // Actor comes from the verified Bearer token only. Never from the body —
+    // a client-supplied "actorId" would let a caller sign someone else's name
+    // to a suspension. Null when the caller authenticated by service key
+    // alone, which is honest: that key identifies an app, not a person.
+    const actorId = req.user?.id ?? null;
 
-    logger.debug(`[SUSPEND_MARKETER] Processing suspension request`, { marketerId, suspend });
+    logger.debug(`[SUSPEND_MARKETER] Processing suspension request`, { marketerId, suspend, actorId });
 
     if (isNaN(marketerId)) {
       logger.warn(`[SUSPEND_MARKETER] Invalid marketer ID`, { id });
@@ -981,29 +1222,51 @@ exports.suspendMarketer = async (req, res, next) => {
       });
     }
 
-    // Update suspension status
-    const updatedMarketer = await prisma.admin.update({
-      where: { id: marketerId },
-      data: {
-        isSuspended: suspend === true,
-        suspendedAt: suspend === true ? new Date() : null,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        tier: true,
-        isSuspended: true,
-        suspendedAt: true,
-      },
-    });
+    const suspending = suspend === true;
 
-    logger.info(`[SUSPEND_MARKETER] Marketer ${suspend ? 'suspended' : 'activated'} successfully`, { marketerId, email: updatedMarketer.email, isSuspended: updatedMarketer.isSuspended });
+    // Update suspension status and append the audit row together — a
+    // suspension that isn't recorded is worse than one that fails outright.
+    const [updatedMarketer] = await prisma.$transaction([
+      prisma.admin.update({
+        where: { id: marketerId },
+        data: {
+          isSuspended: suspending,
+          suspendedAt: suspending ? new Date() : null,
+          // Reactivating clears the reason: it describes the current
+          // suspension, and a stale one reads as if they're still suspended.
+          suspensionReason: suspending ? (reason || null) : null,
+          suspendedBy: suspending ? actorId : null,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          tier: true,
+          isSuspended: true,
+          suspendedAt: true,
+          suspensionReason: true,
+          suspendedBy: true,
+        },
+      }),
+      prisma.securityEvent.create({
+        data: {
+          adminId: marketerId,
+          event: suspending ? "marketer_suspended" : "marketer_reactivated",
+          // VarChar(255) — slice so a long reason truncates instead of
+          // throwing and rolling back the suspension itself.
+          detail: `by admin ${actorId ?? "service-key"}${reason ? `: ${reason}` : ""}`.slice(0, 255),
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        },
+      }),
+    ], TX_OPTIONS);
+
+    logger.info(`[SUSPEND_MARKETER] Marketer ${suspending ? 'suspended' : 'activated'} successfully`, { marketerId, email: updatedMarketer.email, isSuspended: updatedMarketer.isSuspended, actorId });
 
     res.status(200).json({
       success: true,
-      message: suspend ? "Marketer suspended successfully" : "Marketer activated successfully",
-      data: updatedMarketer,
+      message: suspending ? "Marketer suspended successfully" : "Marketer activated successfully",
+      data: { ...updatedMarketer, isActive: !updatedMarketer.isSuspended },
     });
   } catch (err) {
     logger.error(`[SUSPEND_MARKETER] Error suspending marketer`, { error: err.message, marketerId: req.params.id });
@@ -1057,24 +1320,40 @@ exports.setMarketerCommission = async (req, res, next) => {
       });
     }
 
-    // Update commission
-    const updatedMarketer = await prisma.admin.update({
-      where: { id: marketerId },
-      data: {
-        commissionRate,
-        commissionStructure: commissionStructure || "flat",
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        tier: true,
-        commissionRate: true,
-        commissionStructure: true,
-      },
-    });
+    const actorId = req.user?.id ?? null;
+    const previousRate = existingMarketer.commissionRate ?? 0;
 
-    logger.info(`[SET_COMMISSION] Commission updated successfully`, { marketerId, commissionRate });
+    // Update commission, and record who changed it and from what. Rate changes
+    // move real money, so the before-value belongs in the trail — "set to 8%"
+    // is only meaningful next to what it was.
+    const [updatedMarketer] = await prisma.$transaction([
+      prisma.admin.update({
+        where: { id: marketerId },
+        data: {
+          commissionRate,
+          commissionStructure: commissionStructure || "flat",
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          tier: true,
+          commissionRate: true,
+          commissionStructure: true,
+        },
+      }),
+      prisma.securityEvent.create({
+        data: {
+          adminId: marketerId,
+          event: "marketer_commission_changed",
+          detail: `by admin ${actorId ?? "service-key"}: ${previousRate}% -> ${commissionRate}%`.slice(0, 255),
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        },
+      }),
+    ], TX_OPTIONS);
+
+    logger.info(`[SET_COMMISSION] Commission updated successfully`, { marketerId, commissionRate, previousRate, actorId });
 
     res.status(200).json({
       success: true,
@@ -1164,13 +1443,93 @@ exports.getMarketerWallet = async (req, res, next) => {
 
 // PATCH /api/public/marketers/:id/wallet
 // Update marketer wallet balance (for payout/credit operations)
+/**
+ * GET /api/public/marketers/me/wallet
+ *
+ * Marketer reads their OWN wallet. Identity comes from the Bearer token, so no
+ * client-supplied id is involved and there is nothing to authorize against.
+ *
+ * Exists because GET /marketers/:id/wallet is gated by requirePlatformSuperAdmin
+ * and therefore 403s for a marketer even on their own id — leaving the Marketer
+ * Portal with no way to read its own balance. Same response shape as that
+ * endpoint so the two stay interchangeable.
+ */
+exports.getMyWallet = async (req, res, next) => {
+  try {
+    const marketerId = req.user?.id || req.marketer?.id;
+
+    logger.debug(`[GET_MY_WALLET] Fetching own wallet`, { marketerId });
+
+    if (!marketerId) {
+      logger.warn(`[GET_MY_WALLET] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: {
+        id: true,
+        walletBalance: true,
+        walletPending: true,
+        totalEarned: true,
+        totalWithdrawn: true,
+        transactionCount: true,
+        lastPayoutDate: true,
+        commissionRate: true,
+      },
+    });
+
+    if (!marketer) {
+      logger.warn(`[GET_MY_WALLET] Marketer not found`, { marketerId });
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const thisMonthCredits = await prisma.walletTransaction.aggregate({
+      where: { marketerId, type: "credit", createdAt: { gte: monthStart } },
+      _sum: { amount: true },
+    });
+
+    logger.info(`[GET_MY_WALLET] Wallet retrieved`, { marketerId, balance: marketer.walletBalance });
+
+    res.status(200).json({
+      success: true,
+      message: "Wallet retrieved successfully",
+      data: {
+        marketerId: marketer.id,
+        balance: marketer.walletBalance,
+        pendingBalance: marketer.walletPending,
+        totalEarned: marketer.totalEarned,
+        totalWithdrawn: marketer.totalWithdrawn,
+        thisMonthEarned: thisMonthCredits._sum.amount || 0,
+        transactionCount: marketer.transactionCount,
+        lastPayoutDate: marketer.lastPayoutDate,
+        commissionRate: marketer.commissionRate,
+      },
+    });
+  } catch (err) {
+    logger.error(`[GET_MY_WALLET] Error fetching wallet`, { error: err.message });
+    next(err);
+  }
+};
+
 exports.updateMarketerWallet = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { operation, amount, description } = req.body;
     const marketerId = parseInt(id, 10);
+    const actorId = req.user?.id ?? null;
 
-    logger.debug(`[UPDATE_WALLET] Wallet operation`, { marketerId, operation, amount });
+    logger.debug(`[UPDATE_WALLET] Wallet operation`, { marketerId, operation, amount, actorId });
 
     if (isNaN(marketerId)) {
       logger.warn(`[UPDATE_WALLET] Invalid marketer ID`, { id });
@@ -1210,6 +1569,21 @@ exports.updateMarketerWallet = async (req, res, next) => {
         success: false,
         message: "Marketer not found",
         code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    // Money may only leave the platform to a KYC-approved marketer. Credits and
+    // internal debits are unaffected — this gates the payout operation only.
+    if (operation === "payout" && marketer.verificationStatus !== "approved") {
+      logger.warn(`[UPDATE_WALLET] Payout blocked, KYC not approved`, {
+        marketerId,
+        verificationStatus: marketer.verificationStatus,
+      });
+      return res.status(403).json({
+        success: false,
+        message: "Marketer identity verification must be approved before a payout can be made",
+        code: "VERIFICATION_REQUIRED",
+        details: { verificationStatus: marketer.verificationStatus || "pending" },
       });
     }
 
@@ -1268,11 +1642,14 @@ exports.updateMarketerWallet = async (req, res, next) => {
           amount,
           description: description || null,
           balanceAfter: newBalance,
+          // Who moved the money. `description` is client-supplied text and so
+          // can claim anything; this comes from the verified token.
+          performedByAdminId: actorId,
         },
       }),
     ], { timeout: 20000 });
 
-    logger.info(`[UPDATE_WALLET] Wallet updated successfully`, { marketerId, operation, amount, newBalance });
+    logger.info(`[UPDATE_WALLET] Wallet updated successfully`, { marketerId, operation, amount, newBalance, actorId });
 
     res.status(200).json({
       success: true,
@@ -1364,14 +1741,27 @@ exports.setGlobalCommission = async (req, res, next) => {
   }
 };
 
+// Same format as the Super Admin Portal (res/controller/system-admin/generateToken.js
+// and res/controller/superadmin/SuperAdminController.js) so both portals mint
+// identical, interchangeable school registration codes.
+const generateRegistrationToken = () => {
+  const randomHex = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `TKN-${randomHex}`;
+};
+
 /**
  * POST /api/public/school-tokens
  * Create a new school assessment token (called by Marketer Portal)
+ *
+ * Writes two rows: `SchoolToken` (powers the marketer dashboard) and `Token`
+ * (what POST /api/admin/create validates against). Before this, marketer tokens
+ * only ever landed in `SchoolToken`, so a school handed one could never actually
+ * register — registration reads `Token` exclusively.
  */
 exports.createSchoolToken = async (req, res, next) => {
   try {
     const marketerId = req.user?.id || req.marketer?.id;
-    const { schoolName, schoolEmail, pupil, class: className, subject } = req.body;
+    const { schoolName, schoolEmail } = req.body;
 
     if (!marketerId) {
       logger.warn(`[CREATE_TOKEN] Unauthorized - no marketerId in token`);
@@ -1391,23 +1781,102 @@ exports.createSchoolToken = async (req, res, next) => {
       });
     }
 
-    const code = `TKN-${Date.now()}`;
-    const issuedDate = new Date();
-    const expiryDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    // Token.email is @unique — a duplicate row throws P2002, so guard first and
+    // mirror the Super Admin 409 exactly.
+    const existingToken = await prisma.token.findUnique({
+      where: { email: schoolEmail },
+    });
 
-    const token = await prisma.schoolToken.create({
-      data: {
-        marketerId,
-        code,
-        schoolName,
-        schoolEmail,
-        pupil: pupil || null,
-        class: className || null,
-        subject: subject || null,
-        status: "active",
-        issuedDate,
-        expiryDate,
-      },
+    if (existingToken && existingToken.status === "active") {
+      logger.warn(`[CREATE_TOKEN] Active registration token already exists`, { schoolEmail });
+      return res.status(409).json({
+        success: false,
+        message: "An active registration token already exists for this school email",
+        code: "TOKEN_EXISTS",
+      });
+    }
+
+    const code = generateRegistrationToken();
+    const issuedDate = new Date();
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 30); // 30 days, same as Super Admin
+
+    // Both rows or neither — a partial write would leave the marketer dashboard
+    // showing a token that registration can't honour (or vice versa).
+    const token = await prisma.$transaction(async (tx) => {
+      const schoolToken = await tx.schoolToken.create({
+        data: {
+          marketerId,
+          code,
+          schoolName,
+          schoolEmail,
+          status: "active",
+          issuedDate,
+          expiryDate,
+        },
+      });
+
+      // upsert, not create — lets a school whose earlier token was spent or
+      // expired be issued a fresh one against the same email.
+      await tx.token.upsert({
+        where: { email: schoolEmail },
+        update: {
+          uniqueKey: code,
+          schoolName,
+          status: "active",
+          expiresAt: expiryDate,
+          usedAt: null,
+          usedBy: null,
+        },
+        create: {
+          email: schoolEmail,
+          uniqueKey: code,
+          schoolName,
+          status: "active",
+          expiresAt: expiryDate,
+        },
+      });
+
+      // Surface the school in the marketer's list straight away. Issuing a
+      // token is the only path that puts a school there — the portal has no
+      // "Add School" UI, so POST /marketer-schools is never called — and
+      // without this the dashboard reads empty until a school finishes
+      // onboarding. schoolId stays null until it converts; the attribution
+      // step in setupSchool fills it in and unlocks commission.
+      //
+      // findFirst + branch rather than upsert: MarketerSchoolLead has no
+      // unique constraint on (marketerId, email), only on schoolId.
+      const existingLead = await tx.marketerSchoolLead.findFirst({
+        where: { marketerId, email: schoolEmail },
+        select: { id: true },
+      });
+
+      if (existingLead) {
+        // Leave `name` alone — the marketer may have edited it deliberately.
+        await tx.marketerSchoolLead.update({
+          where: { id: existingLead.id },
+          data: { tokensIssued: { increment: 1 } },
+        });
+      } else {
+        await tx.marketerSchoolLead.create({
+          data: {
+            marketerId,
+            name: schoolName,
+            email: schoolEmail,
+            status: "active",
+            tokensIssued: 1,
+          },
+        });
+      }
+
+      return schoolToken;
+    }, {
+      // Four to five sequential round-trips (schoolToken, token upsert, lead
+      // lookup, lead write) against a database reached over a remote proxy.
+      // Prisma's 5s interactive-transaction default is not enough headroom —
+      // the payout flow aborted at 5106ms doing strictly less work.
+      timeout: 20000,
+      maxWait: 10000,
     });
 
     logger.info(`[CREATE_TOKEN] New token created and saved`, {
@@ -1426,9 +1895,6 @@ exports.createSchoolToken = async (req, res, next) => {
         code: token.code,
         schoolName: token.schoolName,
         schoolEmail: token.schoolEmail,
-        pupil: token.pupil || "",
-        class: token.class || "",
-        subject: token.subject || "",
         issuedDate: token.issuedDate.toISOString(),
         expiryDate: token.expiryDate.toISOString(),
         status: token.status,
@@ -1492,9 +1958,6 @@ exports.getSchoolTokens = async (req, res, next) => {
       code: t.code,
       schoolName: t.schoolName,
       schoolEmail: t.schoolEmail,
-      pupil: t.pupil || "",
-      class: t.class || "",
-      subject: t.subject || "",
       issuedDate: t.issuedDate.toISOString(),
       expiryDate: t.expiryDate.toISOString(),
       status: t.status,
@@ -1584,7 +2047,9 @@ exports.marketerSignup = async (req, res, next) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create marketer
+    // Create marketer. This is the route the Marketer Portal actually signs up
+    // through, and it never set referralCode — which is why every existing row
+    // has NULL and the Super Admin table's Referral Code column was blank.
     const marketer = await prisma.admin.create({
       data: {
         email,
@@ -1592,12 +2057,14 @@ exports.marketerSignup = async (req, res, next) => {
         name,
         role: "marketer",
         tier: tier || "bronze",
+        referralCode: await generateUniqueReferralCode(prisma),
       },
       select: {
         id: true,
         email: true,
         name: true,
         tier: true,
+        referralCode: true,
       },
     });
 
@@ -1625,21 +2092,41 @@ exports.marketerSignup = async (req, res, next) => {
 };
 
 /**
- * GET /api/public/auth/profile/:marketerId
- * Get marketer profile (called by Marketer Portal)
+ * GET /api/public/auth/profile            <- preferred: derives the marketer from the token
+ * GET /api/public/auth/profile/:marketerId <- legacy: kept for the Marketer Portal's
+ *                                             cached-id flow, but only for your own id
+ *
+ * Identity always comes from the verified Bearer token. When the legacy
+ * :marketerId param is supplied it is treated as an assertion to check, not as
+ * a selector — a mismatch is 403 rather than someone else's profile.
  */
 exports.getMarketerProfile = async (req, res, next) => {
   try {
+    const authenticatedId = req.user?.id || req.marketer?.id;
     const { marketerId } = req.params;
-    const parsedId = parseInt(marketerId, 10);
 
-    if (!marketerId || isNaN(parsedId)) {
-      return res.status(400).json({
+    if (!authenticatedId) {
+      logger.warn(`[MARKETER_PROFILE] No authenticated marketer on request`);
+      return res.status(401).json({
         success: false,
-        message: "Invalid or missing Marketer ID",
-        code: "INVALID_ID",
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
       });
     }
+
+    if (marketerId && parseInt(marketerId, 10) !== authenticatedId) {
+      logger.warn(`[MARKETER_PROFILE] Cross-marketer profile read blocked`, {
+        requested: marketerId,
+        caller: authenticatedId,
+      });
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden",
+        code: "FORBIDDEN",
+      });
+    }
+
+    const parsedId = authenticatedId;
 
     const marketer = await prisma.admin.findUnique({
       where: { id: parsedId },
@@ -1652,11 +2139,31 @@ exports.getMarketerProfile = async (req, res, next) => {
         totalWithdrawn: true,
         lastPayoutDate: true,
         createdAt: true,
+        // Self-service endpoint — the caller is always the marketer themselves
+        // (enforced above), so their own contact and bank details are safe here.
+        referralCode: true,
+        avatar: true,
+        phone: true,
+        address: true,
+        city: true,
+        state: true,
+        bankName: true,
+        bankAccountNumber: true,
+        bankAccountName: true,
+        isEmailVerified: true,
+        isSuspended: true,
+        verificationStatus: true,
+        verificationDocumentType: true,
+        verificationSubmittedAt: true,
+        verificationRejectionReason: true,
+        role: true,
+        twoFactorEnabled: true,
+        notificationPreferences: true,
       },
     });
 
     if (!marketer) {
-      logger.warn(`[MARKETER_PROFILE] Marketer not found`, { marketerId });
+      logger.warn(`[MARKETER_PROFILE] Marketer not found`, { marketerId: parsedId });
       return res.status(404).json({
         success: false,
         message: "Marketer not found",
@@ -1664,14 +2171,32 @@ exports.getMarketerProfile = async (req, res, next) => {
       });
     }
 
-    logger.debug(`[MARKETER_PROFILE] Profile retrieved`, { marketerId });
+    logger.debug(`[MARKETER_PROFILE] Profile retrieved`, { marketerId: parsedId });
+
+    // Stored as a JSON string (Text column); hand the client an object, and
+    // fall back to defaults for marketers who have never saved preferences.
+    let notificationPreferences = {
+      email: true,
+      push: true,
+      commissionAlerts: true,
+      marketingUpdates: false,
+    };
+    if (marketer.notificationPreferences) {
+      try {
+        notificationPreferences = JSON.parse(marketer.notificationPreferences);
+      } catch (parseErr) {
+        logger.warn(`[MARKETER_PROFILE] Corrupt notificationPreferences, serving defaults`, {
+          marketerId: parsedId,
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,
-      data: marketer,
+      data: { ...marketer, notificationPreferences },
     });
   } catch (err) {
-    logger.error(`[MARKETER_PROFILE] Error fetching profile`, { error: err.message, marketerId: req.params.marketerId });
+    logger.error(`[MARKETER_PROFILE] Error fetching profile`, { error: err.message, marketerId: req.user?.id });
     next(err);
   }
 };
@@ -1686,6 +2211,7 @@ exports.getMarketerSchools = async (req, res, next) => {
     const marketerId = req.user?.id || req.marketer?.id;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 20));
+    const search = req.query.search || "";
 
     if (!marketerId) {
       return res.status(401).json({
@@ -1695,11 +2221,27 @@ exports.getMarketerSchools = async (req, res, next) => {
       });
     }
 
+    // Always scoped to this marketer; search narrows within their own leads.
+    // No `mode: "insensitive"` — this is MySQL, where Prisma does not generate
+    // QueryMode. The default collation is already case-insensitive.
+    const where = { marketerId };
+    if (search) {
+      where.OR = [
+        { name: { contains: search } },
+        { email: { contains: search } },
+        { contactPerson: { contains: search } },
+      ];
+    }
+
     const [schools, total] = await Promise.all([
       prisma.marketerSchoolLead.findMany({
-        where: { marketerId },
+        where,
         select: {
           id: true,
+          // Null until the school completes onboarding. Non-null means this
+          // lead has converted into a real School tenant, which is what makes
+          // it eligible for commission.
+          schoolId: true,
           name: true,
           email: true,
           location: true,
@@ -1718,7 +2260,7 @@ exports.getMarketerSchools = async (req, res, next) => {
         take: limit,
         orderBy: { createdAt: "desc" },
       }),
-      prisma.marketerSchoolLead.count({ where: { marketerId } }),
+      prisma.marketerSchoolLead.count({ where }),
     ]);
 
     logger.debug(`[MARKETER_SCHOOLS] Schools retrieved`, { marketerId, count: schools.length });
@@ -1802,14 +2344,50 @@ exports.createMarketerSchool = async (req, res, next) => {
  */
 exports.updateMarketerSchool = async (req, res, next) => {
   try {
+    const marketerId = req.user?.id || req.marketer?.id;
     const { id } = req.params;
     const { name, email, location, state, registrationNumber, type, contactPerson, phone, status } = req.body;
+
+    if (!marketerId) {
+      logger.warn(`[UPDATE_SCHOOL] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
 
     if (!id) {
       return res.status(400).json({
         success: false,
         message: "School ID is required",
         code: "MISSING_ID",
+      });
+    }
+
+    // Ownership check. Lead ids are sequential integers, so without this any
+    // signed-in marketer could edit another marketer's lead by guessing an id.
+    // Mirrors the guard already in revokeSchoolToken.
+    const existing = await prisma.marketerSchoolLead.findUnique({
+      where: { id: parseInt(id) },
+      select: { marketerId: true },
+    });
+
+    if (!existing) {
+      logger.warn(`[UPDATE_SCHOOL] School not found`, { schoolId: id });
+      return res.status(404).json({
+        success: false,
+        message: "School not found",
+        code: "NOT_FOUND",
+      });
+    }
+
+    if (existing.marketerId !== marketerId) {
+      logger.warn(`[UPDATE_SCHOOL] Forbidden - lead belongs to another marketer`, { schoolId: id, marketerId, ownerId: existing.marketerId });
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to update this school",
+        code: "FORBIDDEN",
       });
     }
 
@@ -1867,23 +2445,54 @@ exports.updateMarketerSchool = async (req, res, next) => {
 
 /**
  * GET /api/public/notifications
- * Get notifications (Marketer Portal - returns empty for now)
+ * List the authenticated marketer's notifications.
+ * Query: ?page&limit&unreadOnly=true
  */
 exports.getNotifications = async (req, res, next) => {
   try {
-    const limit = parseInt(req.query.limit || 10, 10);
-    const page = parseInt(req.query.page || 1, 10);
+    const marketerId = req.user?.id || req.marketer?.id;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 10));
+    // ?unreadOnly=true narrows the list; unreadCount below is always the full
+    // unread total so a badge stays correct regardless of this filter.
+    const unreadOnly = req.query.unreadOnly === "true";
 
-    logger.debug(`[GET_NOTIFICATIONS] Fetching notifications`, { page, limit });
+    logger.debug(`[GET_NOTIFICATIONS] Fetching notifications`, { marketerId, page, limit, unreadOnly });
 
-    // Return empty notifications array (UI-only for now)
+    if (!marketerId) {
+      logger.warn(`[GET_NOTIFICATIONS] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    const where = { marketerId };
+    if (unreadOnly) where.isRead = false;
+
+    const [notifications, total, unreadCount] = await Promise.all([
+      prisma.notification.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.notification.count({ where }),
+      prisma.notification.count({ where: { marketerId, isRead: false } }),
+    ]);
+
+    logger.info(`[GET_NOTIFICATIONS] Notifications retrieved`, { marketerId, count: notifications.length, unreadCount });
+
     res.status(200).json({
       success: true,
       data: {
-        notifications: [],
-        total: 0,
+        notifications,
+        total,
+        unreadCount,
         page,
         limit,
+        pages: Math.ceil(total / limit),
       },
     });
   } catch (err) {
@@ -1908,115 +2517,6 @@ exports.getNotifications = async (req, res, next) => {
  * - type: '2fa-temp'
  * - createdAt: timestamp (expires in 5 minutes)
  */
-exports.verify2FA = async (req, res, next) => {
-  try {
-    const { tempToken, code } = req.body;
-
-    logger.debug(`[AUTH_2FA_VERIFY] Verifying 2FA code`, { hasToken: !!tempToken });
-
-    if (!tempToken || !code) {
-      logger.warn(`[AUTH_2FA_VERIFY] Missing required fields`, { tempToken: !!tempToken, code: !!code });
-      return res.status(400).json({
-        success: false,
-        message: "tempToken and code are required",
-        code: "MISSING_FIELDS",
-      });
-    }
-
-    // Validate temp token format (should be JWT)
-    let decoded;
-    try {
-      decoded = jwt.verify(tempToken, process.env.JWT_SECRET || "your-secret-key");
-    } catch (err) {
-      logger.warn(`[AUTH_2FA_VERIFY] Invalid or expired temp token`, { error: err.message });
-      return res.status(401).json({
-        success: false,
-        message: "Invalid or expired temp token",
-        code: "INVALID_TOKEN",
-      });
-    }
-
-    // Verify token type
-    if (decoded.type !== "2fa-temp") {
-      logger.warn(`[AUTH_2FA_VERIFY] Token is not a 2FA temp token`, { tokenType: decoded.type });
-      return res.status(401).json({
-        success: false,
-        message: "Invalid token type",
-        code: "INVALID_TOKEN",
-      });
-    }
-
-    // Check token expiration (must be within 5 minutes)
-    const tokenAge = Date.now() - decoded.iat * 1000;
-    if (tokenAge > 5 * 60 * 1000) {
-      logger.warn(`[AUTH_2FA_VERIFY] Temp token expired`, { age: tokenAge });
-      return res.status(401).json({
-        success: false,
-        message: "Temp token expired",
-        code: "TOKEN_EXPIRED",
-      });
-    }
-
-    // TODO: Validate 2FA code against stored OTP
-    // For now, accept any 6-digit code
-    if (!code.match(/^\d{6}$/)) {
-      logger.warn(`[AUTH_2FA_VERIFY] Invalid 2FA code format`, { codeLength: code.length });
-      return res.status(400).json({
-        success: false,
-        message: "2FA code must be 6 digits",
-        code: "INVALID_CODE_FORMAT",
-      });
-    }
-
-    // Get marketer details
-    const marketer = await prisma.admin.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        tier: true,
-      },
-    });
-
-    if (!marketer) {
-      logger.warn(`[AUTH_2FA_VERIFY] Marketer not found`, { userId: decoded.id });
-      return res.status(404).json({
-        success: false,
-        message: "Marketer not found",
-        code: "NOT_FOUND",
-      });
-    }
-
-    // Generate new JWT token — claim key standardized to `id` to match every
-    // other marketer-facing token (signup, login) and every endpoint that
-    // reads req.user?.id
-    const token = jwt.sign(
-      { id: marketer.id, email: marketer.email, role: marketer.role },
-      process.env.JWT_SECRET || "your-secret-key",
-      { expiresIn: "7d" }
-    );
-
-    logger.info(`[AUTH_2FA_VERIFY] 2FA verified successfully`, { userId: marketer.id, email: marketer.email });
-
-    res.status(200).json({
-      success: true,
-      message: "2FA verified",
-      data: {
-        id: marketer.id,
-        email: marketer.email,
-        name: marketer.name,
-        role: marketer.role,
-        tier: marketer.tier,
-        token,
-      },
-    });
-  } catch (err) {
-    logger.error(`[AUTH_2FA_VERIFY] 2FA verification failed`, { error: err.message });
-    next(err);
-  }
-};
 
 /**
  * GET /api/public/school-tokens/by-school
@@ -2119,9 +2619,22 @@ exports.revokeSchoolToken = async (req, res, next) => {
       });
     }
 
-    const updatedToken = await prisma.schoolToken.update({
-      where: { id: tokenId },
-      data: { status: "revoked" },
+    // Revoke both rows. Marketer tokens now register schools via the `Token`
+    // table, so revoking only the SchoolToken row would leave a live
+    // registration code behind. updateMany (not update) so tokens issued before
+    // the dual-write existed don't throw on a missing `Token` row.
+    const updatedToken = await prisma.$transaction(async (tx) => {
+      const schoolToken = await tx.schoolToken.update({
+        where: { id: tokenId },
+        data: { status: "revoked" },
+      });
+
+      await tx.token.updateMany({
+        where: { uniqueKey: token.code },
+        data: { status: "inactive" },
+      });
+
+      return schoolToken;
     });
 
     logger.info(`[REVOKE_TOKEN] Token revoked successfully`, { tokenId });
@@ -2178,16 +2691,25 @@ exports.getCommissions = async (req, res, next) => {
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
+        // Joined so the client doesn't have to resolve schoolId -> name per row.
+        include: { school: { select: { name: true } } },
       }),
       prisma.commission.count({ where }),
     ]);
+
+    // Flatten the relation into schoolName and drop the nested object, keeping
+    // rows flat. schoolName is null for legacy rows that have no schoolId.
+    const formattedCommissions = commissions.map(({ school, ...commission }) => ({
+      ...commission,
+      schoolName: school?.name ?? null,
+    }));
 
     logger.info(`[GET_COMMISSIONS] Commissions retrieved`, { marketerId, count: commissions.length, total });
 
     res.status(200).json({
       success: true,
       data: {
-        commissions,
+        commissions: formattedCommissions,
         total,
         page,
         limit,
@@ -2281,10 +2803,20 @@ exports.getCommissionSummary = async (req, res, next) => {
  */
 exports.markNotificationRead = async (req, res, next) => {
   try {
+    const marketerId = req.user?.id || req.marketer?.id;
     const { id } = req.params;
     const notificationId = parseInt(id, 10);
 
-    logger.debug(`[MARK_NOTIFICATION_READ] Marking notification as read`, { notificationId });
+    logger.debug(`[MARK_NOTIFICATION_READ] Marking notification as read`, { notificationId, marketerId });
+
+    if (!marketerId) {
+      logger.warn(`[MARK_NOTIFICATION_READ] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
 
     if (isNaN(notificationId)) {
       logger.warn(`[MARK_NOTIFICATION_READ] Invalid notification ID`, { id });
@@ -2305,6 +2837,17 @@ exports.markNotificationRead = async (req, res, next) => {
         success: false,
         message: "Notification not found",
         code: "NOT_FOUND",
+      });
+    }
+
+    // Ownership check — a marketer must not be able to read-mark another
+    // marketer's notifications.
+    if (notification.marketerId !== marketerId) {
+      logger.warn(`[MARK_NOTIFICATION_READ] Forbidden - notification belongs to another marketer`, { notificationId, marketerId, ownerId: notification.marketerId });
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to update this notification",
+        code: "FORBIDDEN",
       });
     }
 
@@ -2377,18 +2920,18 @@ exports.markAllNotificationsRead = async (req, res, next) => {
  */
 exports.updateMarketerProfile = async (req, res, next) => {
   try {
-    const { marketerId } = req.query;
+    // Identity comes from the verified Bearer token, never from the client.
+    const id = req.user?.id || req.marketer?.id;
     const { name, phone, address, city, state } = req.body;
-    const id = parseInt(marketerId, 10);
 
     logger.debug(`[UPDATE_PROFILE] Updating marketer profile`, { marketerId: id });
 
-    if (!marketerId) {
-      logger.warn(`[UPDATE_PROFILE] marketerId query parameter required`);
-      return res.status(400).json({
+    if (!id) {
+      logger.warn(`[UPDATE_PROFILE] No authenticated marketer on request`);
+      return res.status(401).json({
         success: false,
-        message: "marketerId query parameter is required",
-        code: "MISSING_MARKETER_ID",
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
       });
     }
 
@@ -2433,7 +2976,7 @@ exports.updateMarketerProfile = async (req, res, next) => {
       data: updated,
     });
   } catch (err) {
-    logger.error(`[UPDATE_PROFILE] Failed to update profile`, { marketerId: req.query.marketerId, error: err.message });
+    logger.error(`[UPDATE_PROFILE] Failed to update profile`, { marketerId: req.user?.id, error: err.message });
     next(err);
   }
 };
@@ -2444,17 +2987,26 @@ exports.updateMarketerProfile = async (req, res, next) => {
  */
 exports.changePassword = async (req, res, next) => {
   try {
-    const { marketerId } = req.query;
+    // Identity comes from the verified Bearer token, never from the client.
+    const id = req.user?.id || req.marketer?.id;
     const { currentPassword, newPassword } = req.body;
-    const id = parseInt(marketerId, 10);
 
     logger.debug(`[CHANGE_PASSWORD] Password change attempt`, { marketerId: id });
 
-    if (!marketerId || !currentPassword || !newPassword) {
+    if (!id) {
+      logger.warn(`[CHANGE_PASSWORD] No authenticated marketer on request`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    if (!currentPassword || !newPassword) {
       logger.warn(`[CHANGE_PASSWORD] Missing required fields`);
       return res.status(400).json({
         success: false,
-        message: "marketerId, currentPassword, and newPassword are required",
+        message: "currentPassword and newPassword are required",
         code: "MISSING_FIELDS",
       });
     }
@@ -2504,7 +3056,7 @@ exports.changePassword = async (req, res, next) => {
       message: "Password changed successfully",
     });
   } catch (err) {
-    logger.error(`[CHANGE_PASSWORD] Failed to change password`, { marketerId: req.query.marketerId, error: err.message });
+    logger.error(`[CHANGE_PASSWORD] Failed to change password`, { marketerId: req.user?.id, error: err.message });
     next(err);
   }
 };
@@ -2515,25 +3067,30 @@ exports.changePassword = async (req, res, next) => {
  */
 exports.uploadAvatar = async (req, res, next) => {
   try {
-    const { marketerId } = req.query;
-    const id = parseInt(marketerId, 10);
+    // Identity comes from the verified Bearer token. This previously read
+    // ?marketerId from the query string, which let any caller overwrite another
+    // marketer's avatar.
+    const id = req.user?.id || req.marketer?.id;
 
     logger.debug(`[UPLOAD_AVATAR] Avatar upload initiated`, { marketerId: id });
 
-    if (!marketerId) {
-      logger.warn(`[UPLOAD_AVATAR] marketerId query parameter required`);
-      return res.status(400).json({
+    if (!id) {
+      logger.warn(`[UPLOAD_AVATAR] No authenticated marketer on request`);
+      return res.status(401).json({
         success: false,
-        message: "marketerId query parameter is required",
-        code: "MISSING_MARKETER_ID",
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
       });
     }
 
+    // Reaching this with no file means the multipart field name was wrong —
+    // uploadAvatarSingle("avatar") already rejects oversized and non-image
+    // uploads with 413/415 before the handler runs.
     if (!req.file) {
       logger.warn(`[UPLOAD_AVATAR] No file uploaded`, { marketerId: id });
       return res.status(400).json({
         success: false,
-        message: "No file uploaded",
+        message: "No file uploaded — send the image in the 'avatar' field",
         code: "NO_FILE",
       });
     }
@@ -2551,13 +3108,24 @@ exports.uploadAvatar = async (req, res, next) => {
       });
     }
 
-    const avatarUrl = `/api/uploads/avatars/${req.file.filename}`;
+    // processImage validates, resizes and writes the file, matching how school
+    // logos and stamps are handled. It returns "/uploads/<folder>/<file>";
+    // app.ts serves that directory at /api/uploads, hence the prefix.
+    // Date.now() keeps the filename unique so a replaced avatar isn't served
+    // from cache under the old URL.
+    const storedPath = await processImage(
+      req.file.buffer,
+      "avatars",
+      `avatar-${id}-${Date.now()}.jpeg`
+    );
+    const avatarUrl = `/api${storedPath}`;
+
     await prisma.admin.update({
       where: { id },
       data: { avatar: avatarUrl },
     });
 
-    logger.info(`[UPLOAD_AVATAR] Avatar uploaded successfully`, { marketerId: id, filename: req.file.filename });
+    logger.info(`[UPLOAD_AVATAR] Avatar uploaded successfully`, { marketerId: id, avatarUrl });
 
     res.status(200).json({
       success: true,
@@ -2567,7 +3135,7 @@ exports.uploadAvatar = async (req, res, next) => {
       },
     });
   } catch (err) {
-    logger.error(`[UPLOAD_AVATAR] Failed to upload avatar`, { marketerId: req.query.marketerId, error: err.message });
+    logger.error(`[UPLOAD_AVATAR] Failed to upload avatar`, { marketerId: req.user?.id, error: err.message });
     next(err);
   }
 };
@@ -2576,28 +3144,55 @@ exports.uploadAvatar = async (req, res, next) => {
  * GET /api/public/settings/banks
  * Get list of Nigerian banks
  */
+/**
+ * Offline fallback, used only when the Flutterwave bank list is unreachable.
+ *
+ * These are NIP codes, which is what a transfer is actually routed on. The
+ * list this replaced carried wrong codes for several banks (Zenith as 007
+ * rather than 057, GTBank as 053/014 rather than 058), listed GTBank three
+ * times, and still offered Skye and Diamond — both long since absorbed into
+ * Polaris and Access. Selecting one of those would have stored a code that
+ * routes a payout to the wrong institution or fails outright.
+ *
+ * Deliberately limited to long-established commercial banks whose codes are
+ * stable. The live API is authoritative; this only keeps the dropdown usable
+ * during an outage.
+ */
+const FALLBACK_NG_BANKS = [
+  { code: "044", name: "Access Bank" },
+  { code: "063", name: "Access Bank (Diamond)" },
+  { code: "023", name: "Citibank Nigeria" },
+  { code: "050", name: "Ecobank Nigeria" },
+  { code: "070", name: "Fidelity Bank" },
+  { code: "011", name: "First Bank of Nigeria" },
+  { code: "214", name: "First City Monument Bank" },
+  { code: "058", name: "Guaranty Trust Bank" },
+  { code: "082", name: "Keystone Bank" },
+  { code: "076", name: "Polaris Bank" },
+  { code: "101", name: "Providus Bank" },
+  { code: "221", name: "Stanbic IBTC Bank" },
+  { code: "068", name: "Standard Chartered Bank" },
+  { code: "232", name: "Sterling Bank" },
+  { code: "032", name: "Union Bank of Nigeria" },
+  { code: "033", name: "United Bank for Africa" },
+  { code: "215", name: "Unity Bank" },
+  { code: "035", name: "Wema Bank" },
+  { code: "057", name: "Zenith Bank" },
+];
+
 exports.getBankList = async (req, res, next) => {
   try {
     logger.debug(`[GET_BANKS] Fetching Nigerian banks list`);
 
-    // Common Nigerian banks - can be expanded or stored in DB
-    const banks = [
-      { code: "044", name: "Access Bank", slug: "access" },
-      { code: "033", name: "First Bank", slug: "firstbank" },
-      { code: "053", name: "Guaranty Trust Bank", slug: "gtb" },
-      { code: "050", name: "Ecobank", slug: "ecobank" },
-      { code: "011", name: "First City Monument Bank", slug: "fcmb" },
-      { code: "007", name: "Zenith Bank", slug: "zenith" },
-      { code: "014", name: "Guaranty Trust Bank", slug: "gtbank" },
-      { code: "035", name: "Wema Bank", slug: "wema" },
-      { code: "037", name: "Stanbic IBTC Bank", slug: "stanbic" },
-      { code: "040", name: "Skye Bank", slug: "skye" },
-      { code: "042", name: "Unity Bank", slug: "unity" },
-      { code: "048", name: "Diamond Bank", slug: "diamond" },
-      { code: "058", name: "Gtbank", slug: "gtb" },
-      { code: "060", name: "Fidelity Bank", slug: "fidelity" },
-      { code: "063", name: "Sterling Bank", slug: "sterling" },
-    ];
+    let banks;
+    try {
+      banks = await flutterwave.listBanks();
+    } catch (flwErr) {
+      // Degrade to the offline list rather than failing — an unreachable
+      // Flutterwave should not stop a marketer from opening the settings page.
+      logger.warn(`[GET_BANKS] Flutterwave unavailable, serving fallback list`, { error: flwErr.message });
+      banks = FALLBACK_NG_BANKS;
+    }
 
     logger.info(`[GET_BANKS] Banks list retrieved`, { count: banks.length });
 
@@ -2630,15 +3225,61 @@ exports.verifyBankAccount = async (req, res, next) => {
       });
     }
 
-    // TODO: Integrate with Flutterwave or Mono API for account verification
-    // For now, return mock verified account
-    logger.info(`[VERIFY_ACCOUNT] Account verification in progress`);
+    // Resolved against Flutterwave. This previously returned a hardcoded
+    // { accountName: "John Marketer", verified: true } for ANY input, so the
+    // green tick shown before a payout meant nothing.
+    //
+    // Fails CLOSED: if resolution errors we report verified:false rather than
+    // assuming success. This gates where a marketer's money is sent, so an
+    // unverifiable account must never look verified.
+    let resolved;
+    try {
+      resolved = await flutterwave.resolveAccount({ accountNumber, bankCode });
+    } catch (flwErr) {
+      logger.warn(`[VERIFY_ACCOUNT] Could not resolve account`, { bankCode, error: flwErr.message });
+
+      // Flutterwave's sandbox resolves only its own fixed test accounts
+      // (0690000031 / 0690000032 at bank 044). Every real account fails there
+      // no matter how valid it is. Telling the marketer to "check the account
+      // number" in that case is simply wrong advice, so report it as what it
+      // is: the provider being in test mode.
+      if (String(process.env.FLW_SECRET_KEY || "").includes("TEST")) {
+        return res.status(503).json({
+          success: false,
+          message:
+            "Bank verification is unavailable while Flutterwave is in test mode. " +
+            "The sandbox only resolves its own test accounts (0690000031 or 0690000032 at bank 044). " +
+            "A live FLW_SECRET_KEY is required to verify real accounts.",
+          code: "PROVIDER_TEST_MODE",
+          data: { accountNumber, bankCode, verified: false, providerMessage: flwErr.message },
+        });
+      }
+
+      return res.status(422).json({
+        success: false,
+        message: "Could not verify this account. Check the account number and bank, then try again.",
+        code: "ACCOUNT_VERIFICATION_FAILED",
+        data: { accountNumber, bankCode, verified: false, providerMessage: flwErr.message },
+      });
+    }
+
+    if (!resolved.accountName) {
+      logger.warn(`[VERIFY_ACCOUNT] Resolution returned no account name`, { bankCode });
+      return res.status(422).json({
+        success: false,
+        message: "Could not verify this account. Check the account number and bank, then try again.",
+        code: "ACCOUNT_VERIFICATION_FAILED",
+        data: { accountNumber, bankCode, verified: false },
+      });
+    }
+
+    logger.info(`[VERIFY_ACCOUNT] Account verified`, { bankCode });
 
     res.status(200).json({
       success: true,
       data: {
-        accountNumber,
-        accountName: "John Marketer",
+        accountNumber: resolved.accountNumber,
+        accountName: resolved.accountName,
         bankCode,
         verified: true,
       },
@@ -2655,13 +3296,28 @@ exports.verifyBankAccount = async (req, res, next) => {
  */
 exports.saveBankAccount = async (req, res, next) => {
   try {
-    const { marketerId } = req.query;
-    const { accountNumber, accountName, bankCode } = req.body;
-    const id = parseInt(marketerId, 10);
+    // Identity comes from the verified Bearer token, never from the client.
+    // A caller authenticated only by x-service-key has no user identity and
+    // must not be able to rewrite a marketer's payout destination.
+    const id = req.user?.id || req.marketer?.id;
+    // `bankCode` is canonical (it is the NIP code transfers route on), but the
+    // Marketer Portal historically sent the same value as `bankName`. Accept
+    // either so a client on the older shape isn't hard-blocked by a 400.
+    const { accountNumber, accountName } = req.body;
+    const bankCode = req.body.bankCode || req.body.bankName;
 
     logger.debug(`[SAVE_BANK_ACCOUNT] Saving bank account`, { marketerId: id, bankCode });
 
-    if (!marketerId || !accountNumber || !accountName || !bankCode) {
+    if (!id) {
+      logger.warn(`[SAVE_BANK_ACCOUNT] No authenticated marketer on request`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    if (!accountNumber || !accountName || !bankCode) {
       logger.warn(`[SAVE_BANK_ACCOUNT] Missing required fields`);
       return res.status(400).json({
         success: false,
@@ -2710,7 +3366,7 @@ exports.saveBankAccount = async (req, res, next) => {
       },
     });
   } catch (err) {
-    logger.error(`[SAVE_BANK_ACCOUNT] Failed to save bank account`, { marketerId: req.query.marketerId, error: err.message });
+    logger.error(`[SAVE_BANK_ACCOUNT] Failed to save bank account`, { marketerId: req.user?.id, error: err.message });
     next(err);
   }
 };
@@ -2721,18 +3377,18 @@ exports.saveBankAccount = async (req, res, next) => {
  */
 exports.updateNotificationSettings = async (req, res, next) => {
   try {
-    const { marketerId } = req.query;
+    // Identity comes from the verified Bearer token, never from the client.
+    const id = req.user?.id || req.marketer?.id;
     const { email, push, commissionAlerts, marketingUpdates } = req.body;
-    const id = parseInt(marketerId, 10);
 
     logger.debug(`[UPDATE_NOTIFICATIONS] Updating notification preferences`, { marketerId: id });
 
-    if (!marketerId) {
-      logger.warn(`[UPDATE_NOTIFICATIONS] marketerId query parameter required`);
-      return res.status(400).json({
+    if (!id) {
+      logger.warn(`[UPDATE_NOTIFICATIONS] No authenticated marketer on request`);
+      return res.status(401).json({
         success: false,
-        message: "marketerId query parameter is required",
-        code: "MISSING_MARKETER_ID",
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
       });
     }
 
@@ -2749,22 +3405,42 @@ exports.updateNotificationSettings = async (req, res, next) => {
       });
     }
 
-    // TODO: Store notification preferences in a separate NotificationSettings table
-    // For now, log the preferences
+    // Merge over whatever is already stored so a partial PUT does not silently
+    // reset the toggles the client did not send. Parse defensively — a corrupt
+    // value would otherwise 500 this endpoint, and getMarketerProfile already
+    // tolerates the same corruption rather than failing.
+    let existing = {};
+    if (marketer.notificationPreferences) {
+      try {
+        existing = JSON.parse(marketer.notificationPreferences);
+      } catch (parseErr) {
+        logger.warn(`[UPDATE_NOTIFICATIONS] Corrupt notificationPreferences, merging onto defaults`, { marketerId: id });
+      }
+    }
+
+    const preferences = {
+      email: email !== undefined ? !!email : (existing.email ?? true),
+      push: push !== undefined ? !!push : (existing.push ?? true),
+      commissionAlerts:
+        commissionAlerts !== undefined ? !!commissionAlerts : (existing.commissionAlerts ?? true),
+      marketingUpdates:
+        marketingUpdates !== undefined ? !!marketingUpdates : (existing.marketingUpdates ?? false),
+    };
+
+    await prisma.admin.update({
+      where: { id },
+      data: { notificationPreferences: JSON.stringify(preferences) },
+    });
+
     logger.info(`[UPDATE_NOTIFICATIONS] Notification preferences updated`, { marketerId: id });
 
     res.status(200).json({
       success: true,
       message: "Notification preferences updated",
-      data: {
-        email: email !== undefined ? email : true,
-        push: push !== undefined ? push : true,
-        commissionAlerts: commissionAlerts !== undefined ? commissionAlerts : true,
-        marketingUpdates: marketingUpdates !== undefined ? marketingUpdates : false,
-      },
+      data: preferences,
     });
   } catch (err) {
-    logger.error(`[UPDATE_NOTIFICATIONS] Failed to update preferences`, { marketerId: req.query.marketerId, error: err.message });
+    logger.error(`[UPDATE_NOTIFICATIONS] Failed to update preferences`, { marketerId: req.user?.id, error: err.message });
     next(err);
   }
 };
@@ -2845,21 +3521,39 @@ exports.getTransactionStats = async (req, res, next) => {
       });
     }
 
-    const [aggregates, transactionCount] = await Promise.all([
+    // Split by direction. Every amount is stored positive, so a single SUM over
+    // all rows adds withdrawals to earnings and reads as a meaningless total.
+    const [creditAgg, debitAgg, payoutAgg, transactionCount] = await Promise.all([
       prisma.walletTransaction.aggregate({
-        where: { marketerId },
+        where: { marketerId, type: "credit" },
+        _sum: { amount: true },
+      }),
+      prisma.walletTransaction.aggregate({
+        where: { marketerId, type: "debit" },
+        _sum: { amount: true },
+      }),
+      prisma.walletTransaction.aggregate({
+        where: { marketerId, type: "payout" },
         _sum: { amount: true },
       }),
       prisma.walletTransaction.count({ where: { marketerId } }),
     ]);
 
-    const totalAmount = aggregates._sum.amount || 0;
+    const totalCredits = creditAgg._sum.amount || 0;
+    // debit and payout are both money leaving the wallet.
+    const totalDebits = (debitAgg._sum.amount || 0) + (payoutAgg._sum.amount || 0);
+    // Gross turnover — kept only so existing clients don't break. Prefer
+    // netAmount / totalCredits / totalDebits; this figure is not spendable.
+    const totalAmount = totalCredits + totalDebits;
 
     logger.info(`[TRANSACTION_STATS] Transaction stats retrieved`, { marketerId, transactionCount });
 
     res.status(200).json({
       success: true,
       data: {
+        totalCredits,
+        totalDebits,
+        netAmount: totalCredits - totalDebits,
         totalAmount,
         transactionCount,
         averageTransaction: transactionCount > 0 ? totalAmount / transactionCount : 0,
@@ -2875,53 +3569,13 @@ exports.getTransactionStats = async (req, res, next) => {
  * POST /api/public/settings/2fa/toggle
  * Enable or disable 2FA
  */
-exports.toggle2FA = async (req, res, next) => {
-  try {
-    const { marketerId } = req.query;
-    const { enabled } = req.body;
-    const id = parseInt(marketerId, 10);
-
-    logger.debug(`[TOGGLE_2FA] 2FA toggle request`, { marketerId: id, enabled });
-
-    if (!marketerId || enabled === undefined) {
-      logger.warn(`[TOGGLE_2FA] Missing required fields`);
-      return res.status(400).json({
-        success: false,
-        message: "marketerId and enabled are required",
-        code: "MISSING_FIELDS",
-      });
-    }
-
-    const marketer = await prisma.admin.findUnique({
-      where: { id },
-    });
-
-    if (!marketer) {
-      logger.warn(`[TOGGLE_2FA] Marketer not found`, { marketerId: id });
-      return res.status(404).json({
-        success: false,
-        message: "Marketer not found",
-        code: "NOT_FOUND",
-      });
-    }
-
-    // TODO: If enabling, generate and send OTP
-    // If disabling, clear 2FA secret
-
-    logger.info(`[TOGGLE_2FA] 2FA toggled`, { marketerId: id, enabled });
-
-    res.status(200).json({
-      success: true,
-      message: `2FA ${enabled ? "enabled" : "disabled"}`,
-      data: {
-        twoFactorEnabled: enabled,
-      },
-    });
-  } catch (err) {
-    logger.error(`[TOGGLE_2FA] Failed to toggle 2FA`, { marketerId: req.query.marketerId, error: err.message });
-    next(err);
-  }
-};
+/**
+ * @deprecated UNMOUNTED — route removed from res/routes/publicAPI.js.
+ *
+ * Superseded by setup2FA / verifySetup2FA / disable2FA. It read ?marketerId
+ * from the query string with no ownership check, so any caller could flip
+ * another marketer's 2FA flag. Do not re-mount; use the three-step flow.
+ */
 
 /**
  * ============================================
@@ -2933,187 +3587,16 @@ exports.toggle2FA = async (req, res, next) => {
  * POST /api/public/settings/2fa/setup
  * Start 2FA setup process (generate QR code)
  */
-exports.setup2FA = async (req, res, next) => {
-  try {
-    const { marketerId } = req.query;
-    const id = parseInt(marketerId, 10);
-
-    logger.debug(`[2FA_SETUP] Starting 2FA setup`, { marketerId: id });
-
-    if (!marketerId) {
-      logger.warn(`[2FA_SETUP] marketerId query parameter required`);
-      return res.status(400).json({
-        success: false,
-        message: "marketerId query parameter is required",
-        code: "MISSING_MARKETER_ID",
-      });
-    }
-
-    const marketer = await prisma.admin.findUnique({
-      where: { id },
-    });
-
-    if (!marketer) {
-      logger.warn(`[2FA_SETUP] Marketer not found`, { marketerId: id });
-      return res.status(404).json({
-        success: false,
-        message: "Marketer not found",
-        code: "NOT_FOUND",
-      });
-    }
-
-    // TODO: Generate TOTP secret and QR code using speakeasy library
-    const secret = "JBSWY3DPEBLW64TMMQ======"; // Mock secret
-    const qrCode = "https://chart.googleapis.com/chart?chs=200x200&chld=M|0&cht=qr&chl=secret";
-
-    logger.info(`[2FA_SETUP] 2FA setup initiated`, { marketerId: id });
-
-    res.status(200).json({
-      success: true,
-      message: "2FA setup started",
-      data: {
-        secret,
-        qrCode,
-        manualEntry: secret,
-      },
-    });
-  } catch (err) {
-    logger.error(`[2FA_SETUP] Failed to setup 2FA`, { marketerId: req.query.marketerId, error: err.message });
-    next(err);
-  }
-};
 
 /**
  * POST /api/public/settings/2fa/verify-setup
  * Verify 2FA setup and enable it
  */
-exports.verifySetup2FA = async (req, res, next) => {
-  try {
-    const { marketerId } = req.query;
-    const { secret, code } = req.body;
-    const id = parseInt(marketerId, 10);
-
-    logger.debug(`[2FA_VERIFY_SETUP] Verifying 2FA setup`, { marketerId: id });
-
-    if (!marketerId || !secret || !code) {
-      logger.warn(`[2FA_VERIFY_SETUP] Missing required fields`);
-      return res.status(400).json({
-        success: false,
-        message: "marketerId, secret, and code are required",
-        code: "MISSING_FIELDS",
-      });
-    }
-
-    const marketer = await prisma.admin.findUnique({
-      where: { id },
-    });
-
-    if (!marketer) {
-      logger.warn(`[2FA_VERIFY_SETUP] Marketer not found`, { marketerId: id });
-      return res.status(404).json({
-        success: false,
-        message: "Marketer not found",
-        code: "NOT_FOUND",
-      });
-    }
-
-    // TODO: Verify code against secret using speakeasy
-    if (!code.match(/^\d{6}$/)) {
-      logger.warn(`[2FA_VERIFY_SETUP] Invalid code format`, { marketerId: id });
-      return res.status(400).json({
-        success: false,
-        message: "Code must be 6 digits",
-        code: "INVALID_CODE",
-      });
-    }
-
-    // For now, accept any valid 6-digit code
-    const updated = await prisma.admin.update({
-      where: { id },
-      data: {
-        isSuspended: false, // Use this to track 2FA enabled (better to add twoFactorSecret field)
-      },
-    });
-
-    logger.info(`[2FA_VERIFY_SETUP] 2FA setup verified and enabled`, { marketerId: id });
-
-    res.status(200).json({
-      success: true,
-      message: "2FA enabled successfully",
-      data: {
-        twoFactorEnabled: true,
-        backupCodes: [
-          "ABCD-1234",
-          "EFGH-5678",
-          "IJKL-9012",
-        ],
-      },
-    });
-  } catch (err) {
-    logger.error(`[2FA_VERIFY_SETUP] Failed to verify 2FA setup`, { marketerId: req.query.marketerId, error: err.message });
-    next(err);
-  }
-};
 
 /**
  * POST /api/public/settings/2fa/disable
  * Disable 2FA
  */
-exports.disable2FA = async (req, res, next) => {
-  try {
-    const { marketerId } = req.query;
-    const { password } = req.body;
-    const id = parseInt(marketerId, 10);
-
-    logger.debug(`[2FA_DISABLE] Disabling 2FA`, { marketerId: id });
-
-    if (!marketerId || !password) {
-      logger.warn(`[2FA_DISABLE] Missing required fields`);
-      return res.status(400).json({
-        success: false,
-        message: "marketerId and password are required",
-        code: "MISSING_FIELDS",
-      });
-    }
-
-    const marketer = await prisma.admin.findUnique({
-      where: { id },
-    });
-
-    if (!marketer) {
-      logger.warn(`[2FA_DISABLE] Marketer not found`, { marketerId: id });
-      return res.status(404).json({
-        success: false,
-        message: "Marketer not found",
-        code: "NOT_FOUND",
-      });
-    }
-
-    // Verify password for security
-    const isPasswordValid = await bcrypt.compare(password, marketer.password);
-    if (!isPasswordValid) {
-      logger.warn(`[2FA_DISABLE] Invalid password`, { marketerId: id });
-      return res.status(401).json({
-        success: false,
-        message: "Invalid password",
-        code: "INVALID_PASSWORD",
-      });
-    }
-
-    logger.info(`[2FA_DISABLE] 2FA disabled`, { marketerId: id });
-
-    res.status(200).json({
-      success: true,
-      message: "2FA disabled successfully",
-      data: {
-        twoFactorEnabled: false,
-      },
-    });
-  } catch (err) {
-    logger.error(`[2FA_DISABLE] Failed to disable 2FA`, { marketerId: req.query.marketerId, error: err.message });
-    next(err);
-  }
-};
 
 /**
  * GET /api/public/commissions/monthly-chart
@@ -3136,22 +3619,36 @@ exports.getMonthlyCommissionChart = async (req, res, next) => {
       });
     }
 
-    // Generate month labels
+    // One grouped query, then fill the buckets in memory. This used to run
+    // `months` sequential aggregates (12 round-trips per page load).
+    const groups = await prisma.commission.groupBy({
+      by: ["year", "month"],
+      where: { marketerId },
+      _sum: { amount: true },
+    });
+
+    const sumByPeriod = new Map(
+      groups.map((g) => [`${g.year}-${g.month}`, g._sum.amount || 0])
+    );
+
+    // Oldest -> newest so it plots left-to-right on the x-axis as-is.
     const data = [];
     const today = new Date();
     for (let i = months - 1; i >= 0; i--) {
       const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
       const month = date.getMonth() + 1;
       const year = date.getFullYear();
-
-      const monthData = await prisma.commission.aggregate({
-        where: { marketerId, month, year },
-        _sum: { amount: true },
-      });
+      const shortMonth = date.toLocaleString("en-US", { month: "short" });
 
       data.push({
-        month: date.toLocaleString("en-US", { month: "short" }),
-        commission: monthData._sum.amount || 0,
+        // `month` kept as the bare short name for backwards compatibility.
+        month: shortMonth,
+        // `label` is the unambiguous one — plot this. Without a year, a window
+        // longer than 12 months produces duplicate x-axis keys.
+        label: `${shortMonth} ${String(year).slice(-2)}`,
+        year,
+        monthNumber: month,
+        commission: sumByPeriod.get(`${year}-${month}`) || 0,
       });
     }
 
@@ -3348,11 +3845,21 @@ exports.getRecentActivity = async (req, res, next) => {
  */
 exports.updateTokenStatus = async (req, res, next) => {
   try {
+    const marketerId = req.user?.id || req.marketer?.id;
     const { id } = req.params;
     const { status } = req.body;
     const tokenId = parseInt(id, 10);
 
-    logger.debug(`[UPDATE_TOKEN_STATUS] Updating token status`, { tokenId, status });
+    logger.debug(`[UPDATE_TOKEN_STATUS] Updating token status`, { tokenId, status, marketerId });
+
+    if (!marketerId) {
+      logger.warn(`[UPDATE_TOKEN_STATUS] Unauthorized - no marketerId in token`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
 
     if (isNaN(tokenId)) {
       logger.warn(`[UPDATE_TOKEN_STATUS] Invalid token ID`, { id });
@@ -3395,9 +3902,32 @@ exports.updateTokenStatus = async (req, res, next) => {
       });
     }
 
-    const updated = await prisma.schoolToken.update({
-      where: { id: tokenId },
-      data: { status },
+    // Ownership check — matches revokeSchoolToken. This endpoint can retire a
+    // live registration code, so it must not be reachable across marketers.
+    if (token.marketerId !== marketerId) {
+      logger.warn(`[UPDATE_TOKEN_STATUS] Forbidden - token belongs to another marketer`, { tokenId, marketerId, ownerId: token.marketerId });
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to update this token",
+        code: "FORBIDDEN",
+      });
+    }
+
+    // Keep the `Token` row in step. SchoolToken's vocabulary is
+    // active|used|revoked|expired; `Token` only knows active|inactive, so
+    // anything other than "active" retires the registration code.
+    const updated = await prisma.$transaction(async (tx) => {
+      const schoolToken = await tx.schoolToken.update({
+        where: { id: tokenId },
+        data: { status },
+      });
+
+      await tx.token.updateMany({
+        where: { uniqueKey: token.code },
+        data: { status: status === "active" ? "active" : "inactive" },
+      });
+
+      return schoolToken;
     });
 
     logger.info(`[UPDATE_TOKEN_STATUS] Token status updated`, { tokenId, newStatus: status });
@@ -3417,8 +3947,16 @@ exports.updateTokenStatus = async (req, res, next) => {
 };
 
 /**
- * DELETE /api/public/marketer-schools/:id
- * Delete a marketer's school
+ * ⚠️ UNSAFE — UNMOUNTED. Do not re-mount without rewriting.
+ *
+ * Was DELETE /api/public/marketer-schools/:id. Two defects:
+ *   1. Wrong table — it suspends a `School` tenant, but the Marketer Portal
+ *      sends a `MarketerSchoolLead` id, so it hits an unrelated live school.
+ *   2. No ownership check — any marketer could suspend any school by id.
+ *
+ * Route removed in res/routes/publicAPI.js. Kept here only so the history is
+ * legible; rewrite against MarketerSchoolLead with a marketerId guard before
+ * mounting anything like it.
  */
 exports.deleteMarketerSchool = async (req, res, next) => {
   try {
@@ -3534,6 +4072,529 @@ exports.getMarketerEarnings = async (req, res, next) => {
     });
   } catch (err) {
     logger.error(`[GET_EARNINGS] Failed to fetch earnings`, { marketerId: req.params.marketerId, error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * ============================================
+ * MARKETER KYC VERIFICATION
+ * ============================================
+ */
+
+// KYC documents deliberately live OUTSIDE res/uploads, which app.ts serves
+// statically at /api/uploads. Anything under that folder is readable by anyone
+// who can guess the filename — unacceptable for government ID documents.
+const KYC_DIR = path.join(__dirname, "..", "..", "uploads-private", "kyc");
+
+const KYC_DOCUMENT_TYPES = ["nin", "passport", "drivers", "voters"];
+
+const KYC_EXTENSIONS = {
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/png": ".png",
+  "application/pdf": ".pdf",
+};
+
+/**
+ * POST /api/public/users/verification-document
+ * Marketer uploads a KYC document. Bearer token required — a service key alone
+ * carries no user identity and must not be able to attach a document to an
+ * arbitrary account.
+ */
+exports.uploadVerificationDocument = async (req, res, next) => {
+  try {
+    const marketerId = req.user?.id || req.marketer?.id;
+
+    if (!marketerId) {
+      logger.warn(`[KYC_UPLOAD] No authenticated marketer on request`);
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    const { documentType } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "A document file is required",
+        code: "MISSING_DOCUMENT",
+      });
+    }
+
+    // Accepts both vocabularies: the Marketer Portal's form still posts
+    // nin/drivers/voters, the Super Admin Portal speaks id_card/passport/
+    // utility_bill/cac/other. Storage always uses the latter.
+    const normalisedType = normaliseDocumentType(documentType);
+
+    if (!normalisedType) {
+      return res.status(400).json({
+        success: false,
+        message: `documentType must be one of: ${[...MARKETER_DOCUMENT_TYPES, ...KYC_DOCUMENT_TYPES].join(", ")}`,
+        code: "INVALID_DOCUMENT_TYPE",
+      });
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: { id: true, verificationDocumentPath: true },
+    });
+
+    if (!marketer) {
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    // 24 random bytes — the filename must not be guessable or enumerable, since
+    // it is the only thing standing between a leaked path and someone's ID.
+    const ext = KYC_EXTENSIONS[req.file.mimetype] || ".bin";
+    const filename = `kyc_${crypto.randomBytes(24).toString("hex")}${ext}`;
+
+    await fsp.mkdir(KYC_DIR, { recursive: true });
+    await fsp.writeFile(path.join(KYC_DIR, filename), req.file.buffer);
+
+    // Re-uploading replaces the previous document OF THE SAME TYPE. Marketers
+    // may now hold several documents at once (an ID card and a utility bill,
+    // say), so a new upload must not wipe an unrelated one — but re-submitting
+    // a rejected ID card should still supersede it rather than pile up.
+    const superseded = await prisma.marketerDocument.findFirst({
+      where: { marketerId, type: normalisedType },
+      orderBy: { uploadedAt: "desc" },
+    });
+
+    const [document] = await prisma.$transaction([
+      prisma.marketerDocument.create({
+        data: {
+          marketerId,
+          type: normalisedType,
+          path: filename,
+          status: "pending",
+        },
+      }),
+      ...(superseded ? [prisma.marketerDocument.delete({ where: { id: superseded.id } })] : []),
+      // The legacy columns still drive the Marketer Portal's profile screen and
+      // the payout gate in updateMarketerWallet, so keep mirroring the latest
+      // upload onto them.
+      prisma.admin.update({
+        where: { id: marketerId },
+        data: {
+          verificationDocumentPath: filename,
+          verificationDocumentType: documentType,
+          verificationStatus: "pending",
+          verificationSubmittedAt: new Date(),
+          verificationReviewedAt: null,
+          verificationRejectionReason: null,
+        },
+      }),
+    ], TX_OPTIONS);
+
+    // Unlink only after the transaction committed. Deleting the file first
+    // would leave a committed row pointing at nothing if the write rolled back.
+    if (superseded) {
+      await fsp.unlink(path.join(KYC_DIR, path.basename(superseded.path))).catch(() => {});
+    }
+
+    logger.info(`[KYC_UPLOAD] Document stored`, { marketerId, documentType: normalisedType, documentId: document.id });
+
+    return res.status(201).json({
+      success: true,
+      message: "Verification document uploaded",
+      data: {
+        verificationStatus: "pending",
+        document: serialiseMarketerDocument(document),
+      },
+    });
+  } catch (err) {
+    logger.error(`[KYC_UPLOAD] Failed`, { marketerId: req.user?.id, error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/public/marketers/:id/verification-document
+ * Streams a marketer's KYC document. Super Admin only — this is the ONLY way
+ * the file is reachable; it is not served statically.
+ */
+exports.getVerificationDocument = async (req, res, next) => {
+  try {
+    const marketerId = parseInt(req.params.id, 10);
+
+    if (isNaN(marketerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid marketer ID",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: { verificationDocumentPath: true, verificationDocumentType: true },
+    });
+
+    if (!marketer?.verificationDocumentPath) {
+      return res.status(404).json({
+        success: false,
+        message: "No verification document on file",
+        code: "DOCUMENT_NOT_FOUND",
+      });
+    }
+
+    // basename() guards against a stored value ever containing traversal
+    // segments — the path must resolve inside KYC_DIR and nowhere else.
+    const filePath = path.join(KYC_DIR, path.basename(marketer.verificationDocumentPath));
+
+    if (!fs.existsSync(filePath)) {
+      logger.error(`[KYC_FETCH] Record exists but file is missing`, { marketerId });
+      return res.status(404).json({
+        success: false,
+        message: "Document file is missing from storage",
+        code: "DOCUMENT_FILE_MISSING",
+      });
+    }
+
+    logger.info(`[KYC_FETCH] Document served`, { marketerId, by: req.user?.id });
+    return res.sendFile(filePath);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/public/marketers/:id/verification
+ * Super Admin approves or rejects a submitted document. Without this the
+ * status could never leave 'pending' and the gate below would block everyone.
+ */
+exports.reviewVerification = async (req, res, next) => {
+  try {
+    const marketerId = parseInt(req.params.id, 10);
+    const { status, rejectionReason } = req.body;
+
+    if (isNaN(marketerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid marketer ID",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "status must be 'approved' or 'rejected'",
+        code: "INVALID_STATUS",
+      });
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: { id: true },
+    });
+
+    if (!marketer) {
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    const reviewedAt = new Date();
+    const reason = status === "rejected" ? (rejectionReason || null) : null;
+    const actorId = req.user?.id ?? null;
+
+    // Marketer-level review. Also stamps the marketer's most recent document so
+    // the per-document queue in §2.4 doesn't keep showing an item the operator
+    // has already decided on from the older screen.
+    const latest = await prisma.marketerDocument.findFirst({
+      where: { marketerId },
+      orderBy: { uploadedAt: "desc" },
+      select: { id: true },
+    });
+
+    const [updated] = await prisma.$transaction([
+      prisma.admin.update({
+        where: { id: marketerId },
+        data: {
+          verificationStatus: status,
+          verificationReviewedAt: reviewedAt,
+          verificationRejectionReason: reason,
+        },
+        select: {
+          id: true,
+          verificationStatus: true,
+          verificationReviewedAt: true,
+          verificationRejectionReason: true,
+        },
+      }),
+      ...(latest
+        ? [
+            prisma.marketerDocument.update({
+              where: { id: latest.id },
+              data: { status, rejectionReason: reason, reviewedAt, reviewedBy: actorId },
+            }),
+          ]
+        : []),
+    ], TX_OPTIONS);
+
+    logger.info(`[KYC_REVIEW] Verification ${status}`, { marketerId, by: actorId, documentId: latest?.id ?? null });
+
+    return res.status(200).json({
+      success: true,
+      message: `Verification ${status}`,
+      data: updated,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/public/marketers/documents/pending?page=&limit=
+ * The verification queue: every pending document across all marketers, newest
+ * first, each carrying enough marketer context to render a review screen
+ * without a second call per row.
+ */
+exports.getPendingMarketerDocuments = async (req, res, next) => {
+  try {
+    const page = Math.max(parseInt(req.query.page || 1, 10) || 1, 1);
+    const limit = parseInt(req.query.limit || 20, 10) || 20;
+    const skip = (page - 1) * limit;
+
+    const where = { status: "pending" };
+
+    // `include` on the relation, not a second query per document — the join is
+    // what keeps this one round trip regardless of page size.
+    const [documents, total] = await Promise.all([
+      prisma.marketerDocument.findMany({
+        where,
+        include: {
+          marketer: { select: { id: true, name: true, email: true, tier: true } },
+        },
+        orderBy: { uploadedAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.marketerDocument.count({ where }),
+    ]);
+
+    logger.info(`[KYC_QUEUE] Retrieved ${documents.length} pending documents`, { page, limit, total });
+
+    return res.status(200).json({
+      success: true,
+      message: "Pending verification documents retrieved",
+      data: {
+        data: documents.map((doc) => {
+          // Drop status/rejectionReason/reviewedAt from the queue shape — every
+          // row here is pending by definition, so they'd be constant noise.
+          const { status, rejectionReason, reviewedAt, reviewedBy, ...rest } =
+            serialiseMarketerDocument(doc);
+
+          return { ...rest, status, marketer: doc.marketer };
+        }),
+        meta: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      },
+    });
+  } catch (err) {
+    logger.error(`[KYC_QUEUE] Failed to fetch pending documents`, { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/public/marketers/:id/documents/:documentId
+ * Super Admin approves or rejects one document.
+ */
+exports.reviewMarketerDocument = async (req, res, next) => {
+  try {
+    const marketerId = parseInt(req.params.id, 10);
+    const documentId = parseInt(req.params.documentId, 10);
+    const { status, rejectionReason } = req.body;
+    const actorId = req.user?.id ?? null;
+
+    if (isNaN(marketerId) || isNaN(documentId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid marketer or document ID",
+        code: "INVALID_REQUEST",
+        data: null,
+      });
+    }
+
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(422).json({
+        success: false,
+        message: "status must be 'approved' or 'rejected'",
+        code: "INVALID_STATUS",
+        data: null,
+      });
+    }
+
+    // A rejection the marketer can't act on is a dead end — they'd see
+    // "rejected" with no idea what to fix. trim() so whitespace doesn't pass.
+    if (status === "rejected" && !String(rejectionReason || "").trim()) {
+      return res.status(422).json({
+        success: false,
+        message: "rejectionReason is required when status is 'rejected'",
+        code: "MISSING_REJECTION_REASON",
+        data: null,
+      });
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: { id: true },
+    });
+
+    if (!marketer) {
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+        data: null,
+      });
+    }
+
+    // Scoped by marketerId as well as id: without it, a super admin could pass
+    // any marketer in the path and still review a document belonging to
+    // someone else, and the audit trail would name the wrong person.
+    const document = await prisma.marketerDocument.findFirst({
+      where: { id: documentId, marketerId },
+    });
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found for this marketer",
+        code: "DOCUMENT_NOT_FOUND",
+        data: null,
+      });
+    }
+
+    if (document.status === status) {
+      return res.status(409).json({
+        success: false,
+        message: `Document is already ${status}`,
+        code: "ALREADY_REVIEWED",
+        data: serialiseMarketerDocument(document),
+      });
+    }
+
+    const reviewedAt = new Date();
+    const reason = status === "rejected" ? String(rejectionReason).trim() : null;
+
+    // Resolved before the transaction opens — see isLatestMarketerDocument.
+    const isLatest = await isLatestMarketerDocument(marketerId, documentId);
+
+    // Batched array form, not the interactive callback form: Prisma sends the
+    // whole batch in one round trip, so the write can't time out midway on a
+    // remote database the way a callback with sequential awaits can.
+    const [updated] = await prisma.$transaction(
+      [
+        prisma.marketerDocument.update({
+          where: { id: documentId },
+          data: { status, rejectionReason: reason, reviewedAt, reviewedBy: actorId },
+        }),
+        ...(isLatest
+          ? [
+              prisma.admin.update({
+                where: { id: marketerId },
+                data: {
+                  verificationStatus: status,
+                  verificationReviewedAt: reviewedAt,
+                  verificationRejectionReason: reason,
+                },
+              }),
+            ]
+          : []),
+        prisma.securityEvent.create({
+          data: {
+            adminId: marketerId,
+            event: `marketer_document_${status}`,
+            detail: `document ${documentId} by admin ${actorId ?? "service-key"}`.slice(0, 255),
+            ipAddress: req.ip || null,
+            userAgent: req.headers["user-agent"] || null,
+          },
+        }),
+      ],
+      TX_OPTIONS
+    );
+
+    logger.info(`[KYC_DOC_REVIEW] Document ${status}`, { marketerId, documentId, by: actorId });
+
+    return res.status(200).json({
+      success: true,
+      message: `Document ${status}`,
+      data: serialiseMarketerDocument(updated),
+    });
+  } catch (err) {
+    logger.error(`[KYC_DOC_REVIEW] Failed`, { error: err.message, documentId: req.params.documentId });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/public/marketers/:id/documents/:documentId/file
+ * Streams one document. This is the target of the `url` field on every
+ * document object, and the ONLY way the bytes are reachable — the files are
+ * not under the statically-served res/uploads folder.
+ */
+exports.getMarketerDocumentFile = async (req, res, next) => {
+  try {
+    const marketerId = parseInt(req.params.id, 10);
+    const documentId = parseInt(req.params.documentId, 10);
+
+    if (isNaN(marketerId) || isNaN(documentId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid marketer or document ID",
+        code: "INVALID_REQUEST",
+        data: null,
+      });
+    }
+
+    const document = await prisma.marketerDocument.findFirst({
+      where: { id: documentId, marketerId },
+      select: { path: true },
+    });
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found for this marketer",
+        code: "DOCUMENT_NOT_FOUND",
+        data: null,
+      });
+    }
+
+    // basename() guards against a stored value ever containing traversal
+    // segments — the path must resolve inside KYC_DIR and nowhere else.
+    const filePath = path.join(KYC_DIR, path.basename(document.path));
+
+    if (!fs.existsSync(filePath)) {
+      logger.error(`[KYC_DOC_FETCH] Record exists but file is missing`, { marketerId, documentId });
+      return res.status(404).json({
+        success: false,
+        message: "Document file is missing from storage",
+        code: "DOCUMENT_FILE_MISSING",
+        data: null,
+      });
+    }
+
+    logger.info(`[KYC_DOC_FETCH] Document served`, { marketerId, documentId, by: req.user?.id });
+    return res.sendFile(filePath);
+  } catch (err) {
     next(err);
   }
 };
