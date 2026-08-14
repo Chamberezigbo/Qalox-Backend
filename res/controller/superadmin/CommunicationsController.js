@@ -2,6 +2,79 @@ const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const emailService = require("../../Services/EmailService");
 
+const normalizeRecipientTarget = (value) => (typeof value === "string" ? value.trim() : "");
+
+const resolveRecipientTargetFilter = (recipientTarget, regionFilter) => {
+  const target = normalizeRecipientTarget(recipientTarget);
+  if (!target) {
+    throw new Error("recipientTarget is required");
+  }
+
+  if (["all", "active"].includes(target)) {
+    return { isSuspended: false };
+  }
+
+  if (target === "suspended") {
+    return { isSuspended: true };
+  }
+
+  if (target === "trial") {
+    return {
+      OR: [
+        { billingPlan: { name: { contains: "trial" } } },
+        { subscriptions: { some: { status: "trialing" } } },
+      ],
+    };
+  }
+
+  if (["premium", "enterprise", "basic"].includes(target)) {
+    return {
+      billingPlan: { name: { contains: target, mode: "insensitive" } },
+    };
+  }
+
+  if (target === "past_due") {
+    return {
+      subscriptions: { some: { status: "past_due" } },
+    };
+  }
+
+  if (target === "region") {
+    const region = normalizeRecipientTarget(regionFilter);
+    if (!region) {
+      return { isSuspended: false };
+    }
+
+    return {
+      isSuspended: false,
+      OR: [
+        { address: { contains: region } },
+        { city: { contains: region } },
+        { state: { contains: region } },
+        { name: { contains: region } },
+      ],
+    };
+  }
+
+  if (target.startsWith("school:")) {
+    const schoolId = Number(target.split(":")[1]);
+    if (Number.isInteger(schoolId) && schoolId > 0) {
+      return { id: schoolId, isSuspended: false };
+    }
+  }
+
+  throw new Error(`Unsupported recipientTarget: ${recipientTarget}`);
+};
+
+const getSchoolsForRecipientTarget = async (recipientTarget, regionFilter) => {
+  const where = resolveRecipientTargetFilter(recipientTarget, regionFilter);
+
+  return prisma.school.findMany({
+    where,
+    select: { id: true, email: true, name: true, address: true, city: true, state: true },
+  });
+};
+
 /**
  * GET /api/communications
  */
@@ -9,14 +82,25 @@ exports.getCommunications = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 20));
+    const type = req.query.type;
+    const status = req.query.status;
+
+    const where = {};
+    if (type && ["email", "sms"].includes(type)) {
+      where.type = type;
+    }
+    if (status && ["pending", "sent", "failed", "partial"].includes(status)) {
+      where.status = status;
+    }
 
     const [rows, total] = await Promise.all([
       prisma.platformCommunication.findMany({
+        where,
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      prisma.platformCommunication.count(),
+      prisma.platformCommunication.count({ where }),
     ]);
 
     const data = rows.map((c) => ({
@@ -34,6 +118,30 @@ exports.getCommunications = async (req, res, next) => {
   } catch (err) {
     logger.error("[COMMUNICATIONS] Failed to fetch communications", { error: err.message });
     next(err);
+  }
+};
+
+exports.getCommunicationRecipients = async (req, res, next) => {
+  try {
+    const { recipientTarget, regionFilter, type = "email" } = req.query;
+
+    if (!recipientTarget) {
+      return res.status(400).json({ success: false, message: "recipientTarget is required" });
+    }
+
+    if (type && !["email", "sms"].includes(type)) {
+      return res.status(400).json({ success: false, message: "type must be 'email' or 'sms'" });
+    }
+
+    const schools = await getSchoolsForRecipientTarget(recipientTarget, regionFilter);
+    const count = type === "email"
+      ? schools.filter((school) => Boolean(school.email)).length
+      : schools.length;
+
+    res.json({ success: true, data: { count, recipientTarget, regionFilter: regionFilter || null, type } });
+  } catch (err) {
+    logger.error("[COMMUNICATIONS] Failed to resolve recipients", { error: err.message });
+    res.status(400).json({ success: false, message: err.message || "Unable to resolve recipient target" });
   }
 };
 
@@ -58,10 +166,7 @@ exports.sendCommunication = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "type must be 'email' or 'sms'" });
     }
 
-    const schools = await prisma.school.findMany({
-      where: { isSuspended: false },
-      select: { id: true, email: true },
-    });
+    const schools = await getSchoolsForRecipientTarget(recipientTarget, regionFilter);
     const emailRecipients = schools.map((s) => s.email).filter(Boolean);
     const recipientCount = type === "email" ? emailRecipients.length : schools.length;
 
@@ -128,4 +233,9 @@ exports.sendCommunication = async (req, res, next) => {
     logger.error("[COMMUNICATIONS] Failed to send communication", { error: err.message });
     next(err);
   }
+};
+
+module.exports = {
+  ...module.exports,
+  resolveRecipientTargetFilter,
 };

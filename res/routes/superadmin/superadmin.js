@@ -25,8 +25,16 @@ const {
   updateBillingPlan,
   startTrial,
 } = require("../../controller/superadmin/BillingController");
-const { getCommunications, sendCommunication } = require("../../controller/superadmin/CommunicationsController");
-const { getSystemNotifications, sendSystemNotification } = require("../../controller/superadmin/NotificationsController");
+const {
+  getCommunications,
+  sendCommunication,
+  getCommunicationRecipients,
+} = require("../../controller/superadmin/CommunicationsController");
+const {
+  getSystemNotifications,
+  sendSystemNotification,
+  cancelSystemNotification,
+} = require("../../controller/superadmin/NotificationsController");
 const {
   getAnalyticsStats,
   getSchoolActivities,
@@ -95,6 +103,32 @@ router.get("/settings", authenticateSuperAdminJWT, getSettings);
 // Update platform settings - Requires super_admin JWT
 router.patch("/settings", authenticateSuperAdminJWT, validate(updateSettingsSchema), updateSettings);
 
+// Marketer-specific commission overrides - Requires super_admin JWT
+router.post("/settings/marketer-commissions", authenticateSuperAdminJWT, async (req, res, next) => {
+  const { updateMarketerCommission } = require("../../controller/public/publicController");
+  return updateMarketerCommission(req, res, next);
+});
+
+router.get("/settings/marketer-commissions/:marketerId", authenticateSuperAdminJWT, async (req, res, next) => {
+  const { getMarketerCommission } = require("../../controller/public/publicController");
+  return getMarketerCommission(req, res, next);
+});
+
+router.delete("/settings/marketer-commissions/:marketerId", authenticateSuperAdminJWT, async (req, res, next) => {
+  const { deleteMarketerCommission } = require("../../controller/public/publicController");
+  return deleteMarketerCommission(req, res, next);
+});
+
+// View a marketer's commission rates (what they see + breakdown) - Super Admin only
+router.get("/settings/marketer-commissions/:marketerId/rates", authenticateSuperAdminJWT, async (req, res, next) => {
+  const { getMarketerCommissionRates } = require("../../controller/public/publicController");
+  // Temporarily set marketer id for the handler to read
+  const marketerId = req.params.marketerId;
+  req.user = req.user || {};
+  req.user.id = Number(marketerId);
+  return getMarketerCommissionRates(req, res, next);
+});
+
 // ============================================
 // PHASE 4 - SCHOOL ADMIN MANAGEMENT
 // ============================================
@@ -133,6 +167,7 @@ router.post("/billing/schools/:schoolId/start-trial", authenticateSuperAdminJWT,
 // COMMUNICATIONS
 // ============================================
 router.get("/communications", authenticateSuperAdminJWT, getCommunications);
+router.get("/communications/recipients", authenticateSuperAdminJWT, getCommunicationRecipients);
 router.post("/communications", authenticateSuperAdminJWT, sendCommunication);
 
 // ============================================
@@ -140,6 +175,7 @@ router.post("/communications", authenticateSuperAdminJWT, sendCommunication);
 // ============================================
 router.get("/notifications", authenticateSuperAdminJWT, getSystemNotifications);
 router.post("/notifications", authenticateSuperAdminJWT, sendSystemNotification);
+router.delete("/notifications/:id", authenticateSuperAdminJWT, cancelSystemNotification);
 
 // ============================================
 // ANALYTICS

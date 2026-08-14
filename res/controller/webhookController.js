@@ -96,13 +96,16 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
     let commissionRate = null;
     let commissionAmount = 0;
     if (marketer) {
-      // Admin.commissionRate defaults to 0.0 (not null) at signup, so "> 0"
-      // is what actually distinguishes a real per-marketer override from an
-      // unset default — a `!= null` check alone would treat every new
-      // marketer's default as an explicit 0% override.
-      commissionRate = marketer.commissionRate > 0
-        ? marketer.commissionRate
-        : (isFirstPayment ? settings.firstPaymentCommissionRate : settings.renewalCommissionRate);
+      const customRate = isFirstPayment
+        ? marketer.newSchoolCommissionRate ?? null
+        : marketer.renewalCommissionRate ?? null;
+
+      const legacyOverride = marketer.commissionRate > 0 ? marketer.commissionRate : null;
+      const defaultRate = isFirstPayment
+        ? settings.firstPaymentCommissionRate ?? settings.commissionRate ?? 0
+        : settings.renewalCommissionRate ?? settings.commissionRate ?? 0;
+
+      commissionRate = customRate ?? legacyOverride ?? defaultRate;
       commissionAmount = payment.amount * (commissionRate / 100);
     }
 

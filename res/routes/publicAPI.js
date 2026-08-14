@@ -258,6 +258,23 @@ router.patch("/tokens/:uniqueKey/deactivate", serviceAuth, async (req, res, next
  * ============================================
  */
 
+const { getRecipientStats, sendSuperAdminNotification } = require("../controller/superadmin/NotificationsController");
+
+router.get(
+  "/super-admin/notifications/recipient-stats",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  getRecipientStats
+);
+
+router.post(
+  "/super-admin/notifications",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  sendSuperAdminNotification
+);
+
+
 /**
  * GET /api/public/schools/:id
  * Retrieve single school with campuses (service-to-service)
@@ -558,6 +575,50 @@ router.patch(
   serviceAuth,
   requirePlatformSuperAdmin,
   publicController.setGlobalCommission
+);
+
+/**
+ * POST /api/public/settings/marketer-commissions
+ * Set a marketer's custom commission override rates
+ */
+router.post(
+  "/settings/marketer-commissions",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  publicController.updateMarketerCommission
+);
+
+/**
+ * GET /api/public/settings/marketer-commissions/:marketerId
+ * Fetch a marketer's custom commission override rates
+ */
+router.get(
+  "/settings/marketer-commissions/:marketerId",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  publicController.getMarketerCommission
+);
+
+/**
+ * DELETE /api/public/settings/marketer-commissions/:marketerId
+ * Clear a marketer's custom commission override rates
+ */
+router.delete(
+  "/settings/marketer-commissions/:marketerId",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  publicController.deleteMarketerCommission
+);
+
+/**
+ * GET /api/public/marketer/commission-rates
+ * Get the authenticated marketer's commission rates (Marketer Portal)
+ * Shows: custom rates, legacy rate, effective rates, platform defaults
+ */
+router.get(
+  "/marketer/commission-rates",
+  serviceAuth,
+  publicController.getMarketerCommissionRates
 );
 
 /**

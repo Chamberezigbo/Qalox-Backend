@@ -136,8 +136,111 @@ const isLatestMarketerDocument = async (marketerId, documentId) => {
 // updateMarketerWallet rather than inventing a second number.
 const TX_OPTIONS = { timeout: 20000 };
 
+// ============================================
+// SCHOOL SERIALISATION
+// ============================================
+
+// processImage() writes here and stores "/uploads/<folder>/<file>" in the DB.
+// Resolved from this module so it matches the write location in both the
+// ts-node and the compiled run. Same shape as KYC_DIR further down this file.
+const SCHOOL_UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
+
+/**
+ * Public URL for one stored school asset, or null.
+ *
+ * A school can have no image in two ways: the column is null, or the column
+ * holds a path whose file is not on this disk. The second is not hypothetical
+ * — DATABASE_URL points at a shared remote MySQL while uploads are written to
+ * local disk, so a school created from another machine leaves a row pointing
+ * at a file that only exists there (school 5 today).
+ *
+ * Both return null, so the Super Admin Portal renders its initials avatar
+ * deterministically instead of firing a request that 404s.
+ */
+const schoolMediaUrl = async (stored) => {
+  if (!stored || typeof stored !== "string") return null;
+
+  // A CDN URL, once uploads move off local disk — nothing local to check.
+  if (/^https?:\/\//i.test(stored)) return stored;
+
+  // Normalise the values the database can hold: /uploads/..., uploads/..., and
+  // the older absolute /api/uploads/... path variant. Keeping this strict here
+  // prevents broken 404s when one school row was created from a different host
+  // or when a stale DB path was left behind.
+  const candidate = stored
+    .trim()
+    .replace(/^\/api\/uploads\//, "uploads/")
+    .replace(/^\/uploads\//, "uploads/")
+    .replace(/^uploads\//, "uploads/");
+
+  const relative = candidate.replace(/^uploads\//, "");
+  const filePath = path.join(SCHOOL_UPLOADS_DIR, relative);
+
+  // access() rejects when the file is absent; .catch turns that into null
+  // rather than letting one missing logo reject the whole request.
+  return fsp
+    .access(filePath)
+    .then(() => `/api/uploads/${relative}`) // app.ts mounts the folder under /api
+    .catch(() => null);
+};
+
+/**
+ * The single wire shape for a school.
+ *
+ * GET /api/public/schools and GET /api/public/schools/:id both build on this.
+ * That shared call is the only thing keeping the two payloads in sync —
+ * aligning field names by hand just resets the clock until the next edit.
+ *
+ * async because the media helper touches the filesystem.
+ */
+const serialiseSchool = async (school) => {
+  // Promise.all, not two awaits in sequence: the logo and stamp lookups do not
+  // depend on each other, so they should overlap rather than queue.
+  const [logo, stamp] = await Promise.all([
+    schoolMediaUrl(school.logoUrl),
+    schoolMediaUrl(school.stampUrl),
+  ]);
+
+  return {
+    id: school.id,
+    name: school.name,
+    logo,
+    stamp,
+    adminEmail: school.admins?.[0]?.email || school.email,
+    adminName: school.admins?.[0]?.name || school.admin?.name || null,
+    dateRegistered: school.createdAt,
+    status: school.isSuspended ? "suspended" : "active",
+  };
+};
+
+/**
+ * Head admin roles.
+ *
+ * "school_admin" and the legacy "super_admin" are equivalent head admins —
+ * schema.prisma says so at the Role enum. Live data still uses the latter
+ * exclusively, so filtering on "school_admin" alone matches nothing, which is
+ * why adminName was always null and /stats reported activeAdmins: 0.
+ */
+const HEAD_ADMIN_ROLES = ["school_admin", "super_admin"];
+
+/**
+ * Who is performing a destructive action, for the audit log.
+ *
+ * req.user is present when the portal sends its Bearer token alongside the
+ * service key, and null for pure service-to-service calls (which
+ * requirePlatformSuperAdmin still permits). Recording it is the only trace of
+ * who suspended or destroyed a school — after a cascade delete the row itself
+ * is gone, so this log line is the entire history.
+ */
+const auditActor = (req) => ({
+  actorId: req.user?.id ?? null,
+  actorEmail: req.user?.email ?? null,
+  actorRole: req.user?.role ?? (req.service?.type ? `service:${req.service.type}` : null),
+});
+
 // GET /api/public/schools
-// Returns paginated schools for Super Admin Portal (no auth)
+// Paginated schools for the Super Admin Portal (service-authenticated).
+// Supports ?search=, ?status=active|suspended and ?from=/?to= (YYYY-MM-DD).
 exports.getSchoolsPublic = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -146,17 +249,79 @@ exports.getSchoolsPublic = async (req, res, next) => {
     const skip = (page - 1) * take;
     const search = req.query.search || "";
 
-    // No `mode: "insensitive"` — MySQL's Prisma client doesn't generate
-    // QueryMode, so passing it threw a validation error (500) on any ?search=.
-    // MySQL's default collation is already case-insensitive.
-    const where = search
-      ? {
-          OR: [
-            { name: { contains: search } },
-            { email: { contains: search } },
-          ],
+    // Filters each attach a clause to one `where` object. Built imperatively
+    // rather than as a single literal so an absent filter contributes nothing
+    // at all, instead of an `undefined` that reads like an accident.
+    const where = {};
+
+    if (search) {
+      // No `mode: "insensitive"` — MySQL's Prisma client doesn't generate
+      // QueryMode, so passing it threw a validation error (500) on any
+      // ?search=. MySQL's default collation is already case-insensitive.
+      where.OR = [
+        { name: { contains: search } },
+        { email: { contains: search } },
+      ];
+    }
+
+    // The wire vocabulary is active|suspended; the column is a boolean. This
+    // is the one place that translation lives, and it mirrors exactly how
+    // serialiseSchool derives `status` on the way out.
+    const status = String(req.query.status || "").trim().toLowerCase();
+
+    if (status === "active" || status === "suspended") {
+      where.isSuspended = status === "suspended";
+    } else if (status) {
+      // 400 rather than ignoring it. A filter that silently fails to apply is
+      // precisely how this shipped unnoticed in the first place.
+      return res.status(400).json({
+        success: false,
+        message: "status must be 'active' or 'suspended'",
+        code: "INVALID_STATUS",
+      });
+    }
+
+    // from/to are inclusive YYYY-MM-DD bounds on createdAt (dateRegistered on
+    // the wire), interpreted as UTC days.
+    const parseDay = (value) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+      const date = new Date(`${value}T00:00:00.000Z`);
+      return Number.isNaN(date.getTime()) ? null : date; // catches 2026-13-45
+    };
+
+    const { from, to } = req.query;
+
+    if (from || to) {
+      where.createdAt = {};
+
+      if (from) {
+        const start = parseDay(from);
+        if (!start) {
+          return res.status(400).json({
+            success: false,
+            message: "from must be a YYYY-MM-DD date",
+            code: "INVALID_DATE",
+          });
         }
-      : {};
+        where.createdAt.gte = start;
+      }
+
+      if (to) {
+        const end = parseDay(to);
+        if (!end) {
+          return res.status(400).json({
+            success: false,
+            message: "to must be a YYYY-MM-DD date",
+            code: "INVALID_DATE",
+          });
+        }
+        // `to` covers the whole day, expressed as an exclusive bound at the
+        // next midnight. Cleaner than 23:59:59.999, which drops the last
+        // millisecond of the day for no reason.
+        end.setUTCDate(end.getUTCDate() + 1);
+        where.createdAt.lt = end;
+      }
+    }
 
     const [schoolRows, total] = await Promise.all([
       prisma.school.findMany({
@@ -171,8 +336,9 @@ exports.getSchoolsPublic = async (req, res, next) => {
           createdAt: true,
           _count: { select: { campuses: true } },
           admins: {
-            where: { role: "school_admin" },
+            where: { role: { in: HEAD_ADMIN_ROLES } },
             select: { name: true, email: true },
+            orderBy: { id: "asc" }, // take:1 with no ordering picks arbitrarily
             take: 1,
           },
         },
@@ -183,17 +349,15 @@ exports.getSchoolsPublic = async (req, res, next) => {
       prisma.school.count({ where }),
     ]);
 
-    const schools = schoolRows.map((school) => ({
-      id: school.id,
-      name: school.name,
-      logo: school.logoUrl,
-      stamp: school.stampUrl,
-      adminEmail: school.admins[0]?.email || school.email,
-      adminName: school.admins[0]?.name || null,
-      campusCount: school._count.campuses,
-      dateRegistered: school.createdAt,
-      status: school.isSuspended ? "suspended" : "active",
-    }));
+    // An async map returns an array of promises, so Promise.all unwraps them.
+    // The filesystem checks across all rows overlap rather than running one
+    // after another.
+    const schools = await Promise.all(
+      schoolRows.map(async (school) => ({
+        ...(await serialiseSchool(school)),
+        campusCount: school._count.campuses, // list-only field
+      }))
+    );
 
     res.status(200).json({
       success: true,
@@ -259,6 +423,9 @@ exports.getAssessmentsPublic = async (req, res, next) => {
 
 const schoolService = new SchoolService();
 
+exports.schoolMediaUrl = schoolMediaUrl;
+exports.serialiseSchool = serialiseSchool;
+
 // GET /api/public/schools/:id
 // Retrieve single school with campuses (service-to-service)
 exports.getSchoolById = async (req, res, next) => {
@@ -282,7 +449,29 @@ exports.getSchoolById = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      data: school,
+      data: {
+        // id, name, logo, stamp, adminEmail, adminName, dateRegistered, status
+        // — identical to what the list endpoint returns for the same school.
+        ...(await serialiseSchool(school)),
+
+        // Detail-only fields. `email` is the school's own contact address,
+        // distinct from adminEmail above, so both are kept.
+        prefix: school.prefix,
+        email: school.email,
+        phoneNumber: school.phoneNumber,
+        address: school.address,
+        // Kept alongside `status`: these carry the reason and timestamp,
+        // which a single "suspended" string cannot.
+        isSuspended: school.isSuspended,
+        suspendedAt: school.suspendedAt,
+        suspensionReason: school.suspensionReason,
+        updatedAt: school.updatedAt,
+        smsQuotaPerTerm: school.smsQuotaPerTerm,
+        smsUsedThisTerm: school.smsUsedThisTerm,
+        billingPlanId: school.billingPlanId,
+        campusCount: school.campuses.length,
+        campuses: school.campuses,
+      },
     });
   } catch (err) {
     if (err.message === "School not found") {
@@ -334,7 +523,12 @@ exports.suspendSchool = async (req, res, next) => {
       });
     }
 
-    logger.info(`[SUSPEND_SCHOOL] School ${suspend ? 'suspended' : 'reactivated'} successfully`, { schoolId, isSuspended: updatedSchool.isSuspended });
+    logger.info(`[SUSPEND_SCHOOL] School ${suspend ? 'suspended' : 'reactivated'} successfully`, {
+      schoolId,
+      isSuspended: updatedSchool.isSuspended,
+      reason: reason ?? null,
+      ...auditActor(req),
+    });
 
     res.status(200).json({
       success: true,
@@ -440,10 +634,15 @@ exports.deleteSchool = async (req, res, next) => {
       });
     }
 
-    logger.info(`[DELETE_SCHOOL] Starting cascade deletion`, { schoolId, reason });
+    logger.info(`[DELETE_SCHOOL] Starting cascade deletion`, { schoolId, reason, ...auditActor(req) });
     const result = await schoolService.deleteSchoolCascade(schoolId, reason);
 
-    logger.info(`[DELETE_SCHOOL] School deleted successfully`, { schoolId, deletedAt: result.deletedAt });
+    logger.info(`[DELETE_SCHOOL] School deleted successfully`, {
+      schoolId,
+      reason,
+      deletedAt: result.deletedAt,
+      ...auditActor(req),
+    });
 
     res.status(200).json({
       success: true,
@@ -1741,6 +1940,330 @@ exports.setGlobalCommission = async (req, res, next) => {
   }
 };
 
+const selectMarketerCommissionRate = ({ marketer, isFirstPayment, settings }) => {
+  if (!marketer) return null;
+
+  const customRate = isFirstPayment
+    ? marketer.newSchoolCommissionRate ?? null
+    : marketer.renewalCommissionRate ?? null;
+
+  const legacyOverride = marketer.commissionRate > 0 ? marketer.commissionRate : null;
+  const defaultRate = isFirstPayment
+    ? settings?.firstPaymentCommissionRate ?? settings?.commissionRate ?? 0
+    : settings?.renewalCommissionRate ?? settings?.commissionRate ?? 0;
+
+  return customRate ?? legacyOverride ?? defaultRate;
+};
+
+exports.selectMarketerCommissionRate = selectMarketerCommissionRate;
+
+exports.updateMarketerCommission = async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const marketerId = Number(req.body?.marketerId ?? req.params?.marketerId);
+    const { renewalCommissionRate, newSchoolCommissionRate } = body;
+    const actorId = req.user?.id ?? null;
+
+    if (!Number.isInteger(marketerId) || marketerId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid marketerId is required",
+        code: "INVALID_MARKETER_ID",
+      });
+    }
+
+    for (const [key, value] of Object.entries({ renewalCommissionRate, newSchoolCommissionRate })) {
+      if (value !== undefined && (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > 100)) {
+        return res.status(400).json({
+          success: false,
+          message: `${key} must be a number between 0 and 100`,
+          code: "INVALID_RATE",
+        });
+      }
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: { 
+        id: true, 
+        email: true, 
+        name: true,
+        renewalCommissionRate: true, 
+        newSchoolCommissionRate: true,
+        commissionRate: true,
+      },
+    });
+
+    if (!marketer) {
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    const updateData = {};
+    const changes = [];
+    
+    if (renewalCommissionRate !== undefined) {
+      updateData.renewalCommissionRate = renewalCommissionRate;
+      changes.push(`renewal: ${marketer.renewalCommissionRate ?? 'not set'} -> ${renewalCommissionRate}%`);
+    }
+    if (newSchoolCommissionRate !== undefined) {
+      updateData.newSchoolCommissionRate = newSchoolCommissionRate;
+      changes.push(`new-school: ${marketer.newSchoolCommissionRate ?? 'not set'} -> ${newSchoolCommissionRate}%`);
+    }
+
+    // Update and log security event in transaction
+    const [updated] = await prisma.$transaction([
+      prisma.admin.update({
+        where: { id: marketerId },
+        data: updateData,
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          renewalCommissionRate: true,
+          newSchoolCommissionRate: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.securityEvent.create({
+        data: {
+          adminId: marketerId,
+          event: "marketer_commission_override_changed",
+          detail: `by admin ${actorId ?? "service-key"}: ${changes.join("; ")}`.slice(0, 255),
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        },
+      }),
+    ], TX_OPTIONS);
+
+    logger.info("[MARKETER_COMMISSION] Updated custom commission override", { marketerId, updateData, actorId });
+
+    // Send email notification asynchronously (don't block response)
+    emailService
+      .sendEmail({
+        to: marketer.email,
+        subject: "Your Commission Rates Have Been Updated",
+        html: `
+          <h2>Commission Update Notice</h2>
+          <p>Hello ${marketer.name || "Marketer"},</p>
+          <p>Your commission rates have been updated by the Qalox admin team.</p>
+          <h3>Updated Rates:</h3>
+          <ul>
+            ${newSchoolCommissionRate !== undefined ? `<li><strong>New School Registration:</strong> ${newSchoolCommissionRate}%</li>` : ""}
+            ${renewalCommissionRate !== undefined ? `<li><strong>School Renewal:</strong> ${renewalCommissionRate}%</li>` : ""}
+          </ul>
+          <p>These rates will apply to all commissions calculated from this point forward.</p>
+          <p>If you have any questions, please contact support.</p>
+          <p>Best regards,<br/>Qalox Team</p>
+        `,
+      })
+      .catch((err) => {
+        logger.warn("[MARKETER_COMMISSION] Email notification failed", { marketerId, error: err.message });
+      });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        marketerId: String(updated.id),
+        renewalCommissionRate: updated.renewalCommissionRate ?? null,
+        newSchoolCommissionRate: updated.newSchoolCommissionRate ?? null,
+        updatedAt: updated.updatedAt,
+      },
+    });
+  } catch (err) {
+    logger.error("[MARKETER_COMMISSION] Failed to update marketer commission override", { error: err.message, marketerId: req.body?.marketerId });
+    next(err);
+  }
+};
+
+exports.getMarketerCommission = async (req, res, next) => {
+  try {
+    const marketerId = Number(req.params?.marketerId || req.query?.marketerId);
+
+    if (!Number.isInteger(marketerId) || marketerId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid marketerId is required",
+        code: "INVALID_MARKETER_ID",
+      });
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: {
+        id: true,
+        createdAt: true,
+        updatedAt: true,
+        renewalCommissionRate: true,
+        newSchoolCommissionRate: true,
+      },
+    });
+
+    if (!marketer) {
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    const hasOverrides = marketer.renewalCommissionRate !== null || marketer.newSchoolCommissionRate !== null;
+
+    res.status(200).json({
+      success: true,
+      data: hasOverrides ? {
+        marketerId: String(marketer.id),
+        renewalCommissionRate: marketer.renewalCommissionRate ?? null,
+        newSchoolCommissionRate: marketer.newSchoolCommissionRate ?? null,
+        createdAt: marketer.createdAt,
+        updatedAt: marketer.updatedAt,
+      } : null,
+    });
+  } catch (err) {
+    logger.error("[MARKETER_COMMISSION] Failed to fetch marketer commission override", { error: err.message, marketerId: req.params?.marketerId });
+    next(err);
+  }
+};
+
+exports.deleteMarketerCommission = async (req, res, next) => {
+  try {
+    const marketerId = Number(req.params?.marketerId || req.query?.marketerId);
+    const actorId = req.user?.id ?? null;
+
+    if (!Number.isInteger(marketerId) || marketerId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid marketerId is required",
+        code: "INVALID_MARKETER_ID",
+      });
+    }
+
+    const marketer = await prisma.admin.findFirst({
+      where: { id: marketerId, role: "marketer" },
+      select: { id: true },
+    });
+
+    if (!marketer) {
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "MARKETER_NOT_FOUND",
+      });
+    }
+
+    // Delete and log security event in transaction
+    await prisma.$transaction([
+      prisma.admin.update({
+        where: { id: marketerId },
+        data: {
+          renewalCommissionRate: null,
+          newSchoolCommissionRate: null,
+        },
+      }),
+      prisma.securityEvent.create({
+        data: {
+          adminId: marketerId,
+          event: "marketer_commission_override_deleted",
+          detail: `by admin ${actorId ?? "service-key"}: cleared custom commission overrides`.slice(0, 255),
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        },
+      }),
+    ], TX_OPTIONS);
+
+    logger.info("[MARKETER_COMMISSION] Cleared custom commission override", { marketerId, actorId });
+
+    res.status(200).json({
+      success: true,
+      message: "Marketer commission settings cleared",
+    });
+  } catch (err) {
+    logger.error("[MARKETER_COMMISSION] Failed to clear marketer commission override", { error: err.message, marketerId: req.params?.marketerId });
+    next(err);
+  }
+};
+
+exports.getMarketerCommissionRates = async (req, res, next) => {
+  try {
+    const authenticatedId = req.user?.id || req.marketer?.id;
+
+    if (!authenticatedId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    const marketer = await prisma.admin.findUnique({
+      where: { id: authenticatedId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        newSchoolCommissionRate: true,
+        renewalCommissionRate: true,
+        commissionRate: true,
+      },
+    });
+
+    if (!marketer) {
+      return res.status(404).json({
+        success: false,
+        message: "Marketer not found",
+        code: "NOT_FOUND",
+      });
+    }
+
+    // Fetch global settings for commission rate context
+    const settings = await prisma.platformSettings.findFirst({
+      select: { commissionRate: true, firstPaymentCommissionRate: true, renewalCommissionRate: true },
+    });
+
+    // Calculate effective commission rates
+    const effectiveNewSchoolRate = selectMarketerCommissionRate({
+      marketer,
+      isFirstPayment: true,
+      settings: settings || {},
+    });
+    const effectiveRenewalRate = selectMarketerCommissionRate({
+      marketer,
+      isFirstPayment: false,
+      settings: settings || {},
+    });
+
+    logger.debug(`[MARKETER_COMMISSION_RATES] Fetched for marketer`, { marketerId: authenticatedId });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        marketerId: String(marketer.id),
+        name: marketer.name,
+        email: marketer.email,
+        customRates: {
+          newSchoolCommissionRate: marketer.newSchoolCommissionRate ?? null,
+          renewalCommissionRate: marketer.renewalCommissionRate ?? null,
+        },
+        legacyRate: marketer.commissionRate > 0 ? marketer.commissionRate : null,
+        effectiveRates: {
+          newSchoolCommissionRate: effectiveNewSchoolRate,
+          renewalCommissionRate: effectiveRenewalRate,
+        },
+        platformDefaults: settings ? {
+          firstPaymentCommissionRate: settings.firstPaymentCommissionRate,
+          renewalCommissionRate: settings.renewalCommissionRate,
+        } : null,
+      },
+    });
+  } catch (err) {
+    logger.error("[MARKETER_COMMISSION_RATES] Failed to fetch commission rates", { error: err.message, marketerId: req.user?.id });
+    next(err);
+  }
+};
+
 // Same format as the Super Admin Portal (res/controller/system-admin/generateToken.js
 // and res/controller/superadmin/SuperAdminController.js) so both portals mint
 // identical, interchangeable school registration codes.
@@ -2191,9 +2714,36 @@ exports.getMarketerProfile = async (req, res, next) => {
       }
     }
 
+    // Fetch global settings for commission rate context
+    const settings = await prisma.platformSettings.findFirst({
+      select: { commissionRate: true, firstPaymentCommissionRate: true, renewalCommissionRate: true },
+    });
+
+    // Calculate effective commission rates (with precedence: custom > legacy > global)
+    const effectiveNewSchoolRate = selectMarketerCommissionRate({
+      marketer,
+      isFirstPayment: true,
+      settings: settings || {},
+    });
+    const effectiveRenewalRate = selectMarketerCommissionRate({
+      marketer,
+      isFirstPayment: false,
+      settings: settings || {},
+    });
+
     res.status(200).json({
       success: true,
-      data: { ...marketer, notificationPreferences },
+      data: { 
+        ...marketer, 
+        notificationPreferences,
+        commission: {
+          customNewSchoolRate: marketer.newSchoolCommissionRate ?? null,
+          customRenewalRate: marketer.renewalCommissionRate ?? null,
+          legacyRate: marketer.commissionRate > 0 ? marketer.commissionRate : null,
+          effectiveNewSchoolRate,
+          effectiveRenewalRate,
+        },
+      },
     });
   } catch (err) {
     logger.error(`[MARKETER_PROFILE] Error fetching profile`, { error: err.message, marketerId: req.user?.id });

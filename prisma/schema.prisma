@@ -87,8 +87,10 @@ model Admin {
   pendingSchoolTokenId Int?
 
   // Marketer Commission & Wallet Fields (only for role=marketer)
-  commissionRate      Float?   @default(0.0)  // Commission percentage (e.g., 5.0 = 5%)
-  commissionStructure String?  @db.VarChar(50) // 'flat', 'tiered', 'performance'
+  commissionRate            Float?   @default(0.0)  // Legacy fallback commission percentage (e.g., 5.0 = 5%)
+  newSchoolCommissionRate   Float?   // Per-marketer override used on a new school's first commission payout
+  renewalCommissionRate     Float?   // Per-marketer override used on renewals
+  commissionStructure       String?  @db.VarChar(50) // 'flat', 'tiered', 'performance'
 
   // Wallet/Financial Fields
   walletBalance       Float?   @default(0.0)

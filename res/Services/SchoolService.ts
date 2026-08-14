@@ -21,6 +21,16 @@ class SchoolService {
             email: true,
           },
         },
+        // Head admin, for the adminName/adminEmail fields the Super Admin
+        // Portal renders. Both roles are matched because live data still uses
+        // the legacy "super_admin" exclusively — see HEAD_ADMIN_ROLES in
+        // publicController.js, which this deliberately mirrors.
+        admins: {
+          where: { role: { in: ["school_admin", "super_admin"] } },
+          select: { name: true, email: true },
+          orderBy: { id: "asc" },
+          take: 1,
+        },
       },
     });
 

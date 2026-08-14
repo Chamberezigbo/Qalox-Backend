@@ -6,6 +6,11 @@ const crypto = require("crypto");
 const { logLoginEvent } = require("../../util/logLoginEvent");
 const { parsePlanFeatures } = require("../../util/planFeatures");
 
+// School head admins are represented by either the legacy `super_admin` role or
+// the newer per-school `school_admin` role. Both identifiers are equivalent in
+// the live data, so the portal must count and list both together.
+const HEAD_ADMIN_ROLES = ["school_admin", "super_admin"];
+
 // Helper: Generate TKN-XXXXXX registration token
 // (matches the format already used by res/controller/system-admin/generateToken.js
 // since both write to the same `Token` table)
@@ -19,6 +24,18 @@ const calculateTokenExpiration = () => {
   const date = new Date();
   date.setDate(date.getDate() + 30);
   return date;
+};
+
+const deriveSuspendState = (currentIsSuspended, body = {}) => {
+  const hasExplicitValue = Object.prototype.hasOwnProperty.call(body, "suspend");
+  const nextSuspended = hasExplicitValue ? Boolean(body.suspend) : !currentIsSuspended;
+  const reason = body && body.reason ? body.reason : undefined;
+
+  return {
+    nextSuspended,
+    reason,
+    suspendedAt: nextSuspended ? new Date() : null,
+  };
 };
 
 // Helper: Create JWT token for the platform super admin (Super Admin Portal)
@@ -665,13 +682,77 @@ exports.getDashboardStats = async (req, res, next) => {
       });
     }
 
+    // Head admins are equivalent regardless of the historical role name used in
+    // the database, so both identifiers must be counted together.
+
+    // Rolling 12-month window for the chart: keeps the scan bounded as the
+    // platform grows, instead of pulling every school ever created.
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+    since.setUTCDate(1);
+    since.setUTCMonth(since.getUTCMonth() - 11);
+
     // Get statistics (flat shape matches the Super Admin Portal's DashboardStats type)
-    const [totalSchools, activeAdmins, tokensTotal, tokensUsed] = await Promise.all([
+    const [
+      totalSchools,
+      activeAdmins,
+      tokensTotal,
+      tokensUsed,
+      schoolDates,
+      latestSchoolRows,
+      latestTokenRows,
+    ] = await Promise.all([
       prisma.school.count(),
-      prisma.admin.count({ where: { role: "school_admin", isSuspended: false } }),
+      prisma.admin.count({ where: { role: { in: HEAD_ADMIN_ROLES }, isSuspended: false } }),
       prisma.token.count(),
       prisma.token.count({ where: { status: { in: ["used", "inactive"] } } }),
+      prisma.school.findMany({
+        where: { createdAt: { gte: since } },
+        select: { createdAt: true },
+      }),
+      prisma.school.findMany({
+        select: { id: true, name: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+      }),
+      prisma.token.findMany({
+        select: {
+          id: true,
+          email: true,
+          status: true,
+          createdAt: true,
+          expiresAt: true,
+          usedAt: true,
+        },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+      }),
     ]);
+
+    // new Date(...) rather than calling toISOString directly: School.createdAt
+    // arrives as the STRING "2026-07-28", not a Date, because the underlying
+    // MySQL column is DATE while the schema declares DateTime. (updatedAt, on
+    // a real DATETIME column, does come back as a Date.) Coercing here handles
+    // both, and a Date argument is simply cloned.
+    const monthKey = (value) => new Date(value).toISOString().slice(0, 7); // "2026-08"
+
+    // Seed every month in the window with 0 FIRST. A month with no signups
+    // has to render as a zero point on the chart, not vanish from the axis —
+    // which is what happens if you only bucket the rows that exist.
+    const buckets = new Map();
+    const now = new Date();
+
+    for (const cursor = new Date(since); cursor <= now; cursor.setUTCMonth(cursor.getUTCMonth() + 1)) {
+      buckets.set(monthKey(cursor), 0);
+    }
+
+    for (const row of schoolDates) {
+      const key = monthKey(row.createdAt);
+      if (buckets.has(key)) buckets.set(key, buckets.get(key) + 1);
+    }
+
+    // Map preserves insertion order, so this comes out chronological for free.
+    const schoolsOverTime = [...buckets].map(([month, count]) => ({ month, count }));
 
     logger.info("[SUPER_ADMIN_STATS] Statistics retrieved", {
       totalSchools,
@@ -688,6 +769,21 @@ exports.getDashboardStats = async (req, res, next) => {
         tokensGenerated: tokensTotal,
         tokensUsed,
         tokensTotal,
+        tokenUsage: { used: tokensUsed, unused: tokensTotal - tokensUsed },
+        schoolsOverTime,
+        latestSchools: latestSchoolRows.map((school) => ({
+          id: school.id,
+          name: school.name,
+          dateRegistered: school.createdAt,
+        })),
+        latestTokens: latestTokenRows.map((token) => ({
+          id: token.id,
+          generatedFor: token.email,
+          generatedAt: token.createdAt,
+          // Reuses the existing mapper so /stats and /tokens can never report
+          // different statuses for the same token.
+          status: toFrontendTokenStatus(token),
+        })),
       },
     });
   } catch (err) {
@@ -884,7 +980,7 @@ exports.getSchoolAdmins = async (req, res, next) => {
     // QueryMode, so passing it threw a validation error (500) on any ?search=.
     // MySQL's default collation is already case-insensitive.
     const where = {
-      role: "school_admin",
+      role: { in: HEAD_ADMIN_ROLES },
       // MySQL's default collation is already case-insensitive; `mode` is Postgres-only
       ...(search && {
         OR: [
@@ -956,8 +1052,9 @@ exports.suspendSchoolAdmin = async (req, res, next) => {
   try {
     const { id } = req.params;
     const adminId = parseInt(id, 10);
+    const { suspend, reason } = req.body || {};
 
-    logger.debug("[SUPER_ADMIN_SUSPEND_ADMIN] Toggling school admin suspension", { adminId });
+    logger.debug("[SUPER_ADMIN_SUSPEND_ADMIN] Updating school admin suspension", { adminId, suspend, reason });
 
     if (isNaN(adminId)) {
       return res.status(400).json({
@@ -978,18 +1075,20 @@ exports.suspendSchoolAdmin = async (req, res, next) => {
       });
     }
 
-    const nextSuspended = !admin.isSuspended;
+    const { nextSuspended, suspendedAt, reason: suspensionReason } = deriveSuspendState(admin.isSuspended, { suspend, reason });
 
     const updated = await prisma.admin.update({
       where: { id: adminId },
       data: {
         isSuspended: nextSuspended,
-        suspendedAt: nextSuspended ? new Date() : null,
+        suspendedAt,
+        suspensionReason: nextSuspended ? suspensionReason || null : null,
+        suspendedBy: req.admin?.id || admin.suspendedBy,
       },
-      select: { id: true, name: true, email: true, isSuspended: true },
+      select: { id: true, name: true, email: true, isSuspended: true, suspendedAt: true, suspensionReason: true },
     });
 
-    logger.info("[SUPER_ADMIN_SUSPEND_ADMIN] School admin suspension toggled", { adminId, suspended: nextSuspended });
+    logger.info("[SUPER_ADMIN_SUSPEND_ADMIN] School admin suspension updated", { adminId, suspended: nextSuspended });
 
     res.status(200).json({
       success: true,
@@ -999,10 +1098,12 @@ exports.suspendSchoolAdmin = async (req, res, next) => {
         name: updated.name,
         email: updated.email,
         status: updated.isSuspended ? "suspended" : "active",
+        suspendedAt: updated.suspendedAt,
+        suspensionReason: updated.suspensionReason,
       },
     });
   } catch (err) {
-    logger.error("[SUPER_ADMIN_SUSPEND_ADMIN] Failed to toggle suspension", { error: err.message });
+    logger.error("[SUPER_ADMIN_SUSPEND_ADMIN] Failed to update suspension", { error: err.message });
     next(err);
   }
 };
@@ -1104,3 +1205,8 @@ exports.getMarketerStats = async (req, res, next) => {
     next(err);
   }
 };
+
+// Export test helpers and constants
+exports.deriveSuspendState = deriveSuspendState;
+exports.HEAD_ADMIN_ROLES = HEAD_ADMIN_ROLES;
+

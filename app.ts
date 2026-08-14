@@ -109,6 +109,18 @@ app.use(notFound);
 // Always at the end, after all routes
 app.use(errorMiddleware);
 
+// Global error handlers to prevent silent crashes
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED_REJECTION]', reason);
+  logger.error('[UNHANDLED_REJECTION]', { reason: String(reason) });
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[UNCAUGHT_EXCEPTION]', error);
+  logger.error('[UNCAUGHT_EXCEPTION]', { message: error.message, stack: error.stack });
+  process.exit(1);
+});
+
 // Function to start the server after DB connection
 async function startServer() {
   try {
