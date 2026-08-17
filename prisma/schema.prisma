@@ -1205,4 +1205,73 @@ model LoginEvent {
   @@map("login_events")
 }
 
+// One bulk-import upload. Persisted (not in-memory) so a completed job stays
+// readable long after extraction finishes — admins fix rows for a while before
+// confirming, and the job must survive a server restart in between.
+model BulkImportJob {
+  id       String @id @db.VarChar(64) // "imp_<random>" — echoed to the client as importId
+  schoolId Int
+  adminId  Int
+  entity   String @db.VarChar(16) // "students" | "staff"
 
+  // Lifecycle the client polls: processing -> completed | failed
+  status       String  @default("processing") @db.VarChar(16)
+  progress     Int     @default(0) // 0-100, only meaningful while processing
+  stage        String  @default("Queued") @db.VarChar(64) // human label shown under the progress bar
+  errorMessage String? @db.Text // set on failure — shown to the admin verbatim
+
+  fileName      String  @db.VarChar(255)
+  fileSize      Int     @default(0)
+  mimeType      String  @default("") @db.VarChar(128)
+  allowWarnings Boolean @default(true) // false would make warnings block the import too
+
+  columnsJson String? @db.LongText // column definitions the client renders its grid from
+  summaryJson String? @db.LongText // cached counts; recomputed on every row edit
+
+  completedAt DateTime? // when extraction+validation finished
+  confirmedAt DateTime? // when the admin committed the import (blocks a second commit)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  records BulkImportRecord[]
+
+  @@index([schoolId])
+  @@index([adminId])
+  @@index([status])
+  @@map("bulk_import_jobs")
+}
+
+// One extracted row. Kept as its own table rather than a JSON blob on the job so
+// a PATCH of a single row is a targeted update instead of a read-modify-write of
+// the whole set (which would lose edits when two rows are fixed at once).
+model BulkImportRecord {
+  id        Int    @id @default(autoincrement())
+  jobId     String @db.VarChar(64)
+  recordId  String @db.VarChar(32) // "row_2" — the client's stable handle for this row
+  rowNumber Int // 1-based line number in the source file
+
+  dataJson     String  @db.LongText // flat { [columnKey]: string } map
+  isValid      Boolean @default(false) // mirrors errors.length === 0
+  isDuplicate  Boolean @default(false)
+  errorsJson   String  @db.LongText // [{ field, message }] — blocks the import
+  warningsJson String  @db.LongText // [{ field, message }] — never blocks
+
+  // Warnings raised while READING the file (e.g. "09/04/2012 was read
+  // day-first"), which validation cannot rederive later because it only ever
+  // sees the already-normalised value. Kept separately so revalidating a row
+  // re-attaches them instead of silently dropping them, and cleared per field
+  // once the admin edits that field themselves.
+  sourceWarningsJson String? @db.LongText
+
+  importedAt    DateTime? // set once the row is actually created in the DB
+  failureReason String?   @db.Text // why this row failed at confirm time
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  job BulkImportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, recordId])
+  @@index([jobId, rowNumber])
+  @@map("bulk_import_records")
+}

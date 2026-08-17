@@ -21,6 +21,16 @@ const {
 } = require("../../controller/admin/StudentController");
 
 const {
+  uploadDocument,
+  getImportStatus,
+  updateRecord,
+  confirmImport,
+  downloadFailedRecords,
+} = require("../../controller/admin/BulkImportController");
+
+const uploadBulkImport = require("../../middleware/uploadBulkImport");
+
+const {
   upsertFeeStructure,
   getFeeStructures,
   getStudentFees,
@@ -142,6 +152,20 @@ router.put("/student/:id",
 router.patch("/student/change-class", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), changeStudentClass);
 router.get("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), getSingleStudent);
 router.post("/students/bulk-upload", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, bulkCreateStudents);
+
+// Bulk import (students + staff). No requirePermission() here: which permission
+// applies depends on the entity being imported, which is only known from the
+// request body (upload) or the stored job (everything else), so the controller
+// gates each call itself. Auth still runs first — the controller needs req.user.
+//
+// Auth runs BEFORE multer on the upload route, so an unauthenticated caller
+// cannot make the server buffer a 10MB file in memory before being rejected.
+// Auth only reads the Authorization header, so it does not need the parsed body.
+router.post("/bulk-import/upload", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, uploadBulkImport.single("file"), uploadDocument);
+router.get("/bulk-import/:importId", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, getImportStatus);
+router.get("/bulk-import/:importId/failures.csv", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, downloadFailedRecords);
+router.patch("/bulk-import/:importId/records/:recordId", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, updateRecord);
+router.post("/bulk-import/:importId/confirm", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, confirmImport);
 
 // Sub-admin management routes — head admins only (super_admin/school_admin), not delegable via permissions
 router.get("/permissions", auth.authenticateSuperAdmin, getAvailablePermissions);
