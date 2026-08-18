@@ -13,6 +13,7 @@ const twoFactorService = require("../../Services/TwoFactorService");
 const twoFactorTempToken = require("../../util/twoFactorTempToken");
 const processImage = require("../../config/compress");
 const flutterwave = require("../../Services/FlutterwaveService");
+const r2Service = require("../../Services/R2Service");
 const { generateUniqueReferralCode } = require("../../util/referralCode");
 const { signDocumentUrl } = require("../../util/documentUrlSignature");
 
@@ -159,6 +160,18 @@ const SCHOOL_UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
  */
 const schoolMediaUrl = async (stored) => {
   if (!stored || typeof stored !== "string") return null;
+
+  // Uploaded to R2 (private bucket) — the stored value is `r2:<object key>`,
+  // never a public URL, so a fresh presigned GET URL is generated per request.
+  if (stored.startsWith("r2:")) {
+    const key = stored.slice(3);
+    try {
+      return await r2Service.getPresignedUrl(key);
+    } catch (err) {
+      logger.warn("[SCHOOL_MEDIA] Failed to presign R2 object", { key, error: err.message });
+      return null;
+    }
+  }
 
   // A CDN URL, once uploads move off local disk — nothing local to check.
   if (/^https?:\/\//i.test(stored)) return stored;

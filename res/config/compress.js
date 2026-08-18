@@ -33,4 +33,31 @@ const processImage = async (buffer, folder, filename) => {
   }
 };
 
+/**
+ * Same validation/resize/convert as processImage, but returns the processed
+ * buffer instead of writing to local disk — for callers uploading to R2.
+ * @param {Buffer} buffer
+ * @returns {Promise<{buffer: Buffer, contentType: string}>}
+ */
+const processImageToBuffer = async (buffer) => {
+  try {
+    const metadata = await sharp(buffer).metadata();
+
+    if (!allowedMimeTypes.includes(`image/${metadata.format}`)) {
+      throw new Error("Invalid image format");
+    }
+
+    const processedBuffer = await sharp(buffer)
+      .resize(800, 800, { fit: "inside" })
+      .toFormat("jpeg", { quality: 80 })
+      .toBuffer();
+
+    return { buffer: processedBuffer, contentType: "image/jpeg" };
+  } catch (err) {
+    console.error("Error processing image:", err.message);
+    throw new Error("Image processing failed");
+  }
+};
+
 module.exports = processImage;
+module.exports.processImageToBuffer = processImageToBuffer;

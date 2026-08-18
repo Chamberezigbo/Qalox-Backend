@@ -1,5 +1,8 @@
 // controllers/schoolController.js
 const processImage = require("../../config/compress");
+const { processImageToBuffer } = require("../../config/compress");
+const r2Service = require("../../Services/R2Service");
+const { schoolMediaUrl } = require("../public/publicController");
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 
@@ -172,24 +175,28 @@ exports.setupSchool = async (req, res, next) => {
       const derived = generatePrefixFromName(name);
       finalPrefix = await ensureUniquePrefix(derived);
     }
-     // Process images with finalPrefix
-    const processedLogoUrl = await processImage(
-      files.logoUrl[0].buffer,
-      "logos",
-      `${finalPrefix}-logo.jpeg`
-    );
-    const processedStampUrl = await processImage(
-      files.stampUrl[0].buffer,
-      "stamps",
-      `${finalPrefix}-stamp.jpeg`
-    );
+    // Process images in memory, then upload to R2 (private bucket) — the
+    // stored value is `r2:<object key>`, never a public URL. schoolMediaUrl()
+    // turns this into a fresh presigned GET URL whenever the school is read.
+    const [processedLogo, processedStamp] = await Promise.all([
+      processImageToBuffer(files.logoUrl[0].buffer),
+      processImageToBuffer(files.stampUrl[0].buffer),
+    ]);
+
+    const logoKey = `logos/${finalPrefix}-logo.jpeg`;
+    const stampKey = `stamps/${finalPrefix}-stamp.jpeg`;
+
+    await Promise.all([
+      r2Service.uploadObject({ buffer: processedLogo.buffer, key: logoKey, contentType: processedLogo.contentType }),
+      r2Service.uploadObject({ buffer: processedStamp.buffer, key: stampKey, contentType: processedStamp.contentType }),
+    ]);
 
     const newSchool = await prisma.school.create({
       data: {
         name,
         prefix: finalPrefix,
-        logoUrl: processedLogoUrl,
-        stampUrl: processedStampUrl,
+        logoUrl: `r2:${logoKey}`,
+        stampUrl: `r2:${stampKey}`,
         email,
         phoneNumber,
         address,
@@ -206,9 +213,14 @@ exports.setupSchool = async (req, res, next) => {
 
     await incrementAdminStep(adminId);
 
-    return res.status(201).json({ 
+    const [logo, stamp] = await Promise.all([
+      schoolMediaUrl(newSchool.logoUrl),
+      schoolMediaUrl(newSchool.stampUrl),
+    ]);
+
+    return res.status(201).json({
       message: "School created successfully",
-      school: newSchool,
+      school: { ...newSchool, logoUrl: logo, stampUrl: stamp },
     });
   } catch (error) {
     next(error);
@@ -253,9 +265,17 @@ exports.listSchools = async (req, res, next) => {
       prisma.school.count({ where }),
     ]);
 
+    const data = await Promise.all(
+      schools.map(async (s) => ({
+        ...s,
+        logoUrl: await schoolMediaUrl(s.logoUrl),
+        stampUrl: await schoolMediaUrl(s.stampUrl),
+      }))
+    );
+
     return res.status(200).json({
       success: true,
-      data: schools,
+      data,
       meta: {
         total,
         page,
@@ -283,7 +303,7 @@ exports.getSchool = async (req, res, next) => {
           select: { id: true, name: true },
         },
         _count: {
-          select: { students: true, classes: true },
+          select: { Student: true, Class: true },
         },
       },
     });
@@ -302,12 +322,19 @@ exports.getSchool = async (req, res, next) => {
       select: { id: true, name: true, isActive: true },
     });
 
+    const [logo, stamp] = await Promise.all([
+      schoolMediaUrl(school.logoUrl),
+      schoolMediaUrl(school.stampUrl),
+    ]);
+
     return res.status(200).json({
       success: true,
       data: {
         ...school,
-        totalStudents: school._count.students,
-        totalClasses: school._count.classes,
+        logoUrl: logo,
+        stampUrl: stamp,
+        totalStudents: school._count.Student,
+        totalClasses: school._count.Class,
         activeSession,
       },
     });
