@@ -6,6 +6,7 @@ const { TeacherController } = require("../controller/teacher/TeacherController")
 const { AttendanceController } = require("../controller/teacher/AttendanceController");
 const { TeacherAnalyticsController } = require("../controller/teacher/TeacherAnalyticsController");
 const { teacherAuthMiddleware } = require("../middleware/teacherMiddleware");
+const notificationController = require("../controller/NotificationController");
 
 
 const router = express.Router();
@@ -18,6 +19,11 @@ const teacherAnalyticsController = new TeacherAnalyticsController();
 
 router.post("/login", teacherAuthController.login);
 router.get("/overview", teacherAuthMiddleware, teacherOverviewController.getOverview);
+
+// Notification bell
+router.get("/notifications", teacherAuthMiddleware, notificationController.teacher.list);
+router.patch("/notifications/:id/read", teacherAuthMiddleware, notificationController.teacher.markRead);
+router.patch("/notifications/read-all", teacherAuthMiddleware, notificationController.teacher.markAllRead);
 
 // Get students assigned to teacher
 router.get("/my-students", teacherAuthMiddleware, teacherController.getStudentsForGrading);

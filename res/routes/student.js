@@ -9,6 +9,7 @@ const router = express.Router();
 const prisma = new PrismaClient();
 
 const { StudentAuthController } = require("../controller/auth/StudentAuthController");
+const notificationController = require("../controller/NotificationController");
 
 const studentAuthController = new StudentAuthController();
 
@@ -30,6 +31,11 @@ const studentSchema = Joi.object({
 });
 
 router.use(auth);
+
+// Notification bell
+router.get("/notifications", notificationController.student.list);
+router.patch("/notifications/:id/read", notificationController.student.markRead);
+router.patch("/notifications/read-all", notificationController.student.markAllRead);
 
 router.post("/create", async (req, res, next) => {
   const { error } = studentSchema.validate(req.body);

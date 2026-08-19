@@ -7,6 +7,7 @@ const processImage = require("../../config/compress");
 const { generateUniqueIdentifier } = require("../../Models/generateUniqueIdentifier");
 const { academicSession } = require("../../util/prisma");
 const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
+const { createNotification } = require("../../util/notify");
 
 exports.getStudentDetails = async (req, res, next) => {
   try {
@@ -228,6 +229,23 @@ exports.createStudent = async (req, res, next) => {
         classGroup: true, // ✅ Return group data if exists
         academicSession: { select: { id: true, name: true, isActive: true } }
       },
+    });
+
+    // Notify the school's admins — fire-and-forget, never blocks the response.
+    prisma.admin.findMany({
+      where: { schoolId, role: { in: ["school_admin", "sub_admin", "super_admin"] } },
+      select: { id: true },
+    }).then((admins) => {
+      admins.forEach((a) =>
+        createNotification({
+          recipientType: "admin",
+          recipientId: a.id,
+          schoolId,
+          title: "New student enrolled",
+          message: `${createdStudent.name} ${createdStudent.surname} was enrolled in ${createdStudent.class?.name || "a class"}.`,
+          type: "new_student",
+        })
+      );
     });
 
     res.status(201).json({

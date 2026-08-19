@@ -664,6 +664,19 @@ export class AssessmentService {
                 })
             });
 
+            // Notify every student in the published class — separate from the
+            // low_grade ParentAlert below, which only fires for under-40 scores.
+            await tx.userNotification.createMany({
+                data: computed.rows.map((row) => ({
+                    recipientType: "student",
+                    recipientId: row.studentId,
+                    schoolId,
+                    title: "Results published",
+                    message: `Your result for ${subject.name} has been published.`,
+                    type: "result_published"
+                }))
+            });
+
             // Delete the submission after publishing (it's been approved)
             await tx.resultSubmission.deleteMany({
                 where: {

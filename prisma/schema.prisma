@@ -1275,3 +1275,22 @@ model BulkImportRecord {
   @@index([jobId, rowNumber])
   @@map("bulk_import_records")
 }
+
+// Shared notification feed for Admin/Teacher/Student dashboards. Parent has
+// its own separate ParentAlert model (already live, untouched by this one).
+model UserNotification {
+  id            Int      @id @default(autoincrement())
+  recipientType String   @db.VarChar(20) // admin, teacher, student
+  recipientId   Int      // Admin.id, Staff.id, or Student.id depending on recipientType
+  schoolId      Int
+  title         String   @db.VarChar(255)
+  message       String   @db.Text
+  type          String   @db.VarChar(30) // fee_payment, new_student, notice, result_published, general
+  link          String?  @db.VarChar(255)
+  isRead        Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([recipientType, recipientId])
+  @@index([isRead])
+  @@map("user_notifications")
+}

@@ -118,6 +118,7 @@ const {
 } = require("../../schemas/adminSchemas");
 
 const auth = require("../../middleware/authenticateSuperAdmin");
+const notificationController = require("../../controller/NotificationController");
 
 const router = express.Router();
 
@@ -131,6 +132,11 @@ router.get("/", checkHealth);
 
 // My school info for any authenticated admin
 router.get("/my-school", auth.authenticateAdmin, getMySchool);
+
+// Notification bell — admin/sub-admin
+router.get("/notifications", auth.authenticateSchoolLevelAdmin, notificationController.admin.list);
+router.patch("/notifications/:id/read", auth.authenticateSchoolLevelAdmin, notificationController.admin.markRead);
+router.patch("/notifications/read-all", auth.authenticateSchoolLevelAdmin, notificationController.admin.markAllRead);
 
 // Student routes — sub-admins need PERMISSIONS.STUDENTS_MANAGE; head admins always pass
 router.get("/students", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, getStudentDetails);

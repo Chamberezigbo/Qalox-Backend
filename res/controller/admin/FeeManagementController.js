@@ -1,5 +1,6 @@
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
+const { createNotification } = require("../../util/notify");
 
 const PAYMENT_METHODS = ["Bank Transfer", "Cash", "Card"];
 
@@ -326,6 +327,24 @@ exports.recordPayment = async (req, res, next) => {
     }, { timeout: 20000 });
 
     logger.info("[RECORD_PAYMENT] Payment recorded", { studentFeeId: studentFee.id, amount, receiptNo });
+
+    // Notify the school's admins — fire-and-forget, never blocks the response.
+    prisma.admin.findMany({
+      where: { schoolId: studentFee.schoolId, role: { in: ["school_admin", "sub_admin", "super_admin"] } },
+      select: { id: true },
+    }).then((admins) => {
+      const studentName = `${studentFee.student.name} ${studentFee.student.surname}`;
+      admins.forEach((a) =>
+        createNotification({
+          recipientType: "admin",
+          recipientId: a.id,
+          schoolId: studentFee.schoolId,
+          title: "Fee payment received",
+          message: `${studentName} paid ₦${amount.toLocaleString()} (receipt ${receiptNo}).`,
+          type: "fee_payment",
+        })
+      );
+    });
 
     res.status(201).json({
       success: true,

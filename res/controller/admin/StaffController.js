@@ -1,5 +1,6 @@
 const prisma = require('../../util/prisma');
 const { generateUniqueIdentifier } = require("../../Models/generateUniqueIdentifier");
+const { createNotification } = require("../../util/notify");
 
 /**
  * Register a new staff
@@ -285,13 +286,15 @@ exports.assignTeacher = async (req, res, next) => {
     if (!staff) return res.status(404).json({ success: false, message: "Staff not found" });
 
     // ✅ Optional validations
+    let classExists = null;
     if (classId) {
-      const classExists = await prisma.class.findUnique({ where: { id: parseInt(classId) } });
+      classExists = await prisma.class.findUnique({ where: { id: parseInt(classId) } });
       if (!classExists) return res.status(404).json({ success: false, message: "Class not found" });
     }
 
+    let subjectExists = null;
     if (subjectId) {
-      const subjectExists = await prisma.subject.findUnique({ where: { id: parseInt(subjectId) } });
+      subjectExists = await prisma.subject.findUnique({ where: { id: parseInt(subjectId) } });
       if (!subjectExists) return res.status(404).json({ success: false, message: "Subject not found" });
     }
 
@@ -331,6 +334,21 @@ exports.assignTeacher = async (req, res, next) => {
           ...(subjectId && { subjectId: parseInt(subjectId) }),
           ...(campusId && { campusId: parseInt(campusId) }),
         },
+      });
+    }
+
+    // Notify the teacher of a new assignment — fire-and-forget.
+    if (!existing) {
+      const parts = [];
+      if (classExists) parts.push(`class ${classExists.name}`);
+      if (subjectExists) parts.push(`subject ${subjectExists.name}`);
+      createNotification({
+        recipientType: "teacher",
+        recipientId: staff.id,
+        schoolId: staff.schoolId,
+        title: "New class assignment",
+        message: `You've been assigned to ${parts.join(" / ") || "a new assignment"}.`,
+        type: "assignment",
       });
     }
 
