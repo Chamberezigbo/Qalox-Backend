@@ -1,4 +1,5 @@
 import prisma from "../util/prisma";
+const { schoolMediaUrl } = require("../controller/public/publicController");
 
 export class AssessmentService {
 
@@ -1471,6 +1472,15 @@ export class AssessmentService {
 
         if (!student) throw new Error("Student not found");
 
+        const school = await prisma.school.findUnique({
+            where: { id: schoolId },
+            select: { logoUrl: true, stampUrl: true }
+        });
+        const [schoolLogo, schoolStamp] = await Promise.all([
+            schoolMediaUrl(school?.logoUrl),
+            schoolMediaUrl(school?.stampUrl)
+        ]);
+
         // Fetch class subjects
         const classSubjects = await prisma.classSubject.findMany({
             where: { classId: student.classId },
@@ -1645,6 +1655,10 @@ export class AssessmentService {
             : new Date().toISOString().split('T')[0];
 
         return {
+            school: {
+                logoUrl: schoolLogo,
+                stampUrl: schoolStamp
+            },
             studentInformation: {
                 id: student.id,
                 name: student.name,

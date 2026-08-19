@@ -1,6 +1,7 @@
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const { createNotification } = require("../../util/notify");
+const { schoolMediaUrl } = require("../public/publicController");
 
 const PAYMENT_METHODS = ["Bank Transfer", "Cash", "Card"];
 
@@ -346,6 +347,15 @@ exports.recordPayment = async (req, res, next) => {
       );
     });
 
+    const school = await prisma.school.findUnique({
+      where: { id: studentFee.schoolId },
+      select: { name: true, logoUrl: true, stampUrl: true },
+    });
+    const [schoolLogo, schoolStamp] = await Promise.all([
+      schoolMediaUrl(school?.logoUrl),
+      schoolMediaUrl(school?.stampUrl),
+    ]);
+
     res.status(201).json({
       success: true,
       message: "Payment recorded successfully",
@@ -358,7 +368,9 @@ exports.recordPayment = async (req, res, next) => {
         paymentDate: payment.paymentDate,
         paymentMethod: payment.paymentMethod,
         items: studentFee.feeStructure.items.map((i) => ({ name: i.name, amount: i.amount })),
-        schoolName: undefined, // filled in by receipt endpoint / frontend school context
+        schoolName: school?.name,
+        logoUrl: schoolLogo,
+        stampUrl: schoolStamp,
         term: studentFee.feeStructure.term,
         session: studentFee.feeStructure.session,
         isPartial: newStatus === "partial",
@@ -407,6 +419,15 @@ exports.getReceipt = async (req, res, next) => {
 
     const latestPayment = studentFee.payments[0];
 
+    const school = await prisma.school.findUnique({
+      where: { id: studentFee.schoolId },
+      select: { name: true, logoUrl: true, stampUrl: true },
+    });
+    const [schoolLogo, schoolStamp] = await Promise.all([
+      schoolMediaUrl(school?.logoUrl),
+      schoolMediaUrl(school?.stampUrl),
+    ]);
+
     res.status(200).json({
       success: true,
       data: {
@@ -424,6 +445,9 @@ exports.getReceipt = async (req, res, next) => {
         outstanding: Math.max(studentFee.totalFee - studentFee.amountPaid, 0),
         parentEmail: studentFee.student.guardianEmail,
         parentPhone: studentFee.student.guardianNumber,
+        schoolName: school?.name,
+        logoUrl: schoolLogo,
+        stampUrl: schoolStamp,
       },
     });
   } catch (err) {
