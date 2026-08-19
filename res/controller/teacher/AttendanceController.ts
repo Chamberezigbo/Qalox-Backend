@@ -12,7 +12,7 @@ export class AttendanceController {
         try {
             if (!req.staffId || !req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-            const { classId, date, records } = req.body;
+            const { classId, groupId, date, records } = req.body;
             if (!classId || !date || !Array.isArray(records)) {
                 return res.status(400).json({ success: false, message: "classId, date and records[] are required" });
             }
@@ -24,6 +24,7 @@ export class AttendanceController {
                 staffId: req.staffId,
                 schoolId: req.schoolId,
                 classId: Number(classId),
+                groupId: groupId != null && groupId !== "" ? Number(groupId) : null,
                 date,
                 records,
             });
@@ -33,6 +34,9 @@ export class AttendanceController {
             if (err instanceof Error && err.message === "You are not assigned to this class") {
                 return res.status(403).json({ success: false, message: err.message });
             }
+            if (err instanceof Error && err.message === "That group does not belong to the selected class") {
+                return res.status(400).json({ success: false, message: err.message });
+            }
             next(err);
         }
     };
@@ -41,7 +45,7 @@ export class AttendanceController {
         try {
             if (!req.staffId || !req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-            const { classId, date } = req.query;
+            const { classId, groupId, date } = req.query;
             if (!classId || !date) {
                 return res.status(400).json({ success: false, message: "classId and date are required" });
             }
@@ -50,6 +54,7 @@ export class AttendanceController {
                 staffId: req.staffId,
                 schoolId: req.schoolId,
                 classId: Number(classId),
+                groupId: groupId ? Number(groupId) : null,
                 date: String(date),
             });
 
@@ -57,6 +62,9 @@ export class AttendanceController {
         } catch (err) {
             if (err instanceof Error && err.message === "You are not assigned to this class") {
                 return res.status(403).json({ success: false, message: err.message });
+            }
+            if (err instanceof Error && err.message === "That group does not belong to the selected class") {
+                return res.status(400).json({ success: false, message: err.message });
             }
             next(err);
         }
@@ -66,7 +74,7 @@ export class AttendanceController {
         try {
             if (!req.staffId || !req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-            const { classId, startDate, endDate } = req.query;
+            const { classId, groupId, startDate, endDate } = req.query;
             if (!classId || !startDate || !endDate) {
                 return res.status(400).json({ success: false, message: "classId, startDate and endDate are required" });
             }
@@ -75,6 +83,7 @@ export class AttendanceController {
                 staffId: req.staffId,
                 schoolId: req.schoolId,
                 classId: Number(classId),
+                groupId: groupId ? Number(groupId) : null,
                 startDate: String(startDate),
                 endDate: String(endDate),
             });
@@ -83,6 +92,9 @@ export class AttendanceController {
         } catch (err) {
             if (err instanceof Error && err.message === "You are not assigned to this class") {
                 return res.status(403).json({ success: false, message: err.message });
+            }
+            if (err instanceof Error && err.message === "That group does not belong to the selected class") {
+                return res.status(400).json({ success: false, message: err.message });
             }
             next(err);
         }

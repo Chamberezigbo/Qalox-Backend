@@ -13,17 +13,27 @@ export class AttendanceService {
         if (!assignment) throw new Error("You are not assigned to this class");
     }
 
-    async markAttendance(input: { staffId: number; schoolId: number; classId: number; date: string; records: MarkRecord[] }) {
-        const { staffId, schoolId, classId, date, records } = input;
+    /** When a groupId is given, confirms it actually belongs to this class before it's used to filter anything. */
+    private async assertGroupBelongsToClass(classId: number, groupId?: number | null) {
+        if (groupId == null) return;
+        const group = await prisma.classGroup.findFirst({ where: { id: groupId, classId } });
+        if (!group) throw new Error("That group does not belong to the selected class");
+    }
+
+    async markAttendance(input: { staffId: number; schoolId: number; classId: number; groupId?: number | null; date: string; records: MarkRecord[] }) {
+        const { staffId, schoolId, classId, groupId, date, records } = input;
         await this.assertAssignedToClass(staffId, classId);
+        await this.assertGroupBelongsToClass(classId, groupId);
 
         if (!Array.isArray(records) || records.length === 0) {
             throw new Error("records must be a non-empty array");
         }
 
         // Only allow marking students who actually belong to this class/school
+        // (and group, when one was selected — a teacher assigned to a class
+        // shouldn't be able to mark students outside the group they picked).
         const validStudents = await prisma.student.findMany({
-            where: { schoolId, classId, id: { in: records.map(r => r.studentId) } },
+            where: { schoolId, classId, ...(groupId != null ? { classGroupId: groupId } : {}), id: { in: records.map(r => r.studentId) } },
             select: { id: true, parentId: true, name: true, surname: true },
         });
         const validById = new Map(validStudents.map(s => [s.id, s]));
@@ -59,15 +69,16 @@ export class AttendanceService {
         return { marked: toMark.length, skipped: records.length - toMark.length };
     }
 
-    async getAttendance(input: { staffId: number; schoolId: number; classId: number; date: string }) {
-        const { staffId, schoolId, classId, date } = input;
+    async getAttendance(input: { staffId: number; schoolId: number; classId: number; groupId?: number | null; date: string }) {
+        const { staffId, schoolId, classId, groupId, date } = input;
         await this.assertAssignedToClass(staffId, classId);
+        await this.assertGroupBelongsToClass(classId, groupId);
 
         const day = toDateOnly(date);
 
         const [students, records] = await Promise.all([
             prisma.student.findMany({
-                where: { schoolId, classId },
+                where: { schoolId, classId, ...(groupId != null ? { classGroupId: groupId } : {}) },
                 select: { id: true, name: true, surname: true, otherNames: true, registrationNumber: true, gender: true },
                 orderBy: { surname: "asc" },
             }),
@@ -91,13 +102,14 @@ export class AttendanceService {
         };
     }
 
-    async getAttendanceReport(input: { staffId: number; schoolId: number; classId: number; startDate: string; endDate: string }) {
-        const { staffId, schoolId, classId, startDate, endDate } = input;
+    async getAttendanceReport(input: { staffId: number; schoolId: number; classId: number; groupId?: number | null; startDate: string; endDate: string }) {
+        const { staffId, schoolId, classId, groupId, startDate, endDate } = input;
         await this.assertAssignedToClass(staffId, classId);
+        await this.assertGroupBelongsToClass(classId, groupId);
 
         const [students, records] = await Promise.all([
             prisma.student.findMany({
-                where: { schoolId, classId },
+                where: { schoolId, classId, ...(groupId != null ? { classGroupId: groupId } : {}) },
                 select: { id: true, name: true, surname: true, otherNames: true, registrationNumber: true },
                 orderBy: { surname: "asc" },
             }),
