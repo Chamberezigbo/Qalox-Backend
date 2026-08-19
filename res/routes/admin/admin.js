@@ -207,34 +207,38 @@ router.get("/broadcasts", auth.authenticateSchoolLevelAdmin, auth.requirePermiss
 // Analytics routes — sub-admins need PERMISSIONS.ANALYTICS_VIEW; head admins always pass
 router.get("/analytics/campuses", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.ANALYTICS_VIEW), auth.attachSchoolId, getCampusAnalytics);
 
-// Class routes
-router.post("/classes/create", validate(classSchema), auth.authenticateSuperAdmin, auth.attachSchoolId, createClass);
-router.get("/classes", auth.authenticateSuperAdmin, auth.attachSchoolId, getAllClasses);
-router.delete("/classes/:classId", auth.authenticateSuperAdmin, deleteClass);
-router.post("/class-groups/create", validate(classGroupSchema), auth.authenticateSuperAdmin, auth.attachSchoolId, createClassGroup);
-router.get("/class-groups", auth.authenticateSuperAdmin, auth.attachSchoolId, getClassGroups);
-router.patch("/class/update/:classId", auth.authenticateSuperAdmin, updateClass);
-router.patch("/class-group/update/:groupId", auth.authenticateSuperAdmin, updateClassGroup);
+// Class routes — sub-admins need PERMISSIONS.CLASSES_MANAGE; head admins always pass
+router.post("/classes/create", validate(classSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, createClass);
+router.get("/classes", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, getAllClasses);
+router.delete("/classes/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), deleteClass);
+router.post("/class-groups/create", validate(classGroupSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, createClassGroup);
+router.get("/class-groups", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, getClassGroups);
+router.patch("/class/update/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClass);
+router.patch("/class-group/update/:groupId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClassGroup);
 
-// Campus routes
-router.post("/campus/create", auth.authenticateSuperAdmin, auth.attachSchoolId, createCampus);
-router.patch("/campus/update/:campusId", auth.authenticateSuperAdmin, updateCampus);
-router.get("/campuses", auth.authenticateSuperAdmin, auth.attachSchoolId, getCampuses);
+// Campus routes — sub-admins need PERMISSIONS.CAMPUSES_MANAGE; head admins always pass
+router.post("/campus/create", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, createCampus);
+router.patch("/campus/update/:campusId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), updateCampus);
+router.get("/campuses", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, getCampuses);
 
-// Subject routes
-router.post("/subject/create", auth.authenticateSuperAdmin, auth.attachSchoolId, createSubject);
-router.get("/subjects", auth.authenticateSuperAdmin, auth.attachSchoolId, getAllSubjects);
-router.put("/subject/:subjectId", auth.authenticateSuperAdmin, auth.attachSchoolId, editSubject);
-router.delete("/subject/:subjectId", auth.authenticateSuperAdmin, deleteSubject);
+// Subject routes — sub-admins need PERMISSIONS.SUBJECTS_MANAGE; head admins always pass
+router.post("/subject/create", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, createSubject);
+router.get("/subjects", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, getAllSubjects);
+router.put("/subject/:subjectId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, editSubject);
+router.delete("/subject/:subjectId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), deleteSubject);
 
 
 // List all CA for the authenticated admin’s school
 // Optional filters: classId, subjectId, campusId, name; pagination: page, pageSize
 router.get('/assessments', auth.authenticateAdmin, auth.attachSchoolId, getSchoolAssessments);
 
-router.get("/ca-template", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getCATemplates);
+// CA Template routes — sub-admins need PERMISSIONS.CA_TEMPLATE_MANAGE; head admins always pass
+router.get("/ca-template", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CA_TEMPLATE_MANAGE), auth.attachSchoolId, assessmentController.getCATemplates);
 
-// Grading routes using ts and oop concept
+// Grading & remark-scheme routes: intentionally head-admin-only (no permission
+// key exists for these — a school's grading scheme is a single source of truth
+// used by both TeacherService.computeClassResults and AssessmentService, so it
+// isn't delegable to sub-admins the way other modules are).
 const gradingController = new GradingController();
 
 router.post('/grading/create', auth.authenticateSuperAdmin, auth.attachSchoolId, gradingController.create);
@@ -270,34 +274,42 @@ router.delete(
 );
 
 // School-wide template (no classId — applies to all classes):
-router.post("/ca-template", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.createCATemplate);
-router.post("/class-subject/assign", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.assignSubjectsToClass);
-router.get("/class-subject/:classId", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getClassSubjects);
-router.delete("/class-subject/:classId/:subjectId", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.deleteSubjectFromClass);
+router.post("/ca-template", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CA_TEMPLATE_MANAGE), auth.attachSchoolId, assessmentController.createCATemplate);
+router.post("/class-subject/assign", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, assessmentController.assignSubjectsToClass);
+router.get("/class-subject/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, assessmentController.getClassSubjects);
+router.delete("/class-subject/:classId/:subjectId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, assessmentController.deleteSubjectFromClass);
 
-// broadsheet
-router.get("/broadsheet", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getAdminBroadsheet);
+// broadsheet + publishing — sub-admins need PERMISSIONS.RESULTS_GENERATE (the "Generate Result" page)
+router.get("/broadsheet", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, assessmentController.getAdminBroadsheet);
+router.post("/results/publish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, assessmentController.publishResults);
 
+// Reviewing/managing already-computed results — sub-admins need PERMISSIONS.RESULTS_MANAGE (the "Manage Result" page)
+router.get("/results", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getResultsByStatus);
+router.get("/results/submissions", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getPendingSubmissions);
+router.get("/results/rejected", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getRejectedResults);
+router.delete("/results/submissions/:submissionId/reject", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.rejectSubmission);
+router.put("/results/rejected/:submissionId/restore", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.restoreRejectedSubmission);
+router.delete("/results/published/:publishedResultId/unpublish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.unpublishResults);
 
-router.post("/results/publish", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.publishResults);
-router.get("/results", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getResultsByStatus);
-router.get("/results/submissions", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getPendingSubmissions);
-router.get("/results/rejected", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getRejectedResults);
-router.delete("/results/submissions/:submissionId/reject", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.rejectSubmission);
-router.put("/results/rejected/:submissionId/restore", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.restoreRejectedSubmission);
-router.delete("/results/published/:publishedResultId/unpublish", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.unpublishResults);
+router.get("/result/student", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getStudentResult);
+router.get("/result/teacher", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getTeacherResult);
+router.get("/result/student/:studentId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getStudentCompleteResult);
 
-router.get("/result/student", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getStudentResult);
-router.get("/result/teacher", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getTeacherResult);
-router.get("/result/student/:studentId", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.getStudentCompleteResult);
-
-// Academic term routes
+// Academic term / session / exam-schedule routes: intentionally head-admin-only
+// (no permission key exists — these back the "Session Setup" and "Exams"
+// sidebar items, which are hidden from sub-admins on the frontend for the
+// same reason).
 router.post("/term", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.createTerm);
 router.put("/term/:id", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.updateTerm);
 router.patch("/term/:id/activate", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.activateTerm);
 router.get("/terms", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.getTerms);
 router.get("/active-term", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.getActiveTerm);
-router.get("/overview", auth.authenticateSuperAdmin, auth.attachSchoolId, getOverview);
+
+// Overview — every admin type's landing page after login, so it's open to any
+// authenticated school-level admin (head or sub-admin) rather than gated behind
+// a specific permission; the data itself is aggregate counts only (no financial
+// or individually-identifying data), so there's nothing here to restrict.
+router.get("/overview", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, getOverview);
 
 router.post("/session", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.createSession);
 router.get("/sessions", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.getSessions);
