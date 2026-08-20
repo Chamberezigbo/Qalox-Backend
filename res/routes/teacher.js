@@ -5,6 +5,7 @@ const { TeacherOverviewController } = require("../controller/teacher/TeacherOver
 const { TeacherController } = require("../controller/teacher/TeacherController");
 const { AttendanceController } = require("../controller/teacher/AttendanceController");
 const { TeacherAnalyticsController } = require("../controller/teacher/TeacherAnalyticsController");
+const { AssignmentController } = require("../controller/teacher/AssignmentController");
 const { teacherAuthMiddleware } = require("../middleware/teacherMiddleware");
 const notificationController = require("../controller/NotificationController");
 
@@ -16,6 +17,7 @@ const teacherOverviewController = new TeacherOverviewController();
 const teacherController = new TeacherController();
 const attendanceController = new AttendanceController();
 const teacherAnalyticsController = new TeacherAnalyticsController();
+const assignmentController = new AssignmentController();
 
 router.post("/login", teacherAuthController.login);
 router.get("/overview", teacherAuthMiddleware, teacherOverviewController.getOverview);
@@ -58,6 +60,12 @@ router.get("/students", teacherAuthMiddleware, teacherController.getStudents);
 router.get("/students-with-scores", teacherAuthMiddleware, teacherController.getStudentsWithScores);
 router.get("/my-subjects", teacherAuthMiddleware, teacherController.getTeacherSubjects);
 router.get("/profile", teacherAuthMiddleware, teacherController.getTeacherDetails);
+
+// Assignment Board
+router.post("/assignments", teacherAuthMiddleware, assignmentController.create);
+router.get("/assignments", teacherAuthMiddleware, assignmentController.list);
+router.patch("/assignments/:id", teacherAuthMiddleware, assignmentController.update);
+router.delete("/assignments/:id", teacherAuthMiddleware, assignmentController.remove);
 
 router.get("/ca", teacherAuthMiddleware, teacherController.getCAs);
 router.get("/exam", teacherAuthMiddleware, teacherController.getExams);

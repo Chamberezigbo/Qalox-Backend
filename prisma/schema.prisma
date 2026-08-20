@@ -187,6 +187,7 @@ model School {
   loginEvents         LoginEvent[]
   commissions         Commission[]
   examSchedules       ExamSchedule[]
+  assignments         Assignment[]
 
   @@index([billingPlanId])
   @@map("schools")
@@ -257,6 +258,7 @@ model Class {
   feeStructures FeeStructure[]
   attendance    Attendance[]
   examScheduleEntries ExamScheduleEntry[]
+  postedAssignments   Assignment[]
 
   // Optionally, add a unique constraint for name, school, and campus
   @@unique([name, schoolId, campusId])
@@ -295,6 +297,7 @@ model Staff {
   assignments TeacherAssignment[] // All class+subject+campus teaching assignments
   resultSubmissions ResultSubmission[]
   markedAttendance Attendance[]
+  postedAssignments Assignment[]
 
   @@unique([schoolId, registrationNumber])
   @@map("staffs")
@@ -393,6 +396,7 @@ model Subject {
   publishedResults PublishedResult[]
   resultSubmissions ResultSubmission[]
   examScheduleEntries ExamScheduleEntry[]
+  postedAssignments Assignment[]
 
   @@map("subjects")
 }
@@ -412,6 +416,33 @@ model TeacherAssignment {
 
   @@index([staffId, classId, subjectId, campusId], name: "TeacherAssignment_unique") // Unique index
   @@map("teacher_assignments")
+}
+
+// A homework/task a teacher posts to one class+subject, visible to every
+// student in that class. Create/update is gated by a matching
+// TeacherAssignment row (staffId+classId+subjectId) so a teacher can only
+// post to a class/subject they actually teach.
+model Assignment {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int
+  classId     Int
+  subjectId   Int
+  staffId     Int // creating teacher
+  title       String   @db.VarChar(255)
+  description String?  @db.Text
+  dueDate     DateTime @db.Date
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  school  School  @relation(fields: [schoolId], references: [id])
+  class   Class   @relation(fields: [classId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+  staff   Staff   @relation(fields: [staffId], references: [id])
+
+  @@index([schoolId])
+  @@index([classId])
+  @@index([staffId])
+  @@map("assignments")
 }
 
 model Attendance {

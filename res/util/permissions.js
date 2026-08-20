@@ -23,6 +23,7 @@ const PERMISSIONS = {
   SMS_BROADCAST_SEND: "sms_broadcast.send",
   ANALYTICS_VIEW: "analytics.view",
   EXAMS_MANAGE: "exams.manage",
+  PARENTS_MANAGE: "parents.manage",
 };
 
 // Human-readable labels, matching the frontend's sidebar module names exactly.
@@ -40,6 +41,7 @@ const PERMISSION_LABELS = {
   [PERMISSIONS.SMS_BROADCAST_SEND]: "Broadcast Notices",
   [PERMISSIONS.ANALYTICS_VIEW]: "Campus Analytics",
   [PERMISSIONS.EXAMS_MANAGE]: "Manage Exams",
+  [PERMISSIONS.PARENTS_MANAGE]: "Parent Credentials",
 };
 
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);

@@ -20,6 +20,15 @@ export class StudentDashboardService {
             where: { classId: student.classId }
         });
 
+        // "Active" = not yet overdue, matching the due-status badge logic
+        // (Overdue / Due soon / Upcoming) already used on the Assignment
+        // Board — Due soon and Upcoming both count as active.
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const activeAssignmentsCount = await prisma.assignment.count({
+            where: { classId: student.classId, dueDate: { gte: startOfToday } }
+        });
+
         // Get current active term for the school
         const activeSession = await prisma.academicSession.findFirst({
             where: { schoolId: student.schoolId, isActive: true },
@@ -53,7 +62,7 @@ export class StudentDashboardService {
                 totalSchoolFee: 0,       // static — fees not yet implemented
                 totalStudentsInClass: classmateCount,
                 pendingDebt: 0,          // static — fees not yet implemented
-                activeAssignments: 0     // static — assignments not yet implemented
+                activeAssignments: activeAssignmentsCount
             }
         };
     }

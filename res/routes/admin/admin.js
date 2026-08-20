@@ -105,6 +105,9 @@ const { AssessmentController } = require("../../controller/admin/AssessmentContr
 
 const assessmentController = new AssessmentController();
 
+const { AdminParentController } = require("../../controller/admin/AdminParentController");
+const adminParentController = new AdminParentController();
+
 const examScheduleController = require("../../controller/admin/examSchedule");
 const {
   examScheduleHeaderSchema,
@@ -344,6 +347,12 @@ router.patch("/exam-schedules/:id/entries/:entryId", auth.authenticateSchoolLeve
 router.delete("/exam-schedules/:id/entries/:entryId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.deleteEntry);
 router.post("/exam-schedules/:id/auto-generate", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, validate(autoGenerateSchema), examScheduleController.autoGenerate);
 router.post("/exam-schedules/:id/publish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.publishExamSchedule);
+
+// Parent credentials — creates (or links an existing) real Parent account to
+// a student, replacing what was previously a frontend-only mock.
+router.post("/parents", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.create);
+router.get("/parents", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.list);
+router.patch("/parents/:id/reset-password", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.resetPassword);
 
 
 
