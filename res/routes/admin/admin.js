@@ -5,6 +5,8 @@ const upload = require("../../middleware/upload");
 const {
   createAdmin,
   loginAdmin,
+  forgotPassword,
+  resetPassword,
   getSchoolAdmins,
   updateAdmin,
   deleteAdmin,
@@ -103,6 +105,15 @@ const { AssessmentController } = require("../../controller/admin/AssessmentContr
 
 const assessmentController = new AssessmentController();
 
+const examScheduleController = require("../../controller/admin/examSchedule");
+const {
+  examScheduleHeaderSchema,
+  examScheduleHeaderUpdateSchema,
+  replaceEntriesSchema,
+  updateEntrySchema,
+  autoGenerateSchema,
+} = require("../../schemas/examScheduleSchema");
+
 const validate = require("../../middleware/validator");
 
 const {
@@ -124,6 +135,8 @@ const router = express.Router();
 
 router.post("/create", validate(createAdminSchema), createAdmin);
 router.post("/login", validate(loginSchema), loginAdmin);
+router.post("/forgot-password", forgotPassword);
+router.post("/reset-password", resetPassword);
 
 router.get("/school-admins", auth.authenticateSuperAdmin, auth.attachSchoolId, getSchoolAdmins);
 router.put("/:id", validate(updateAdminSchema), updateAdmin);
@@ -312,8 +325,25 @@ router.get("/active-term", auth.authenticateSuperAdmin, auth.attachSchoolId, ter
 router.get("/overview", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, getOverview);
 
 router.post("/session", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.createSession);
-router.get("/sessions", auth.authenticateSuperAdmin, auth.attachSchoolId, termController.getSessions);
+// Read-only, no sensitive data (session names only) — open to any school-level
+// admin so a sub-admin with EXAMS_MANAGE can populate the exam-schedule
+// wizard's session dropdown, matching the /overview precedent above.
+router.get("/sessions", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, termController.getSessions);
 router.patch("/exam/:examId/schedule", auth.authenticateSuperAdmin, auth.attachSchoolId, assessmentController.scheduleExam);
+
+// Exam scheduling wizard — bulk-schedule exams across classes/subjects with
+// a real date/time/duration, separate from the CA-template-driven Exam model
+// above. See ExamScheduleService for the model split rationale.
+router.post("/exam-schedules", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, validate(examScheduleHeaderSchema), examScheduleController.createExamSchedule);
+router.get("/exam-schedules", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.listExamSchedules);
+router.get("/exam-schedules/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.getExamSchedule);
+router.patch("/exam-schedules/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, validate(examScheduleHeaderUpdateSchema), examScheduleController.updateExamSchedule);
+router.delete("/exam-schedules/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.deleteExamSchedule);
+router.post("/exam-schedules/:id/entries", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, validate(replaceEntriesSchema), examScheduleController.replaceEntries);
+router.patch("/exam-schedules/:id/entries/:entryId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, validate(updateEntrySchema), examScheduleController.updateEntry);
+router.delete("/exam-schedules/:id/entries/:entryId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.deleteEntry);
+router.post("/exam-schedules/:id/auto-generate", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, validate(autoGenerateSchema), examScheduleController.autoGenerate);
+router.post("/exam-schedules/:id/publish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.publishExamSchedule);
 
 
 

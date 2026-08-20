@@ -22,6 +22,7 @@ const PERMISSIONS = {
   FEES_MANAGE: "fees.manage",
   SMS_BROADCAST_SEND: "sms_broadcast.send",
   ANALYTICS_VIEW: "analytics.view",
+  EXAMS_MANAGE: "exams.manage",
 };
 
 // Human-readable labels, matching the frontend's sidebar module names exactly.
@@ -38,6 +39,7 @@ const PERMISSION_LABELS = {
   [PERMISSIONS.FEES_MANAGE]: "Fee Management",
   [PERMISSIONS.SMS_BROADCAST_SEND]: "Broadcast Notices",
   [PERMISSIONS.ANALYTICS_VIEW]: "Campus Analytics",
+  [PERMISSIONS.EXAMS_MANAGE]: "Manage Exams",
 };
 
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);

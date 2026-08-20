@@ -960,9 +960,12 @@ exports.forgotPassword = async (req, res, next) => {
       data: { resetPasswordToken: hashedToken, resetPasswordExpires },
     });
 
-    const portalUrl = admin.role === "marketer"
-      ? (process.env.MARKETER_PORTAL_URL || "http://localhost:9990")
-      : (process.env.SUPER_ADMIN_PORTAL_URL || "http://localhost:9991");
+    const portalUrl =
+      admin.role === "marketer"
+        ? (process.env.MARKETER_PORTAL_URL || "http://localhost:9990")
+        : admin.role === "super_admin" || admin.role === "school_admin" || admin.role === "sub_admin"
+        ? (process.env.SCHOOL_PORTAL_URL || "http://localhost:8800")
+        : (process.env.SUPER_ADMIN_PORTAL_URL || "http://localhost:9991");
     const resetLink = `${portalUrl}/reset-password?token=${rawToken}`;
 
     try {

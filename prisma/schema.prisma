@@ -113,6 +113,7 @@ model Admin {
   campus                       Campus?                @relation(fields: [campusId], references: [id])
   createdContinuousAssessments ContinuousAssessment[] @relation("AdminCreatedCAs")
   createdExams                 Exam[]                 @relation("AdminCreatedExams")
+  createdExamSchedules         ExamSchedule[]         @relation("AdminCreatedExamSchedules")
 
   publishedResults PublishedResult[]
   commissions      Commission[]
@@ -185,6 +186,7 @@ model School {
   marketerLead        MarketerSchoolLead?
   loginEvents         LoginEvent[]
   commissions         Commission[]
+  examSchedules       ExamSchedule[]
 
   @@index([billingPlanId])
   @@map("schools")
@@ -222,6 +224,7 @@ model Campus {
   Subject            Subject[]
   TeacherAssignments TeacherAssignment[] // ✅ added
   gradingSchemes GradingScheme[]
+  examSchedules  ExamSchedule[]
 
   @@unique([schoolId, name]) // 🔒 Prevent same campus name for same school
   @@map("campuses")
@@ -253,6 +256,7 @@ model Class {
   resultSubmissions ResultSubmission[]
   feeStructures FeeStructure[]
   attendance    Attendance[]
+  examScheduleEntries ExamScheduleEntry[]
 
   // Optionally, add a unique constraint for name, school, and campus
   @@unique([name, schoolId, campusId])
@@ -388,6 +392,7 @@ model Subject {
   classSubjects         ClassSubject[]
   publishedResults PublishedResult[]
   resultSubmissions ResultSubmission[]
+  examScheduleEntries ExamScheduleEntry[]
 
   @@map("subjects")
 }
@@ -512,9 +517,79 @@ model Exam {
   subject     Subject?     @relation(fields: [subjectId], references: [id])
   examResults ExamResult[]
   scheduledDate DateTime?
+  scheduleEntries ExamScheduleEntry[]
 
   @@unique([classId, subjectId, name])
   @@map("exams")
+}
+
+enum ExamScheduleStatus {
+  draft
+  published
+}
+
+enum ExamSchedulingMethod {
+  same_schedule
+  default_with_overrides
+  auto
+  fully_custom
+}
+
+// A timetabled exam "sitting" (e.g. "First Term Examination 2025/2026")
+// spanning many classes/subjects with campus/session/date/time/duration.
+// Deliberately separate from `Exam`, which is a per-class-subject grading
+// line item (weightage/maxScore) auto-generated from CA templates — see
+// AssessmentService.assignSubjectsToClass. Publishing an ExamSchedule does a
+// best-effort backfill onto matching Exam rows (see ExamScheduleService);
+// it never creates new, incomplete Exam rows.
+model ExamSchedule {
+  id                Int      @id @default(autoincrement())
+  schoolId          Int
+  campusId          Int
+  academicSessionId Int
+  examType          String   @db.VarChar(80)
+  name              String   @db.VarChar(120)
+  description       String?  @db.VarChar(300)
+  schedulingMethod  ExamSchedulingMethod
+  status            ExamScheduleStatus @default(draft)
+  createdByAdminId  Int?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  publishedAt       DateTime?
+
+  school          School          @relation(fields: [schoolId], references: [id])
+  campus          Campus          @relation(fields: [campusId], references: [id])
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
+  createdByAdmin  Admin?          @relation("AdminCreatedExamSchedules", fields: [createdByAdminId], references: [id])
+  entries         ExamScheduleEntry[]
+
+  @@index([schoolId])
+  @@index([campusId])
+  @@index([academicSessionId])
+  @@map("exam_schedules")
+}
+
+model ExamScheduleEntry {
+  id              Int      @id @default(autoincrement())
+  examScheduleId  Int
+  classId         Int
+  subjectId       Int
+  date            DateTime @db.Date
+  startTime       String   @db.VarChar(5) // "09:00"
+  durationMinutes Int
+  linkedExamId    Int?     // best-effort backfill target, set on publish
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  examSchedule ExamSchedule @relation(fields: [examScheduleId], references: [id], onDelete: Cascade)
+  class        Class        @relation(fields: [classId], references: [id])
+  subject      Subject      @relation(fields: [subjectId], references: [id])
+  linkedExam   Exam?        @relation(fields: [linkedExamId], references: [id])
+
+  @@unique([examScheduleId, classId, subjectId])
+  @@index([classId])
+  @@index([subjectId])
+  @@map("exam_schedule_entries")
 }
 
 model ExamResult {
@@ -612,6 +687,7 @@ model AcademicSession {
   publishedResults  PublishedResult[]
   resultSubmissions ResultSubmission[]
   terms             AcademicTerm[]
+  examSchedules     ExamSchedule[]
 
   @@unique([schoolId, name])
   @@map("academic_sessions")
