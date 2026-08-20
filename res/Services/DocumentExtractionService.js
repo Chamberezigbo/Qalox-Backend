@@ -155,9 +155,9 @@ class DocumentExtractionService {
    * would slow every boot for a feature most requests never touch.
    */
   static async matrixFromImage(buffer) {
-    let createWorker;
+    let createWorker, PSM;
     try {
-      ({ createWorker } = require("tesseract.js"));
+      ({ createWorker, PSM } = require("tesseract.js"));
     } catch (error) {
       throw new Error(
         "Image scanning is not available on this server. Upload the list as an Excel, CSV or PDF file instead."
@@ -167,20 +167,78 @@ class DocumentExtractionService {
     let worker;
     try {
       worker = await createWorker("eng");
-      const { data } = await worker.recognize(buffer);
+      // createWorker defaults to PSM.SINGLE_BLOCK, which reads only the first
+      // text block on the page (e.g. just a heading) and silently drops
+      // everything below it — including the whole table. AUTO segments the
+      // full page into its blocks (heading, table, etc.) and reads all of them.
+      await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO });
+      const { data } = await worker.recognize(buffer, {}, { blocks: true, text: true });
       const text = (data && data.text) || "";
       if (!text.trim()) {
         throw new Error(
           "No text could be read from this image. Try a sharper, straight-on photo, or upload the list as a spreadsheet."
         );
       }
-      return this.matrixFromText(text);
+
+      // Tesseract's flattened `.text` collapses every visual gap — however wide
+      // — down to a single space, so the whitespace-column heuristic in
+      // matrixFromText() never finds a table there. `.blocks` still carries each
+      // word's pixel position, which is what actually distinguishes "two words
+      // in one cell" from "two adjacent cells" — reconstruct columns from that
+      // instead. Falls back to the flat-text path only if blocks come back empty
+      // (e.g. an older tesseract core that doesn't support the blocks output).
+      const matrix = this.matrixFromWordPositions(data.blocks);
+      return matrix.length > 0 ? matrix : this.matrixFromText(text);
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("No text")) throw error;
       throw new Error(`This image could not be scanned: ${error.message}`);
     } finally {
       if (worker) await worker.terminate().catch(() => {});
     }
+  }
+
+  /**
+   * Rebuilds table rows from OCR word bounding boxes: words on the same line
+   * stay in reading order, and a new cell starts wherever the horizontal gap
+   * to the next word is much wider than the normal word-to-word spacing on
+   * that line (a real column boundary) rather than a single space (still the
+   * same cell, e.g. "Date of Birth"). The threshold is relative to each
+   * line's own word height so it scales with font size / image resolution
+   * instead of a fixed pixel count.
+   */
+  static matrixFromWordPositions(blocks) {
+    const lines = [];
+    for (const block of blocks || []) {
+      for (const paragraph of block.paragraphs || []) {
+        for (const line of paragraph.lines || []) {
+          if (line.words && line.words.length > 0) lines.push(line.words);
+        }
+      }
+    }
+
+    return lines.map((words) => {
+      const sorted = [...words].sort((a, b) => a.bbox.x0 - b.bbox.x0);
+      const avgHeight =
+        sorted.reduce((sum, w) => sum + (w.bbox.y1 - w.bbox.y0), 0) / sorted.length;
+      // A real column gap runs wide open; ordinary space-between-words is a
+      // small fraction of the text height. 1.5x height is comfortably above
+      // normal word spacing and comfortably below a real column gap.
+      const gapThreshold = avgHeight * 1.5;
+
+      const cells = [];
+      let current = sorted[0].text;
+      for (let i = 1; i < sorted.length; i++) {
+        const gap = sorted[i].bbox.x0 - sorted[i - 1].bbox.x1;
+        if (gap > gapThreshold) {
+          cells.push(current);
+          current = sorted[i].text;
+        } else {
+          current += ` ${sorted[i].text}`;
+        }
+      }
+      cells.push(current);
+      return cells;
+    });
   }
 
   /**

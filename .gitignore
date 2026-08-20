@@ -56,6 +56,9 @@ firebase-debug.log
 # Node version
 .nvmrc
 
+# tesseract.js auto-downloads its language data to the cwd on first OCR run
+*.traineddata
+
 # KYC identity documents — must never be committed
 uploads-private/
 
