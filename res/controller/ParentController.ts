@@ -55,6 +55,18 @@ export class ParentController {
         }
     };
 
+    initiateFeePayment = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const studentId = Number(req.params.studentId);
+            const studentFeeId = Number(req.params.studentFeeId);
+            const data = await this.service.initiateFeePayment(req.parentId, studentId, studentFeeId);
+            res.status(201).json({ success: true, message: "Payment initialized", data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     getAlerts = async (req: ParentRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });

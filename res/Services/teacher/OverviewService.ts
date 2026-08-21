@@ -27,11 +27,18 @@ export class TeacherOverviewService {
             })
             : 0;
 
+        // "In progress" = posted by this teacher and not yet past its due date.
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const assignmentsInProgress = await prisma.assignment.count({
+            where: { staffId, dueDate: { gte: startOfToday } }
+        });
+
         return {
             totalStudents,
             totalClasses: classIds.size,
             totalSubjects: subjectIds.size,
-            assignmentsInProgress: 0 // 🔜 future feature
+            assignmentsInProgress
         };
     }
 }

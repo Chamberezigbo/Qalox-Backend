@@ -17,6 +17,7 @@ router.get("/children", parentAuthMiddleware, parentController.getChildren);
 router.get("/children/:studentId/results", parentAuthMiddleware, parentController.getChildResults);
 router.get("/children/:studentId/attendance", parentAuthMiddleware, parentController.getChildAttendance);
 router.get("/children/:studentId/fees", parentAuthMiddleware, parentController.getChildFees);
+router.post("/children/:studentId/fees/:studentFeeId/pay", parentAuthMiddleware, parentController.initiateFeePayment);
 
 router.get("/alerts", parentAuthMiddleware, parentController.getAlerts);
 router.patch("/alerts/:alertId/read", parentAuthMiddleware, parentController.markAlertRead);

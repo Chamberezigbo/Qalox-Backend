@@ -170,7 +170,7 @@ exports.updateSubAdmin = async (req, res, next) => {
   try {
     const schoolId = req.schoolId;
     const subAdminId = parseInt(req.params.id, 10);
-    const { name, phone, subAdminType, subAdminLabel, permissions, isSuspended } = req.body;
+    const { name, phone, subAdminType, subAdminLabel, permissions, isSuspended, password } = req.body;
 
     if (isNaN(subAdminId)) {
       return res.status(400).json({
@@ -196,6 +196,17 @@ exports.updateSubAdmin = async (req, res, next) => {
     if (name) updateData.name = name;
     if (phone !== undefined) updateData.phone = phone;
     if (typeof isSuspended === "boolean") updateData.isSuspended = isSuspended;
+
+    if (password) {
+      if (password.length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: "Password must be at least 6 characters",
+          code: "INVALID_PASSWORD",
+        });
+      }
+      updateData.password = await bcrypt.hash(password, 12);
+    }
 
     if (subAdminType) {
       if (!SUB_ADMIN_TYPES.includes(subAdminType)) {

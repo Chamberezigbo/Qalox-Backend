@@ -39,6 +39,14 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
     }
 
     const reference = event.data.tx_ref;
+
+    // A reference is either a SaaS subscription charge (SchoolPayment) or a
+    // parent-initiated school-fee charge (Payment) — check both, since they
+    // share one Flutterwave account/webhook.
+    if (reference.startsWith("fee-")) {
+      return exports.handleFeePaymentWebhook(event, res);
+    }
+
     const payment = await prisma.schoolPayment.findUnique({ where: { flwReference: reference } });
 
     if (!payment) {
@@ -217,4 +225,56 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
     logger.error("[FLW_WEBHOOK] Failed to process webhook", { error: err.message });
     next(err);
   }
+};
+
+/**
+ * Handles the school-fee side of the webhook (reference prefix "fee-") —
+ * a parent's Flutterwave bank-transfer charge against a StudentFee, started
+ * by ParentService.initiateFeePayment. Same re-verify-before-crediting
+ * discipline as the SaaS billing path above: the webhook body is never
+ * trusted on its own.
+ */
+exports.handleFeePaymentWebhook = async (event, res) => {
+  const reference = event.data.tx_ref;
+  const payment = await prisma.payment.findUnique({ where: { flwReference: reference } });
+
+  if (!payment) {
+    logger.warn("[FLW_WEBHOOK] No fee Payment found for reference", { reference });
+    return res.status(200).json({ success: true, message: "No matching payment record" });
+  }
+
+  if (payment.status === "success") {
+    logger.info("[FLW_WEBHOOK] Fee payment already processed — ignoring duplicate webhook", { reference });
+    return res.status(200).json({ success: true, message: "Already processed" });
+  }
+
+  let verified;
+  try {
+    verified = await flutterwave.verifyTransaction(event.data.id);
+  } catch (verifyErr) {
+    logger.warn("[FLW_WEBHOOK] Fee payment verification lookup failed — refusing to credit", {
+      reference, transactionId: event.data.id, error: verifyErr.message,
+    });
+    return res.status(200).json({ success: true, message: "Verification lookup failed, not processed" });
+  }
+
+  if (verified.status !== "successful" || verified.tx_ref !== reference || Number(verified.amount) < payment.amount) {
+    logger.warn("[FLW_WEBHOOK] Fee payment verification mismatch — refusing to credit", {
+      reference, verifiedStatus: verified.status, verifiedAmount: verified.amount, expectedAmount: payment.amount,
+    });
+    return res.status(200).json({ success: true, message: "Verification failed, not processed" });
+  }
+
+  const studentFee = await prisma.studentFee.findUnique({ where: { id: payment.studentFeeId } });
+  const newAmountPaid = studentFee.amountPaid + payment.amount;
+  const newStatus = newAmountPaid >= studentFee.totalFee ? "paid" : "partial";
+
+  await prisma.$transaction([
+    prisma.payment.update({ where: { id: payment.id }, data: { status: "success", paymentDate: new Date() } }),
+    prisma.studentFee.update({ where: { id: studentFee.id }, data: { amountPaid: newAmountPaid, status: newStatus } }),
+  ]);
+
+  logger.info("[FLW_WEBHOOK] Fee payment processed", { reference, studentFeeId: studentFee.id, newAmountPaid, newStatus });
+
+  res.status(200).json({ success: true, message: "Webhook processed" });
 };

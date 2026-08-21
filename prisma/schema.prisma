@@ -1035,11 +1035,16 @@ model Payment {
   id            Int      @id @default(autoincrement())
   studentFeeId  Int
   amount        Float
-  paymentMethod String   @db.VarChar(50) // Bank Transfer, Cash, Card
+  paymentMethod String   @db.VarChar(50) // Bank Transfer, Cash, Card, Flutterwave
   paymentDate   DateTime @default(now())
   receiptNo     String   @unique @db.VarChar(50)
   recordedBy    Int? // Admin.id who recorded this payment
-  createdAt     DateTime @default(now())
+  // Online (Flutterwave) payments only — null for payments an admin recorded
+  // manually. "pending" until the webhook confirms the transfer landed;
+  // StudentFee.amountPaid is only credited once status flips to "success".
+  flwReference String?  @unique @db.VarChar(100)
+  status       String   @default("success") @db.VarChar(20) // pending, success, failed
+  createdAt    DateTime @default(now())
 
   studentFee StudentFee @relation(fields: [studentFeeId], references: [id])
 

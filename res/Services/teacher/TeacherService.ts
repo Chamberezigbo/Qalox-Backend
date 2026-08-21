@@ -1249,11 +1249,19 @@ export class TeacherService {
         };
     }
 
+    /**
+     * Every class×subject pairing this teacher is assigned to — one row per
+     * pairing, not deduplicated by subject, since the same subject taught in
+     * three different classes (e.g. Mathematics in SS1, SS2 and SS3) must
+     * come back as three separate rows or the other two classes silently
+     * disappear from anything built on this list.
+     */
     async getTeacherSubjects(staffId: number) {
         const assignments = await prisma.teacherAssignment.findMany({
             where: {
                 staffId,
-                subjectId: { not: null }
+                subjectId: { not: null },
+                classId: { not: null }
             },
             select: {
                 subject: {
@@ -1271,21 +1279,24 @@ export class TeacherService {
                     }
                 }
             },
-            distinct: ["subjectId"]
+            distinct: ["classId", "subjectId"]
         });
 
         return assignments
-            .filter(a => a.subject !== null)
+            .filter(a => a.subject !== null && a.class !== null)
             .map(a => ({
                 id: a.subject!.id,
                 name: a.subject!.name,
                 code: a.subject!.code,
-                class: a.class
-                    ? {
-                        id: a.class.id,
-                        name: a.class.customName ?? a.class.name
-                    }
-                    : null
+                class: {
+                    id: a.class!.id,
+                    // A class's own name (JSS1, SS2…) and its customName (an arm/
+                    // stream label, e.g. "First Arm") are independent — two
+                    // different classes can share the same customName, so both
+                    // are shown together rather than one silently standing in
+                    // for the other.
+                    name: a.class!.customName ? `${a.class!.name} — ${a.class!.customName}` : a.class!.name
+                }
             }));
     }
 

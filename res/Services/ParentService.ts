@@ -1,6 +1,12 @@
 // src/services/ParentService.ts
+import crypto from "crypto";
 import prisma from "../util/prisma";
 import { AppError } from "../util/AppError";
+import flutterwave from "./FlutterwaveService";
+
+// Flutterwave v3 throws a misleading "decrypt" error on non-ASCII characters
+// (em-dashes, accented letters) in request fields — strip them before sending.
+const toAscii = (str: string) => String(str).replace(/[^\x20-\x7E]/g, "").trim();
 
 export class ParentService {
     /** Confirms the requesting parent actually owns this child before any read. */
@@ -128,6 +134,55 @@ export class ParentService {
                 receiptNo: p.receiptNo,
             })),
         }));
+    }
+
+    /**
+     * Starts a Flutterwave bank-transfer charge for a student's outstanding
+     * fee. Mirrors BillingController.initializePayment's shape (same pending
+     * -> webhook-confirmed pattern) — the Payment row starts "pending" and is
+     * only credited toward StudentFee.amountPaid once the webhook re-verifies
+     * the transfer server-side.
+     */
+    async initiateFeePayment(parentId: number, studentId: number, studentFeeId: number) {
+        await this.assertOwnsChild(parentId, studentId);
+
+        const studentFee = await prisma.studentFee.findFirst({ where: { id: studentFeeId, studentId } });
+        if (!studentFee) throw new AppError("Fee record not found", 404);
+
+        const outstanding = studentFee.totalFee - studentFee.amountPaid;
+        if (outstanding <= 0) throw new AppError("This fee is already fully paid", 400);
+
+        const parent = await prisma.parent.findUnique({ where: { id: parentId } });
+        if (!parent) throw new AppError("Parent not found", 404);
+
+        const reference = `fee-${studentFeeId}-${crypto.randomUUID().slice(0, 8)}`;
+
+        const charge = await flutterwave.createBankTransferCharge({
+            amount: outstanding,
+            email: parent.email,
+            fullname: toAscii(parent.name),
+            phoneNumber: parent.phone || undefined,
+            reference,
+            narration: toAscii(`Qalox school fee payment (${studentFee.id})`),
+        });
+
+        await prisma.payment.create({
+            data: {
+                studentFeeId,
+                amount: outstanding,
+                paymentMethod: "Flutterwave",
+                receiptNo: reference,
+                flwReference: reference,
+                status: "pending",
+            },
+        });
+
+        return {
+            reference,
+            amount: outstanding,
+            currency: "NGN",
+            bankTransfer: charge.bankTransfer,
+        };
     }
 
     async getAlerts(parentId: number, limit = 20) {

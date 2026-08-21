@@ -32,7 +32,7 @@ export class StudentDashboardService {
         // Get current active term for the school
         const activeSession = await prisma.academicSession.findFirst({
             where: { schoolId: student.schoolId, isActive: true },
-            select: { id: true }
+            select: { id: true, name: true }
         });
 
         let currentTerm: any = null;
@@ -50,6 +50,27 @@ export class StudentDashboardService {
             }
         }
 
+        // Every fee record this student has (any term) — totalSchoolFee is
+        // just the current term's, but pendingDebt covers everything still
+        // owed, including any carried over from earlier terms.
+        const fees = await prisma.studentFee.findMany({
+            where: { studentId: student.id },
+            select: {
+                totalFee: true,
+                amountPaid: true,
+                feeStructure: { select: { term: true, session: true } }
+            }
+        });
+
+        const currentTermFee = activeSession && currentTerm
+            ? fees.find(
+                (f) => f.feeStructure.session === activeSession.name && f.feeStructure.term === currentTerm.name
+              )
+            : undefined;
+
+        const totalSchoolFee = currentTermFee?.totalFee ?? 0;
+        const pendingDebt = fees.reduce((sum, f) => sum + Math.max(f.totalFee - f.amountPaid, 0), 0);
+
         return {
             student: {
                 name: `${student.name} ${student.surname}`,
@@ -59,9 +80,9 @@ export class StudentDashboardService {
             },
             currentTerm,
             stats: {
-                totalSchoolFee: 0,       // static — fees not yet implemented
+                totalSchoolFee,
                 totalStudentsInClass: classmateCount,
-                pendingDebt: 0,          // static — fees not yet implemented
+                pendingDebt,
                 activeAssignments: activeAssignmentsCount
             }
         };
