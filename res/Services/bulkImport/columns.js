@@ -17,8 +17,8 @@ const GENDER_OPTIONS = ["Male", "Female", "Other"];
 const STUDENT_COLUMNS = [
   { key: "firstName", label: "First Name", required: true, type: "text" },
   { key: "lastName", label: "Last Name", required: true, type: "text" },
-  { key: "gender", label: "Gender", required: true, type: "select", options: GENDER_OPTIONS },
-  { key: "dob", label: "Date of Birth", required: true, type: "date" },
+  { key: "gender", label: "Gender", required: false, type: "select", options: GENDER_OPTIONS },
+  { key: "dob", label: "Date of Birth", required: false, type: "date" },
   { key: "className", label: "Class", required: true, type: "select", options: [] },
   { key: "groupName", label: "Class Group", required: false, type: "select", options: [] },
   { key: "campusName", label: "Campus", required: false, type: "select", options: [] },

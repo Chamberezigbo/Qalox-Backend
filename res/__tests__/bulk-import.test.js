@@ -359,11 +359,20 @@ describe("BulkImportValidator — student rules", () => {
     expect(record.isValid).toBe(true);
   });
 
-  it("requires the fields the create-student flow cannot do without", () => {
+  it("requires only first name, last name and class", () => {
     const record = validate({ firstName: "", lastName: "", gender: "", dob: "", className: "" });
     expect(fieldsOf(record.errors)).toEqual(
-      expect.arrayContaining(["firstName", "lastName", "gender", "dob", "className"])
+      expect.arrayContaining(["firstName", "lastName", "className"])
     );
+    // Gender and date of birth are optional so schools whose registers lay
+    // these out differently — or leave them out entirely — can still import.
+    expect(fieldsOf(record.errors)).not.toEqual(expect.arrayContaining(["gender", "dob"]));
+  });
+
+  it("accepts a row with no gender or date of birth", () => {
+    const record = validate({ gender: "", dob: "" });
+    expect(record.errors).toEqual([]);
+    expect(record.isValid).toBe(true);
   });
 
   it("rejects a gender outside the allowed options", () => {
