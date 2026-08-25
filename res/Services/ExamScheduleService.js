@@ -319,3 +319,37 @@ exports.publish = async (schoolId, id) => {
 
   return { ...published, matchedExamCount, unmatchedCount: entries.length - matchedExamCount };
 };
+
+/**
+ * Reverts a published schedule back to draft — lets an admin who published
+ * by mistake fix it, the same way unpublishResults() already lets one un-do
+ * a published result. Undoes publish()'s own side effect too: the
+ * scheduledDate it synced onto matched Exam rows is cleared, so a stale date
+ * doesn't linger there once this schedule is back in draft and being edited.
+ */
+exports.unpublish = async (schoolId, id) => {
+  const schedule = await getOwnedSchedule(schoolId, id);
+  if (schedule.status !== "published") {
+    throw new AppError("Exam schedule is not published", 400);
+  }
+
+  const linkedEntries = await prisma.examScheduleEntry.findMany({
+    where: { examScheduleId: schedule.id, linkedExamId: { not: null } },
+    select: { linkedExamId: true },
+  });
+
+  for (const entry of linkedEntries) {
+    await prisma.exam.update({ where: { id: entry.linkedExamId }, data: { scheduledDate: null } });
+  }
+  if (linkedEntries.length > 0) {
+    await prisma.examScheduleEntry.updateMany({
+      where: { examScheduleId: schedule.id },
+      data: { linkedExamId: null },
+    });
+  }
+
+  return prisma.examSchedule.update({
+    where: { id: schedule.id },
+    data: { status: "draft", publishedAt: null },
+  });
+};

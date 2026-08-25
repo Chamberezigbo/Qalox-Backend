@@ -347,6 +347,7 @@ router.patch("/exam-schedules/:id/entries/:entryId", auth.authenticateSchoolLeve
 router.delete("/exam-schedules/:id/entries/:entryId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.deleteEntry);
 router.post("/exam-schedules/:id/auto-generate", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, validate(autoGenerateSchema), examScheduleController.autoGenerate);
 router.post("/exam-schedules/:id/publish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.publishExamSchedule);
+router.post("/exam-schedules/:id/unpublish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.EXAMS_MANAGE), auth.attachSchoolId, examScheduleController.unpublishExamSchedule);
 
 // Parent credentials — creates (or links an existing) real Parent account to
 // a student, replacing what was previously a frontend-only mock.

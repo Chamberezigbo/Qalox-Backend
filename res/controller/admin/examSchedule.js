@@ -93,3 +93,12 @@ exports.publishExamSchedule = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.unpublishExamSchedule = async (req, res, next) => {
+  try {
+    const result = await ExamScheduleService.unpublish(req.schoolId, req.params.id);
+    res.status(200).json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+};
