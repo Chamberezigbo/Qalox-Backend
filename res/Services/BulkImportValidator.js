@@ -235,6 +235,63 @@ function findByName(list, name) {
   return list.find((item) => item.name.trim().toLowerCase() === target);
 }
 
+/** Strips everything but letters/digits and lowercases — "SS 1" and "SS1" collapse to the same string. */
+function normalizeForMatch(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Classic Levenshtein edit distance between two strings. */
+function editDistance(a, b) {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const table = Array.from({ length: rows }, (_, i) => [i, ...Array(cols - 1).fill(0)]);
+  for (let j = 0; j < cols; j++) table[0][j] = j;
+
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      table[i][j] = Math.min(
+        table[i - 1][j] + 1, // deletion
+        table[i][j - 1] + 1, // insertion
+        table[i - 1][j - 1] + cost // substitution
+      );
+    }
+  }
+  return table[rows - 1][cols - 1];
+}
+
+// Below this similarity, "closest" isn't close enough to be worth suggesting
+// — a genuinely unrelated class shouldn't come back as a "did you mean".
+const SUGGESTION_MIN_SIMILARITY = 0.5;
+
+/**
+ * The single closest name in `list` to `name`, when it's close enough to be
+ * worth suggesting — a "did you mean" for a name that's right there in the
+ * school's records but doesn't exactly match what the file/photo said (a
+ * stray space, punctuation, or one misread character). Never auto-applied:
+ * this only ever informs an error message the admin clicks to accept or
+ * ignores in favour of picking something else from the dropdown themselves.
+ */
+function closestMatch(name, list) {
+  const target = normalizeForMatch(name);
+  if (!target || list.length === 0) return null;
+
+  let best = null;
+  let bestSimilarity = 0;
+  for (const item of list) {
+    const candidate = normalizeForMatch(item.name);
+    if (!candidate) continue;
+    const distance = editDistance(target, candidate);
+    const similarity = 1 - distance / Math.max(target.length, candidate.length);
+    if (similarity > bestSimilarity) {
+      bestSimilarity = similarity;
+      best = item;
+    }
+  }
+
+  return bestSimilarity >= SUGGESTION_MIN_SIMILARITY ? best : null;
+}
+
 /**
  * The stored name, trimmed, for writing back into the row.
  *
@@ -279,9 +336,11 @@ function validateStudent(data, reference, errors, warnings) {
   if (data.className) {
     matchedClass = findByName(reference.classes, data.className);
     if (!matchedClass) {
+      const suggestion = closestMatch(data.className, reference.classes);
       errors.push({
         field: "className",
         message: `There is no class called "${data.className}" in your school`,
+        suggestion: suggestion ? canonicalName(suggestion) : undefined,
       });
     } else {
       data.className = canonicalName(matchedClass); // snap to the stored spelling
@@ -299,9 +358,11 @@ function validateStudent(data, reference, errors, warnings) {
     } else {
       const group = findByName(matchedClass.classGroups, data.groupName);
       if (!group) {
+        const suggestion = closestMatch(data.groupName, matchedClass.classGroups);
         errors.push({
           field: "groupName",
           message: `Class "${matchedClass.name}" has no group called "${data.groupName}"`,
+          suggestion: suggestion ? canonicalName(suggestion) : undefined,
         });
       } else {
         data.groupName = canonicalName(group);
@@ -312,9 +373,11 @@ function validateStudent(data, reference, errors, warnings) {
   if (data.campusName) {
     const campus = findByName(reference.campuses, data.campusName);
     if (!campus) {
+      const suggestion = closestMatch(data.campusName, reference.campuses);
       errors.push({
         field: "campusName",
         message: `There is no campus called "${data.campusName}" in your school`,
+        suggestion: suggestion ? canonicalName(suggestion) : undefined,
       });
     } else {
       data.campusName = canonicalName(campus);
@@ -351,9 +414,11 @@ function validateStaff(data, reference, errors, warnings) {
   if (data.campusName) {
     const campus = findByName(reference.campuses, data.campusName);
     if (!campus) {
+      const suggestion = closestMatch(data.campusName, reference.campuses);
       errors.push({
         field: "campusName",
         message: `There is no campus called "${data.campusName}" in your school`,
+        suggestion: suggestion ? canonicalName(suggestion) : undefined,
       });
     } else {
       data.campusName = canonicalName(campus);
