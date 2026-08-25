@@ -54,7 +54,7 @@ class DocumentExtractionService {
       matrix = await this.matrixFromPdf(buffer, entity);
     } else if (IMAGE_MIMES.has(mimeType) || ["png", "jpg", "jpeg"].includes(extension)) {
       await report(30, "Reading text from the image");
-      matrix = await this.matrixFromImage(buffer);
+      matrix = await this.matrixFromImage(buffer, entity);
     } else if (SPREADSHEET_MIMES.has(mimeType) || ["xlsx", "xls", "csv"].includes(extension)) {
       await report(30, "Reading the spreadsheet");
       matrix = this.matrixFromSpreadsheet(buffer);
@@ -154,7 +154,7 @@ class DocumentExtractionService {
    * data, and nothing else in the app needs it — requiring it at module load
    * would slow every boot for a feature most requests never touch.
    */
-  static async matrixFromImage(buffer) {
+  static async matrixFromImage(buffer, entity) {
     let createWorker, PSM;
     try {
       ({ createWorker, PSM } = require("tesseract.js"));
@@ -187,7 +187,7 @@ class DocumentExtractionService {
       // in one cell" from "two adjacent cells" — reconstruct columns from that
       // instead. Falls back to the flat-text path only if blocks come back empty
       // (e.g. an older tesseract core that doesn't support the blocks output).
-      const matrix = this.matrixFromWordPositions(data.blocks);
+      const matrix = this.matrixFromWordPositions(data.blocks, entity);
       return matrix.length > 0 ? matrix : this.matrixFromText(text);
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("No text")) throw error;
@@ -198,47 +198,125 @@ class DocumentExtractionService {
   }
 
   /**
-   * Rebuilds table rows from OCR word bounding boxes: words on the same line
-   * stay in reading order, and a new cell starts wherever the horizontal gap
-   * to the next word is much wider than the normal word-to-word spacing on
-   * that line (a real column boundary) rather than a single space (still the
-   * same cell, e.g. "Date of Birth"). The threshold is relative to each
-   * line's own word height so it scales with font size / image resolution
-   * instead of a fixed pixel count.
+   * Rebuilds table rows from OCR word bounding boxes.
+   *
+   * Column boundaries are anchored to the header row rather than recomputed
+   * independently for every line. Segmenting each line purely on its own
+   * word gaps is fragile: the moment one row's gap between two cells happens
+   * to be a bit narrower than that row's own threshold, two cells merge into
+   * one — and every value after it on that row silently shifts into the
+   * wrong header, e.g. a phone number landing under "Guardian Name" and a
+   * date of birth landing under "Gender". Anchoring every row's word
+   * positions to the header's own column positions means a tight gap on one
+   * row can no longer bleed into the next column.
+   *
+   * Falls back to the old per-line gap heuristic when no line scores as a
+   * plausible header for this entity (e.g. even the header text came back
+   * too garbled to recognise a couple of columns) — the same degraded
+   * behaviour as before, so a genuinely unreadable image still ends in the
+   * usual "column headings could not be recognised" error rather than a new
+   * failure mode.
    */
-  static matrixFromWordPositions(blocks) {
+  static matrixFromWordPositions(blocks, entity) {
     const lines = [];
     for (const block of blocks || []) {
       for (const paragraph of block.paragraphs || []) {
         for (const line of paragraph.lines || []) {
-          if (line.words && line.words.length > 0) lines.push(line.words);
+          if (line.words && line.words.length > 0) {
+            lines.push([...line.words].sort((a, b) => a.bbox.x0 - b.bbox.x0));
+          }
         }
       }
     }
+    if (lines.length === 0) return [];
 
-    return lines.map((words) => {
-      const sorted = [...words].sort((a, b) => a.bbox.x0 - b.bbox.x0);
-      const avgHeight =
-        sorted.reduce((sum, w) => sum + (w.bbox.y1 - w.bbox.y0), 0) / sorted.length;
-      // A real column gap runs wide open; ordinary space-between-words is a
-      // small fraction of the text height. 1.5x height is comfortably above
-      // normal word spacing and comfortably below a real column gap.
-      const gapThreshold = avgHeight * 1.5;
+    const groupedLines = lines.map((words) => this.groupWordsByGap(words));
+    const textLines = groupedLines.map((groups) =>
+      groups.map((group) => group.map((w) => w.text).join(" "))
+    );
 
-      const cells = [];
-      let current = sorted[0].text;
-      for (let i = 1; i < sorted.length; i++) {
-        const gap = sorted[i].bbox.x0 - sorted[i - 1].bbox.x1;
-        if (gap > gapThreshold) {
-          cells.push(current);
-          current = sorted[i].text;
-        } else {
-          current += ` ${sorted[i].text}`;
-        }
+    const headerIndex = this.findHeaderLineIndex(textLines, entity);
+    if (headerIndex === -1) return textLines;
+
+    const bands = this.columnBandsFromGroups(groupedLines[headerIndex]);
+    return lines.map((words) => this.segmentByColumnBands(words, bands));
+  }
+
+  /**
+   * Groups words on one line into cells by the gap between consecutive
+   * words: a gap much wider than the line's own word height is a real
+   * column boundary, while an ordinary single space is still the same cell
+   * (e.g. "Date of Birth"). The threshold is relative to each line's own
+   * word height so it scales with font size / image resolution instead of a
+   * fixed pixel count.
+   */
+  static groupWordsByGap(sortedWords) {
+    const avgHeight =
+      sortedWords.reduce((sum, w) => sum + (w.bbox.y1 - w.bbox.y0), 0) / sortedWords.length;
+    const gapThreshold = avgHeight * 1.5;
+
+    const groups = [[sortedWords[0]]];
+    for (let i = 1; i < sortedWords.length; i++) {
+      const gap = sortedWords[i].bbox.x0 - sortedWords[i - 1].bbox.x1;
+      if (gap > gapThreshold) groups.push([sortedWords[i]]);
+      else groups[groups.length - 1].push(sortedWords[i]);
+    }
+    return groups;
+  }
+
+  /**
+   * Whichever line reads best as this entity's header row, scored the same
+   * way rowsFromMatrix() scores candidate header rows later — so a line only
+   * counts as the header here when it would have been picked as one anyway.
+   * A title or date line above the table (common in exercise-book photos)
+   * scores 0 and is never picked.
+   */
+  static findHeaderLineIndex(textLines, entity) {
+    let bestIndex = -1;
+    let bestScore = 0;
+    const depth = Math.min(textLines.length, HEADER_SEARCH_DEPTH);
+    for (let i = 0; i < depth; i++) {
+      const { matchCount } = DataMappingService.mapHeaderRow(textLines[i], entity);
+      if (matchCount > bestScore) {
+        bestScore = matchCount;
+        bestIndex = i;
       }
-      cells.push(current);
-      return cells;
+    }
+    return bestScore >= MIN_HEADER_MATCHES ? bestIndex : -1;
+  }
+
+  /**
+   * One band per header cell, spanning from halfway to the previous cell
+   * through to halfway to the next, so a data-row word lands in whichever
+   * header column it sits closest to rather than needing to fall exactly
+   * beneath it. The first and last bands stay open-ended to catch a word
+   * that runs slightly before/after the header's own extent — common with
+   * OCR bounding-box noise.
+   */
+  static columnBandsFromGroups(groups) {
+    return groups.map((group, i) => {
+      const prev = groups[i - 1];
+      const next = groups[i + 1];
+      const start = prev ? (prev[prev.length - 1].bbox.x1 + group[0].bbox.x0) / 2 : -Infinity;
+      const end = next ? (group[group.length - 1].bbox.x1 + next[0].bbox.x0) / 2 : Infinity;
+      return [start, end];
     });
+  }
+
+  /**
+   * Assigns each word on a line to whichever header column band its center
+   * falls into, so every row comes back with exactly one cell per header
+   * column no matter how that particular row's own spacing looks.
+   */
+  static segmentByColumnBands(sortedWords, bands) {
+    const cells = bands.map(() => []);
+    for (const word of sortedWords) {
+      const center = (word.bbox.x0 + word.bbox.x1) / 2;
+      let index = bands.findIndex(([start, end]) => center >= start && center < end);
+      if (index === -1) index = center < bands[0][0] ? 0 : bands.length - 1;
+      cells[index].push(word.text);
+    }
+    return cells.map((words) => words.join(" "));
   }
 
   /**
