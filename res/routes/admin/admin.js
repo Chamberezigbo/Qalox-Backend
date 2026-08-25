@@ -352,7 +352,10 @@ router.post("/exam-schedules/:id/publish", auth.authenticateSchoolLevelAdmin, au
 // a student, replacing what was previously a frontend-only mock.
 router.post("/parents", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.create);
 router.get("/parents", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.list);
+router.patch("/parents/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.update);
 router.patch("/parents/:id/reset-password", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.resetPassword);
+router.post("/parents/:id/children", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.linkChildren);
+router.delete("/parents/:id/children/:studentId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.PARENTS_MANAGE), auth.attachSchoolId, adminParentController.unlinkChild);
 
 
 
