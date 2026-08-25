@@ -1,6 +1,8 @@
 const xlsx = require("xlsx");
 const { PDFParse } = require("pdf-parse");
 const DataMappingService = require("./DataMappingService");
+const GeminiService = require("./GeminiService");
+const logger = require("../config/logger");
 
 /**
  * Pulls a table of rows out of whatever the admin uploaded.
@@ -21,6 +23,10 @@ const HEADER_SEARCH_DEPTH = 25;
 // A row must map at least this many columns to count as the header. Two guards
 // against a stray line like "Name of School: Ecolex" being read as headers.
 const MIN_HEADER_MATCHES = 2;
+
+// Below this average word confidence (Tesseract's 0-100 scale), a cell is
+// flagged as low-confidence rather than trusted outright.
+const LOW_CONFIDENCE_THRESHOLD = 60;
 
 const SPREADSHEET_MIMES = new Set([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
@@ -48,13 +54,18 @@ class DocumentExtractionService {
     const extension = String(fileName || "").split(".").pop().toLowerCase();
 
     let matrix;
+    // Parallel to `matrix` — uncertaintyMatrix[i] lists the column indices in
+    // matrix[i] that the OCR engine wasn't confident about. Only ever
+    // populated by the image path; spreadsheets and PDFs carry their own text
+    // verbatim, nothing to be uncertain about.
+    let uncertaintyMatrix = null;
 
     if (extension === "pdf" || mimeType === "application/pdf") {
       await report(30, "Reading the PDF");
       matrix = await this.matrixFromPdf(buffer, entity);
     } else if (IMAGE_MIMES.has(mimeType) || ["png", "jpg", "jpeg"].includes(extension)) {
       await report(30, "Reading text from the image");
-      matrix = await this.matrixFromImage(buffer, entity);
+      ({ matrix, uncertaintyMatrix } = await this.matrixFromImage(buffer, entity, mimeType));
     } else if (SPREADSHEET_MIMES.has(mimeType) || ["xlsx", "xls", "csv"].includes(extension)) {
       await report(30, "Reading the spreadsheet");
       matrix = this.matrixFromSpreadsheet(buffer);
@@ -65,7 +76,7 @@ class DocumentExtractionService {
     }
 
     await report(55, "Matching columns");
-    return this.rowsFromMatrix(matrix, entity);
+    return this.rowsFromMatrix(matrix, entity, uncertaintyMatrix);
   }
 
   // --- source-specific readers ------------------------------------------
@@ -150,11 +161,45 @@ class DocumentExtractionService {
   }
 
   /**
+   * Entry point for the image path. Gemini reads handwriting (especially
+   * cursive) far more reliably than Tesseract, which is trained on printed
+   * text — so when a key is configured, it's tried first. Any failure
+   * (missing key, network error, timeout, an unparseable response) falls
+   * back to the existing Tesseract path rather than failing the upload:
+   * this way a Gemini outage or an unconfigured key never breaks photo
+   * import, it just loses the accuracy improvement for that one request.
+   */
+  static async matrixFromImage(buffer, entity, mimeType) {
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        return await this.matrixFromGemini(buffer, mimeType);
+      } catch (error) {
+        logger.warn("[DOCUMENT_EXTRACTION] Gemini OCR failed, falling back to Tesseract", {
+          error: error.message,
+        });
+      }
+    }
+    return this.matrixFromTesseract(buffer, entity);
+  }
+
+  /** Reads the table via Gemini's vision model. See res/Services/GeminiService.js. */
+  static async matrixFromGemini(buffer, mimeType) {
+    const { headers, rows } = await GeminiService.extractTable(buffer, mimeType);
+    if (headers.length === 0 && rows.length === 0) {
+      throw new Error("Gemini could not read a table from this image");
+    }
+    return {
+      matrix: [headers, ...rows.map((r) => r.cells)],
+      uncertaintyMatrix: [[], ...rows.map((r) => r.uncertain)],
+    };
+  }
+
+  /**
    * OCR via tesseract.js. Required lazily: it pulls in a WASM core and language
    * data, and nothing else in the app needs it — requiring it at module load
    * would slow every boot for a feature most requests never touch.
    */
-  static async matrixFromImage(buffer, entity) {
+  static async matrixFromTesseract(buffer, entity) {
     let createWorker, PSM;
     try {
       ({ createWorker, PSM } = require("tesseract.js"));
@@ -187,8 +232,9 @@ class DocumentExtractionService {
       // in one cell" from "two adjacent cells" — reconstruct columns from that
       // instead. Falls back to the flat-text path only if blocks come back empty
       // (e.g. an older tesseract core that doesn't support the blocks output).
-      const matrix = this.matrixFromWordPositions(data.blocks, entity);
-      return matrix.length > 0 ? matrix : this.matrixFromText(text);
+      const { matrix, uncertaintyMatrix } = this.matrixFromWordPositions(data.blocks, entity);
+      if (matrix.length > 0) return { matrix, uncertaintyMatrix };
+      return { matrix: this.matrixFromText(text), uncertaintyMatrix: null };
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("No text")) throw error;
       throw new Error(`This image could not be scanned: ${error.message}`);
@@ -227,6 +273,8 @@ class DocumentExtractionService {
    * are clustered back into table rows by vertical gap first (see
    * clusterLinesIntoRows), and each row's lines are merged column-by-column
    * afterward.
+   *
+   * @returns {{ matrix: string[][], uncertaintyMatrix: number[][] }}
    */
   static matrixFromWordPositions(blocks, entity) {
     const physicalLines = [];
@@ -239,7 +287,7 @@ class DocumentExtractionService {
         }
       }
     }
-    if (physicalLines.length === 0) return [];
+    if (physicalLines.length === 0) return { matrix: [], uncertaintyMatrix: [] };
 
     const groupedLines = physicalLines.map((words) => this.groupWordsByGap(words));
     const textLines = groupedLines.map((groups) =>
@@ -247,7 +295,9 @@ class DocumentExtractionService {
     );
 
     const headerIndex = this.findHeaderLineIndex(textLines, entity);
-    if (headerIndex === -1) return textLines;
+    if (headerIndex === -1) {
+      return { matrix: textLines, uncertaintyMatrix: textLines.map(() => []) };
+    }
 
     const bands = this.columnBandsFromGroups(groupedLines[headerIndex]);
 
@@ -259,12 +309,15 @@ class DocumentExtractionService {
     // worse, leaving no clean header row anywhere in the output, since
     // rowsFromMatrix() below re-scans for one the same way this method just
     // did and would find nothing to match.
-    const headerRow = this.segmentByColumnBands(physicalLines[headerIndex], bands);
+    const { cells: headerRow } = this.segmentByColumnBands(physicalLines[headerIndex], bands);
     const dataLines = physicalLines.filter((_, i) => i !== headerIndex);
     const rowGroups = this.clusterLinesIntoRows(dataLines);
     const dataRows = rowGroups.map((group) => this.mergeRowGroup(group, bands));
 
-    return [headerRow, ...dataRows];
+    return {
+      matrix: [headerRow, ...dataRows.map((r) => r.cells)],
+      uncertaintyMatrix: [[], ...dataRows.map((r) => r.uncertainColumns)],
+    };
   }
 
   /**
@@ -318,16 +371,23 @@ class DocumentExtractionService {
    * of cells: each line is banded into columns independently (so a line's
    * own left-to-right word order, which Tesseract already gets right, is
    * never disturbed), then whatever lands in the same column across the
-   * row's lines is joined in line order — top wrap-line first.
+   * row's lines is joined in line order — top wrap-line first. A column is
+   * uncertain for the merged row if any of its constituent lines flagged it.
    */
   static mergeRowGroup(physicalLines, bands) {
     const merged = bands.map(() => []);
+    const uncertainSet = new Set();
     for (const words of physicalLines) {
-      this.segmentByColumnBands(words, bands).forEach((text, i) => {
+      const { cells, uncertainColumns } = this.segmentByColumnBands(words, bands);
+      cells.forEach((text, i) => {
         if (text) merged[i].push(text);
       });
+      uncertainColumns.forEach((i) => uncertainSet.add(i));
     }
-    return merged.map((parts) => parts.join(" "));
+    return {
+      cells: merged.map((parts) => parts.join(" ")),
+      uncertainColumns: [...uncertainSet].sort((a, b) => a - b),
+    };
   }
 
   /**
@@ -394,17 +454,28 @@ class DocumentExtractionService {
   /**
    * Assigns each word on a line to whichever header column band its center
    * falls into, so every row comes back with exactly one cell per header
-   * column no matter how that particular row's own spacing looks.
+   * column no matter how that particular row's own spacing looks. Also
+   * flags any column whose words averaged below LOW_CONFIDENCE_THRESHOLD —
+   * Tesseract reports a 0-100 confidence per word, otherwise unused.
    */
   static segmentByColumnBands(sortedWords, bands) {
-    const cells = bands.map(() => []);
+    const cellWords = bands.map(() => []);
     for (const word of sortedWords) {
       const center = (word.bbox.x0 + word.bbox.x1) / 2;
       let index = bands.findIndex(([start, end]) => center >= start && center < end);
       if (index === -1) index = center < bands[0][0] ? 0 : bands.length - 1;
-      cells[index].push(word.text);
+      cellWords[index].push(word);
     }
-    return cells.map((words) => words.join(" "));
+
+    const cells = cellWords.map((words) => words.map((w) => w.text).join(" "));
+    const uncertainColumns = [];
+    cellWords.forEach((words, i) => {
+      if (words.length === 0) return;
+      const avgConfidence = words.reduce((sum, w) => sum + (w.confidence ?? 100), 0) / words.length;
+      if (avgConfidence < LOW_CONFIDENCE_THRESHOLD) uncertainColumns.push(i);
+    });
+
+    return { cells, uncertainColumns };
   }
 
   /**
@@ -456,7 +527,7 @@ class DocumentExtractionService {
    * the returned array — so it lines up with the row number the admin sees in
    * Excel and can go straight back to and fix.
    */
-  static rowsFromMatrix(matrix, entity) {
+  static rowsFromMatrix(matrix, entity, uncertaintyMatrix = null) {
     if (!Array.isArray(matrix) || matrix.length === 0) {
       throw new Error("No rows could be read from this file.");
     }
@@ -505,7 +576,21 @@ class DocumentExtractionService {
       if (Object.values(raw).every((value) => !String(value).trim())) continue;
       if (DataMappingService.mapHeaderRow(cells, entity).matchCount >= MIN_HEADER_MATCHES) continue;
 
-      rows.push({ rowNumber: i + 1, raw });
+      const row = { rowNumber: i + 1, raw };
+
+      // Raw header text (not the placeholder-filled `headers`), so the
+      // caller can resolve each back to a canonical field via
+      // DataMappingService.matchHeader() the same way header cells normally
+      // are — a column an OCR engine wasn't confident about becomes a
+      // "double-check this" warning on that field once mapped.
+      const uncertainColumns = uncertaintyMatrix ? uncertaintyMatrix[i] : null;
+      if (uncertainColumns && uncertainColumns.length > 0) {
+        row.uncertainRawHeaders = uncertainColumns
+          .map((c) => headerCells[c])
+          .filter((h) => h != null && String(h).trim());
+      }
+
+      rows.push(row);
     }
 
     if (rows.length === 0) {

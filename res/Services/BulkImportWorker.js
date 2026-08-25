@@ -62,27 +62,48 @@ class BulkImportWorker {
 
       // Extraction hands back raw source rows; mapping turns them into the flat
       // canonical shape and reports anything the admin should double-check
-      // (currently: dates that could be read either day-first or month-first).
+      // (dates that could be read either day-first or month-first, and — for
+      // OCR'd photos — columns the extraction engine flagged as low-confidence).
       const mapped = [];
       const extraWarnings = new Map();
 
-      for (const { rowNumber, raw } of extracted) {
+      for (const { rowNumber, raw, uncertainRawHeaders } of extracted) {
         const { data, meta } = DataMappingService.buildRow(raw, entity);
         if (DataMappingService.isBlankRow(data)) continue;
 
         const recordId = `row_${rowNumber}`;
         mapped.push({ recordId, rowNumber, data });
 
+        const warnings = [];
+
         if (meta.ambiguousDates.length > 0) {
-          extraWarnings.set(
-            recordId,
-            meta.ambiguousDates.map((field) => ({
+          warnings.push(
+            ...meta.ambiguousDates.map((field) => ({
               field,
               message:
                 "This date was read as day/month/year — check it is the right way round",
             }))
           );
         }
+
+        if (uncertainRawHeaders && uncertainRawHeaders.length > 0) {
+          const seen = new Set();
+          for (const rawHeader of uncertainRawHeaders) {
+            // "fullName" is a pseudo-key buildRow() splits into firstName/
+            // lastName and discards — there is no such column to attach a
+            // warning to, so it's skipped rather than orphaned.
+            const field = DataMappingService.matchHeader(rawHeader, entity);
+            if (!field || field === "fullName" || seen.has(field)) continue;
+            seen.add(field);
+            warnings.push({
+              field,
+              message:
+                "OCR wasn't fully confident reading this — double-check it against the original document.",
+            });
+          }
+        }
+
+        if (warnings.length > 0) extraWarnings.set(recordId, warnings);
       }
 
       if (mapped.length === 0) {
