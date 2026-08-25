@@ -23,8 +23,14 @@ export class StudentDashboardService {
         // "Active" = not yet overdue, matching the due-status badge logic
         // (Overdue / Due soon / Upcoming) already used on the Assignment
         // Board — Due soon and Upcoming both count as active.
-        const startOfToday = new Date();
-        startOfToday.setHours(0, 0, 0, 0);
+        //
+        // Built in UTC, not local time: AssignmentService.create() stores
+        // dueDate as explicit UTC midnight (`${dueDate}T00:00:00Z`), so
+        // comparing against local midnight (`setHours(0,0,0,0)`) would drift
+        // out of sync with that on any server not running in the UTC
+        // timezone — silently excluding an assignment due today or tomorrow.
+        const now = new Date();
+        const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
         const activeAssignmentsCount = await prisma.assignment.count({
             where: { classId: student.classId, dueDate: { gte: startOfToday } }
         });
