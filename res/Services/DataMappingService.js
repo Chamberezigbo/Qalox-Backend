@@ -140,9 +140,47 @@ function normalizeHeader(raw) {
   return String(raw == null ? "" : raw)
     .replace(/[‘’'`]s\b/gi, "") // possessive: Parent's -> Parent
     .replace(/[‘’'`"]/g, "") // any other quote characters
+    // A parenthetical is clarification ("Email (optional)", "Name (Surname,
+    // Name)"), not the field's own identity — matching should key off what's
+    // outside the parens, not have that clarification compete with it.
+    .replace(/\([^)]*\)/g, " ")
     .replace(/[^a-zA-Z0-9]+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+// Every alias, longest phrase first, so a fuzzy match against "date of birth"
+// is tried before the shorter "date" would be (were it ever added) — the
+// more specific phrase should win when a header could plausibly contain both.
+const ALIASES_BY_LENGTH = Object.keys(HEADER_ALIASES).sort((a, b) => b.length - a.length);
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Whether `normalized` contains `alias` as whole words, not as a substring of
+ * some unrelated longer word — "role" must match "role duty" but not "roles".
+ */
+function containsWord(normalized, alias) {
+  return new RegExp(`(^|\\s)${escapeRegExp(alias)}(\\s|$)`).test(normalized);
+}
+
+/**
+ * A header that failed the exact match above may still be a recognisable
+ * term wrapped in something else — "ROLE/DUTY" (normalizes to "role duty",
+ * not itself a key, but contains "role"), or "NAME (SURNAME, NAME)" (contains
+ * "name"). Checked only once the exact match has already failed, so a clean
+ * single-concept header like "Last Name" is still resolved by its own exact
+ * alias and never reaches here.
+ */
+function matchHeaderFuzzy(normalized, entity) {
+  const valid = new Set([...columnKeys(entity), "fullName"]);
+  for (const phrase of ALIASES_BY_LENGTH) {
+    const key = HEADER_ALIASES[phrase];
+    if (valid.has(key) && containsWord(normalized, phrase)) return key;
+  }
+  return null;
 }
 
 /**
@@ -165,7 +203,7 @@ function matchHeader(rawHeader, entity) {
     if (key.toLowerCase() === collapsed) return key;
   }
 
-  return null;
+  return matchHeaderFuzzy(normalized, entity);
 }
 
 /**
@@ -302,9 +340,23 @@ function normalizePhone(raw) {
   return digits ? plus + digits : text;
 }
 
-/** Splits "Mary Jane Doe" into a first and last name, keeping the middle out. */
+/**
+ * Splits a combined name cell into first and last name.
+ *
+ * A comma means "Surname, First Name" — the order official registers and
+ * this school's own admin UI both use for a combined name column — so that
+ * takes priority over the plain space-separated case. Without one, "Mary
+ * Jane Doe" splits first/last with the middle name kept out.
+ */
 function splitFullName(raw) {
-  const parts = stringifyCell(raw).split(/\s+/).filter(Boolean);
+  const text = stringifyCell(raw);
+
+  if (text.includes(",")) {
+    const [surname, firstName] = text.split(",", 2).map((part) => part.trim());
+    return { firstName: firstName || "", lastName: surname || "" };
+  }
+
+  const parts = text.split(/\s+/).filter(Boolean);
   if (parts.length === 0) return { firstName: "", lastName: "" };
   if (parts.length === 1) return { firstName: parts[0], lastName: "" };
   return { firstName: parts[0], lastName: parts[parts.length - 1] };
