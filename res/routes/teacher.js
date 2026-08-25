@@ -6,6 +6,7 @@ const { TeacherController } = require("../controller/teacher/TeacherController")
 const { AttendanceController } = require("../controller/teacher/AttendanceController");
 const { TeacherAnalyticsController } = require("../controller/teacher/TeacherAnalyticsController");
 const { AssignmentController } = require("../controller/teacher/AssignmentController");
+const { ExamTimetableController } = require("../controller/teacher/ExamTimetableController");
 const { teacherAuthMiddleware } = require("../middleware/teacherMiddleware");
 const notificationController = require("../controller/NotificationController");
 
@@ -18,9 +19,11 @@ const teacherController = new TeacherController();
 const attendanceController = new AttendanceController();
 const teacherAnalyticsController = new TeacherAnalyticsController();
 const assignmentController = new AssignmentController();
+const examTimetableController = new ExamTimetableController();
 
 router.post("/login", teacherAuthController.login);
 router.get("/overview", teacherAuthMiddleware, teacherOverviewController.getOverview);
+router.get("/exams/upcoming", teacherAuthMiddleware, examTimetableController.getUpcomingExams);
 
 // Notification bell
 router.get("/notifications", teacherAuthMiddleware, notificationController.teacher.list);
