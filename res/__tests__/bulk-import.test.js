@@ -454,11 +454,20 @@ describe("BulkImportValidator — staff rules", () => {
     expect(validate({}).errors).toEqual([]);
   });
 
-  it("requires name, email and duty", () => {
+  it("requires only first name, last name and duty", () => {
     const record = validate({ firstName: "", lastName: "", email: "", duty: "" });
     expect(fieldsOf(record.errors)).toEqual(
-      expect.arrayContaining(["firstName", "lastName", "email", "duty"])
+      expect.arrayContaining(["firstName", "lastName", "duty"])
     );
+    // Email is optional — staff log in with their registration number, not
+    // email, so a blank one doesn't lock anyone out of anything.
+    expect(fieldsOf(record.errors)).not.toContain("email");
+  });
+
+  it("accepts a row with no email", () => {
+    const record = validate({ email: "" });
+    expect(record.errors).toEqual([]);
+    expect(record.isValid).toBe(true);
   });
 
   it("rejects a malformed email", () => {

@@ -31,7 +31,7 @@ const STAFF_COLUMNS = [
   { key: "firstName", label: "First Name", required: true, type: "text" },
   { key: "lastName", label: "Last Name", required: true, type: "text" },
   { key: "gender", label: "Gender", required: false, type: "select", options: GENDER_OPTIONS },
-  { key: "email", label: "Email", required: true, type: "email" },
+  { key: "email", label: "Email", required: false, type: "email" },
   { key: "duty", label: "Duty / Role", required: true, type: "text" },
   { key: "phone", label: "Phone", required: false, type: "tel" },
   { key: "address", label: "Address", required: false, type: "text" },
