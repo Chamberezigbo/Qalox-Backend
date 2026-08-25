@@ -250,8 +250,21 @@ class DocumentExtractionService {
     if (headerIndex === -1) return textLines;
 
     const bands = this.columnBandsFromGroups(groupedLines[headerIndex]);
-    const rowGroups = this.clusterLinesIntoRows(physicalLines);
-    return rowGroups.map((group) => this.mergeRowGroup(group, bands));
+
+    // The header line is never a candidate for row-clustering, even if it
+    // sits unusually close to the first data row (common in handwriting,
+    // where there's little vertical buffer between a header and row 1).
+    // Clustering it in would merge the header's own words into that row —
+    // corrupting the data row (every cell gains a stray header label) and,
+    // worse, leaving no clean header row anywhere in the output, since
+    // rowsFromMatrix() below re-scans for one the same way this method just
+    // did and would find nothing to match.
+    const headerRow = this.segmentByColumnBands(physicalLines[headerIndex], bands);
+    const dataLines = physicalLines.filter((_, i) => i !== headerIndex);
+    const rowGroups = this.clusterLinesIntoRows(dataLines);
+    const dataRows = rowGroups.map((group) => this.mergeRowGroup(group, bands));
+
+    return [headerRow, ...dataRows];
   }
 
   /**
@@ -274,6 +287,8 @@ class DocumentExtractionService {
    * genuine row gap while still catching the near-zero/negative wrap case.
    */
   static clusterLinesIntoRows(physicalLines) {
+    if (physicalLines.length === 0) return [];
+
     const lineBounds = physicalLines
       .map((words) => ({
         words,
