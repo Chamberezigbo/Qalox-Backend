@@ -1,6 +1,7 @@
 const prisma = require("../util/prisma");
 const { generateUniqueIdentifier } = require("../Models/generateUniqueIdentifier");
 const { getActivePlanForSchool } = require("../util/getActivePlanForSchool");
+const { syncStudentFeeInvoices } = require("../util/studentFeeSync");
 
 /**
  * Commits reviewed bulk-import rows into real Student / Staff records.
@@ -181,7 +182,7 @@ class BulkImportImporter {
           classGroupId = group.id;
         }
 
-        await createWithRegistration(school.prefix, "STD", (registrationNumber) =>
+        const created = await createWithRegistration(school.prefix, "STD", (registrationNumber) =>
           prisma.student.create({
             data: {
               schoolId,
@@ -202,6 +203,10 @@ class BulkImportImporter {
             select: { id: true },
           })
         );
+
+        // Same gap as the other student-creation paths: this class may
+        // already have a fee structure set up before this student existed.
+        await syncStudentFeeInvoices(prisma, { id: created.id, schoolId, classId: classRecord.id });
 
         results.push({ recordId: record.id, rowNumber: record.rowNumber, ok: true, data });
       } catch (error) {

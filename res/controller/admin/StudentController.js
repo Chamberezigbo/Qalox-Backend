@@ -8,6 +8,7 @@ const { generateUniqueIdentifier } = require("../../Models/generateUniqueIdentif
 const { academicSession } = require("../../util/prisma");
 const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
 const { createNotification } = require("../../util/notify");
+const { syncStudentFeeInvoices } = require("../../util/studentFeeSync");
 
 exports.getStudentDetails = async (req, res, next) => {
   try {
@@ -248,6 +249,11 @@ exports.createStudent = async (req, res, next) => {
       );
     });
 
+    // If this class already has a fee structure, invoice this student for it
+    // now — it was only ever backfilled for students who existed at the time
+    // the structure was created.
+    await syncStudentFeeInvoices(prisma, { id: createdStudent.id, schoolId, classId });
+
     res.status(201).json({
       success: true,
       message: `Student created successfully${groupId ? " and added to group" : ""}`,
@@ -420,6 +426,10 @@ exports.bulkCreateStudents = async (req, res, next) => {
           },
           select: { id: true, name: true, surname: true, registrationNumber: true },
         });
+
+        // Same reasoning as the single-create path: this class may already
+        // have a fee structure this student needs invoicing against.
+        await syncStudentFeeInvoices(prisma, { id: created.id, schoolId, classId: classRecord.id });
 
         results.push({ row: rowNumber, success: true, student: created });
         successCount++;
@@ -631,6 +641,15 @@ exports.changeStudentClass = async (req, res, next) => {
             class: { include: { classGroups: true, campus: true } },
             campus: true,
           },
+        });
+
+        // The new class may already have a fee structure this student was
+        // never invoiced against, since they weren't in it when the
+        // structure was created.
+        await syncStudentFeeInvoices(prisma, {
+          id: updatedStudent.id,
+          schoolId: updatedStudent.schoolId,
+          classId: updatedStudent.classId,
         });
 
         updatedStudents.push(updatedStudent);
