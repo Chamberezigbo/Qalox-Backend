@@ -23,7 +23,14 @@ exports.getStudentDetails = async (req, res, next) => {
     const filter = { schoolId: req.schoolId };
 
     if (campusId) filter.campusId = parseInt(campusId);
-    if (name) filter.name = { contains: name };
+    // Matches either name field — a search for "Daniel" should surface a
+    // student named Daniel just as much as one whose surname is Daniel.
+    if (name) {
+      filter.OR = [
+        { name: { contains: name } },
+        { surname: { contains: name } },
+      ];
+    }
     if (gender) filter.gender = gender;
     if (classId) filter.classId = parseInt(classId);
     if (classGroupId) filter.classGroupId = parseInt(classGroupId);
