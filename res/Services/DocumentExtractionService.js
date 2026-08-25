@@ -216,21 +216,32 @@ class DocumentExtractionService {
    * behaviour as before, so a genuinely unreadable image still ends in the
    * usual "column headings could not be recognised" error rather than a new
    * failure mode.
+   *
+   * Column bands are derived from Tesseract's own per-line word groups
+   * (unchanged from before), but the rows fed through those bands are not:
+   * a ruled table row whose cell wraps onto a second line (e.g. "Mr.
+   * Emmanuel\nOkafor" in one Guardian Name cell) comes back from Tesseract
+   * as two separate lines, each holding only whichever cells happened to
+   * wrap onto it — so building the matrix straight from Tesseract's lines
+   * turns one real row into two-or-more mostly-empty ones. Physical lines
+   * are clustered back into table rows by vertical gap first (see
+   * clusterLinesIntoRows), and each row's lines are merged column-by-column
+   * afterward.
    */
   static matrixFromWordPositions(blocks, entity) {
-    const lines = [];
+    const physicalLines = [];
     for (const block of blocks || []) {
       for (const paragraph of block.paragraphs || []) {
         for (const line of paragraph.lines || []) {
           if (line.words && line.words.length > 0) {
-            lines.push([...line.words].sort((a, b) => a.bbox.x0 - b.bbox.x0));
+            physicalLines.push([...line.words].sort((a, b) => a.bbox.x0 - b.bbox.x0));
           }
         }
       }
     }
-    if (lines.length === 0) return [];
+    if (physicalLines.length === 0) return [];
 
-    const groupedLines = lines.map((words) => this.groupWordsByGap(words));
+    const groupedLines = physicalLines.map((words) => this.groupWordsByGap(words));
     const textLines = groupedLines.map((groups) =>
       groups.map((group) => group.map((w) => w.text).join(" "))
     );
@@ -239,7 +250,69 @@ class DocumentExtractionService {
     if (headerIndex === -1) return textLines;
 
     const bands = this.columnBandsFromGroups(groupedLines[headerIndex]);
-    return lines.map((words) => this.segmentByColumnBands(words, bands));
+    const rowGroups = this.clusterLinesIntoRows(physicalLines);
+    return rowGroups.map((group) => this.mergeRowGroup(group, bands));
+  }
+
+  /**
+   * Groups consecutive physical lines into one table row when the vertical
+   * gap between them is tight — the signature of a wrapped line inside one
+   * ruled cell — rather than the larger gap that separates two different
+   * ruled rows.
+   *
+   * Deliberately a small multiplier, tuned against real OCR output rather
+   * than assumed: a cell that wraps is usually vertically centered within
+   * its row alongside single-line neighbours, so its two lines' bounding
+   * boxes end up straddling — and often overlapping (a negative gap) — the
+   * single-line cells beside them, while two genuinely different ruled rows
+   * still land a clearly positive gap apart. Word height is an unreliable
+   * ruler for that positive case, though: a script/cursive font's swashes
+   * inflate its bounding box well past its visual line spacing, and a
+   * multiplier picked to comfortably straddle "wrap continuation" ends up
+   * larger than some fonts' genuine row-to-row gap — collapsing distinct
+   * rows into one. A small multiplier stays well below every observed
+   * genuine row gap while still catching the near-zero/negative wrap case.
+   */
+  static clusterLinesIntoRows(physicalLines) {
+    const lineBounds = physicalLines
+      .map((words) => ({
+        words,
+        y0: Math.min(...words.map((w) => w.bbox.y0)),
+        y1: Math.max(...words.map((w) => w.bbox.y1)),
+      }))
+      .sort((a, b) => a.y0 - b.y0);
+
+    const avgHeight =
+      lineBounds.reduce((sum, l) => sum + (l.y1 - l.y0), 0) / lineBounds.length;
+    const gapThreshold = avgHeight * 0.25;
+
+    const groups = [[lineBounds[0]]];
+    let groupBottom = lineBounds[0].y1;
+    for (let i = 1; i < lineBounds.length; i++) {
+      const line = lineBounds[i];
+      const gap = line.y0 - groupBottom;
+      if (gap > gapThreshold) groups.push([line]);
+      else groups[groups.length - 1].push(line);
+      groupBottom = Math.max(groupBottom, line.y1);
+    }
+    return groups.map((group) => group.map((l) => l.words));
+  }
+
+  /**
+   * Merges the physical lines that make up one table row into a single row
+   * of cells: each line is banded into columns independently (so a line's
+   * own left-to-right word order, which Tesseract already gets right, is
+   * never disturbed), then whatever lands in the same column across the
+   * row's lines is joined in line order — top wrap-line first.
+   */
+  static mergeRowGroup(physicalLines, bands) {
+    const merged = bands.map(() => []);
+    for (const words of physicalLines) {
+      this.segmentByColumnBands(words, bands).forEach((text, i) => {
+        if (text) merged[i].push(text);
+      });
+    }
+    return merged.map((parts) => parts.join(" "));
   }
 
   /**
