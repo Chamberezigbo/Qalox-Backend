@@ -1,17 +1,14 @@
-import crypto from "crypto";
 import prisma from "../../util/prisma";
 import { AppError } from "../../util/AppError";
-import flutterwave from "../FlutterwaveService";
-
-// Flutterwave v3 throws a misleading "decrypt" error on non-ASCII characters
-// (em-dashes, accented letters) in request fields — strip them before sending.
-const toAscii = (str: string) => String(str).replace(/[^\x20-\x7E]/g, "").trim();
+import { generateReceiptNo } from "../../util/receiptNo";
+import { loadStudentFeeForReceipt, buildReceiptData } from "../../util/receiptData";
 
 /**
  * Self-service fee viewing/payment for a logged-in student — the student
- * equivalent of ParentService's getChildFees/initiateFeePayment. No
- * ownership check is needed the way the parent flow needs assertOwnsChild:
- * studentId here comes straight off the student's own verified JWT.
+ * equivalent of ParentService's getChildFees/getBankAccounts/declarePayment.
+ * No ownership check is needed the way the parent flow needs
+ * assertOwnsChild: studentId here comes straight off the student's own
+ * verified JWT.
  */
 export class StudentFeeService {
     async getFees(studentId: number) {
@@ -44,60 +41,73 @@ export class StudentFeeService {
         }));
     }
 
+    /** Active bank accounts the student's school accepts fee payments into. */
+    async getBankAccounts(studentId: number) {
+        const student = await prisma.student.findUnique({ where: { id: studentId }, select: { schoolId: true } });
+        if (!student) throw new AppError("Student not found", 404);
+
+        return prisma.schoolBankAccount.findMany({
+            where: { schoolId: student.schoolId, isActive: true },
+            orderBy: { createdAt: "asc" },
+        });
+    }
+
     /**
-     * Starts a Flutterwave bank-transfer charge for the student's own
-     * outstanding fee. Mirrors ParentService.initiateFeePayment exactly —
-     * same pending -> webhook-confirmed pattern, same Payment row shape —
-     * just scoped to the student themselves instead of a parent+child pair.
+     * Declares that a bank transfer has been made for this fee — replaces
+     * the old Flutterwave-charge flow entirely. Creates a "pending" Payment
+     * an admin must approve after checking their own bank statement; never
+     * touches StudentFee.amountPaid itself, exactly like the old
+     * Flutterwave-pending state never did until the webhook confirmed it.
      */
-    async initiateFeePayment(studentId: number, studentFeeId: number) {
+    async declarePayment(studentId: number, studentFeeId: number, bankAccountId: number, amount: number) {
+        if (!amount || amount <= 0) throw new AppError("Enter a valid amount", 400);
+
+        const student = await prisma.student.findUnique({ where: { id: studentId }, select: { schoolId: true } });
+        if (!student) throw new AppError("Student not found", 404);
+
         const studentFee = await prisma.studentFee.findFirst({ where: { id: studentFeeId, studentId } });
         if (!studentFee) throw new AppError("Fee record not found", 404);
 
-        const outstanding = studentFee.totalFee - studentFee.amountPaid;
-        if (outstanding <= 0) throw new AppError("This fee is already fully paid", 400);
-
-        const student = await prisma.student.findUnique({ where: { id: studentId } });
-        if (!student) throw new AppError("Student not found", 404);
-
-        // Many students have no email of their own on file (bulk imports
-        // often only capture the guardian's) — fall back to that rather
-        // than blocking payment outright.
-        const email = student.email || student.guardianEmail;
-        if (!email) {
-            throw new AppError(
-                "No email on file for you to receive payment details — ask your school to add one before paying online",
-                400
-            );
-        }
-
-        const reference = `fee-${studentFeeId}-${crypto.randomUUID().slice(0, 8)}`;
-
-        const charge = await flutterwave.createBankTransferCharge({
-            amount: outstanding,
-            email,
-            fullname: toAscii(`${student.name} ${student.surname}`),
-            phoneNumber: student.guardianNumber || undefined,
-            reference,
-            narration: toAscii(`Qalox school fee payment (${studentFee.id})`),
+        const bankAccount = await prisma.schoolBankAccount.findFirst({
+            where: { id: bankAccountId, schoolId: student.schoolId, isActive: true },
         });
+        if (!bankAccount) throw new AppError("Bank account not found", 404);
 
-        await prisma.payment.create({
+        const receiptNo = await generateReceiptNo();
+
+        const payment = await prisma.payment.create({
             data: {
                 studentFeeId,
-                amount: outstanding,
-                paymentMethod: "Flutterwave",
-                receiptNo: reference,
-                flwReference: reference,
+                amount,
+                paymentMethod: "Bank Transfer",
+                receiptNo,
+                bankAccountId,
                 status: "pending",
             },
         });
 
         return {
-            reference,
-            amount: outstanding,
-            currency: "NGN",
-            bankTransfer: charge.bankTransfer,
+            id: payment.id,
+            receiptNo: payment.receiptNo,
+            amount: payment.amount,
+            status: payment.status,
+            bankAccount: {
+                bankName: bankAccount.bankName,
+                accountName: bankAccount.accountName,
+                accountNumber: bankAccount.accountNumber,
+            },
         };
+    }
+
+    /** Receipt for this student's own fee, once an admin has approved a payment against it. */
+    async getReceipt(studentId: number, studentFeeId: number) {
+        const studentFee = await loadStudentFeeForReceipt(studentFeeId);
+        if (!studentFee || studentFee.studentId !== studentId) throw new AppError("Fee record not found", 404);
+
+        if (studentFee.status === "unpaid" || studentFee.payments.length === 0) {
+            throw new AppError("No payment recorded for this fee yet", 400);
+        }
+
+        return buildReceiptData(studentFee);
     }
 }

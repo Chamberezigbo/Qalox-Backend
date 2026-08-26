@@ -55,13 +55,43 @@ export class ParentController {
         }
     };
 
-    initiateFeePayment = async (req: ParentRequest, res: Response, next: NextFunction) => {
+    getBankAccounts = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const studentId = Number(req.params.studentId);
+            const data = await this.service.getBankAccounts(req.parentId, studentId);
+            res.json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    declarePayment = async (req: ParentRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
             const studentId = Number(req.params.studentId);
             const studentFeeId = Number(req.params.studentFeeId);
-            const data = await this.service.initiateFeePayment(req.parentId, studentId, studentFeeId);
-            res.status(201).json({ success: true, message: "Payment initialized", data });
+            const { bankAccountId, amount } = req.body;
+            const data = await this.service.declarePayment(
+                req.parentId,
+                studentId,
+                studentFeeId,
+                Number(bankAccountId),
+                Number(amount)
+            );
+            res.status(201).json({ success: true, message: "Payment declared — awaiting confirmation from the school", data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    getReceipt = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const studentId = Number(req.params.studentId);
+            const studentFeeId = Number(req.params.studentFeeId);
+            const data = await this.service.getReceipt(req.parentId, studentId, studentFeeId);
+            res.json({ success: true, data });
         } catch (err) {
             next(err);
         }

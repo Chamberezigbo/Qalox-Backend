@@ -23,7 +23,9 @@ router.get("/student/sessions", studentAuthMiddleware, studentResultController.g
 router.get("/student/results",  studentAuthMiddleware, studentResultController.getResults);
 router.get("/student/assignments", studentAuthMiddleware, studentAssignmentController.list);
 router.get("/student/fees", studentAuthMiddleware, studentFeeController.getFees);
-router.post("/student/fees/:studentFeeId/pay", studentAuthMiddleware, studentFeeController.initiateFeePayment);
+router.get("/student/bank-accounts", studentAuthMiddleware, studentFeeController.getBankAccounts);
+router.post("/student/fees/:studentFeeId/declare", studentAuthMiddleware, studentFeeController.declarePayment);
+router.get("/student/fees/:studentFeeId/receipt", studentAuthMiddleware, studentFeeController.getReceipt);
 router.get("/student/exams/upcoming", studentAuthMiddleware, studentExamController.getUpcomingExams);
 
 module.exports = router;

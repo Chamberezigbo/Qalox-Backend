@@ -40,6 +40,14 @@ const {
   recordPayment,
   getReceipt,
   sendFeeReminders,
+  createBankAccount,
+  getBankAccounts,
+  updateBankAccount,
+  deleteBankAccount,
+  listPendingPayments,
+  approvePayment,
+  rejectPayment,
+  sendReceiptEmail,
 } = require("../../controller/admin/FeeManagementController");
 
 const {
@@ -214,6 +222,14 @@ router.get("/fees/debt-summary", auth.authenticateSchoolLevelAdmin, auth.require
 router.post("/fees/payments", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, recordPayment);
 router.get("/fees/receipts/:studentFeeId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getReceipt);
 router.post("/fees/reminders/send-email", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, sendFeeReminders);
+router.post("/fees/bank-accounts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, createBankAccount);
+router.get("/fees/bank-accounts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getBankAccounts);
+router.patch("/fees/bank-accounts/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, updateBankAccount);
+router.delete("/fees/bank-accounts/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, deleteBankAccount);
+router.get("/fees/payments/pending", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, listPendingPayments);
+router.post("/fees/payments/:id/approve", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, approvePayment);
+router.post("/fees/payments/:id/reject", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, rejectPayment);
+router.post("/fees/receipts/:studentFeeId/send-email", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, sendReceiptEmail);
 
 // Notices / SMS broadcast routes — sub-admins need PERMISSIONS.SMS_BROADCAST_SEND; head admins always pass
 router.get("/sms/quota", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, getSmsQuota);

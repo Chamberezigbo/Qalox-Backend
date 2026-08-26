@@ -188,6 +188,7 @@ model School {
   commissions         Commission[]
   examSchedules       ExamSchedule[]
   assignments         Assignment[]
+  bankAccounts        SchoolBankAccount[]
 
   @@index([billingPlanId])
   @@map("schools")
@@ -1044,18 +1045,49 @@ model Payment {
   paymentMethod String   @db.VarChar(50) // Bank Transfer, Cash, Card, Flutterwave
   paymentDate   DateTime @default(now())
   receiptNo     String   @unique @db.VarChar(50)
-  recordedBy    Int? // Admin.id who recorded this payment
-  // Online (Flutterwave) payments only — null for payments an admin recorded
-  // manually. "pending" until the webhook confirms the transfer landed;
-  // StudentFee.amountPaid is only credited once status flips to "success".
+  recordedBy    Int? // Admin.id who recorded/approved this payment
+  // Legacy: the parent/student-initiated Flutterwave charge path this
+  // supported has been removed in favour of direct bank transfer + admin
+  // approval (bankAccountId below) — left in place, unused by any new
+  // payment, so historical Flutterwave fee payments stay readable.
   flwReference String?  @unique @db.VarChar(100)
   status       String   @default("success") @db.VarChar(20) // pending, success, failed
+  // Set when a parent/student declares a direct bank-transfer payment —
+  // which account they claim to have paid into. Null for admin-recorded
+  // (Cash/Card/in-person Bank Transfer) and legacy Flutterwave payments.
+  bankAccountId Int?
+  // Set when an admin rejects a declared payment (e.g. transfer never
+  // landed, amount doesn't match) — status becomes "failed", StudentFee is
+  // never touched.
+  rejectionReason String? @db.VarChar(255)
   createdAt    DateTime @default(now())
 
-  studentFee StudentFee @relation(fields: [studentFeeId], references: [id])
+  studentFee  StudentFee         @relation(fields: [studentFeeId], references: [id])
+  bankAccount SchoolBankAccount? @relation(fields: [bankAccountId], references: [id])
 
   @@index([studentFeeId])
+  @@index([bankAccountId])
   @@map("payments")
+}
+
+// A school's own bank account that parents/students transfer fees into
+// directly. Admin can set up more than one; the payer picks which one they
+// used when they declare a payment (Payment.bankAccountId).
+model SchoolBankAccount {
+  id            Int      @id @default(autoincrement())
+  schoolId      Int
+  bankName      String   @db.VarChar(100)
+  accountName   String   @db.VarChar(255)
+  accountNumber String   @db.VarChar(20)
+  label         String?  @db.VarChar(100) // e.g. "Main Account", "Tuition Only"
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  school   School    @relation(fields: [schoolId], references: [id])
+  payments Payment[]
+
+  @@index([schoolId])
+  @@map("school_bank_accounts")
 }
 
 // ============================================

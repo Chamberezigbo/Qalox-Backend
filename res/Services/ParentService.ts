@@ -1,12 +1,8 @@
 // src/services/ParentService.ts
-import crypto from "crypto";
 import prisma from "../util/prisma";
 import { AppError } from "../util/AppError";
-import flutterwave from "./FlutterwaveService";
-
-// Flutterwave v3 throws a misleading "decrypt" error on non-ASCII characters
-// (em-dashes, accented letters) in request fields — strip them before sending.
-const toAscii = (str: string) => String(str).replace(/[^\x20-\x7E]/g, "").trim();
+import { generateReceiptNo } from "../util/receiptNo";
+import { loadStudentFeeForReceipt, buildReceiptData } from "../util/receiptData";
 
 export class ParentService {
     /** Confirms the requesting parent actually owns this child before any read. */
@@ -136,53 +132,74 @@ export class ParentService {
         }));
     }
 
+    /** Active bank accounts the child's school accepts fee payments into. */
+    async getBankAccounts(parentId: number, studentId: number) {
+        const student = await this.assertOwnsChild(parentId, studentId);
+
+        return prisma.schoolBankAccount.findMany({
+            where: { schoolId: student.schoolId, isActive: true },
+            orderBy: { createdAt: "asc" },
+        });
+    }
+
     /**
-     * Starts a Flutterwave bank-transfer charge for a student's outstanding
-     * fee. Mirrors BillingController.initializePayment's shape (same pending
-     * -> webhook-confirmed pattern) — the Payment row starts "pending" and is
-     * only credited toward StudentFee.amountPaid once the webhook re-verifies
-     * the transfer server-side.
+     * Declares that a bank transfer has been made for this fee — replaces
+     * the old Flutterwave-charge flow entirely. Creates a "pending" Payment
+     * an admin must approve after checking their own bank statement; never
+     * touches StudentFee.amountPaid itself, exactly like the old
+     * Flutterwave-pending state never did until the webhook confirmed it.
      */
-    async initiateFeePayment(parentId: number, studentId: number, studentFeeId: number) {
-        await this.assertOwnsChild(parentId, studentId);
+    async declarePayment(parentId: number, studentId: number, studentFeeId: number, bankAccountId: number, amount: number) {
+        const student = await this.assertOwnsChild(parentId, studentId);
+
+        if (!amount || amount <= 0) throw new AppError("Enter a valid amount", 400);
 
         const studentFee = await prisma.studentFee.findFirst({ where: { id: studentFeeId, studentId } });
         if (!studentFee) throw new AppError("Fee record not found", 404);
 
-        const outstanding = studentFee.totalFee - studentFee.amountPaid;
-        if (outstanding <= 0) throw new AppError("This fee is already fully paid", 400);
-
-        const parent = await prisma.parent.findUnique({ where: { id: parentId } });
-        if (!parent) throw new AppError("Parent not found", 404);
-
-        const reference = `fee-${studentFeeId}-${crypto.randomUUID().slice(0, 8)}`;
-
-        const charge = await flutterwave.createBankTransferCharge({
-            amount: outstanding,
-            email: parent.email,
-            fullname: toAscii(parent.name),
-            phoneNumber: parent.phone || undefined,
-            reference,
-            narration: toAscii(`Qalox school fee payment (${studentFee.id})`),
+        const bankAccount = await prisma.schoolBankAccount.findFirst({
+            where: { id: bankAccountId, schoolId: student.schoolId, isActive: true },
         });
+        if (!bankAccount) throw new AppError("Bank account not found", 404);
 
-        await prisma.payment.create({
+        const receiptNo = await generateReceiptNo();
+
+        const payment = await prisma.payment.create({
             data: {
                 studentFeeId,
-                amount: outstanding,
-                paymentMethod: "Flutterwave",
-                receiptNo: reference,
-                flwReference: reference,
+                amount,
+                paymentMethod: "Bank Transfer",
+                receiptNo,
+                bankAccountId,
                 status: "pending",
             },
         });
 
         return {
-            reference,
-            amount: outstanding,
-            currency: "NGN",
-            bankTransfer: charge.bankTransfer,
+            id: payment.id,
+            receiptNo: payment.receiptNo,
+            amount: payment.amount,
+            status: payment.status,
+            bankAccount: {
+                bankName: bankAccount.bankName,
+                accountName: bankAccount.accountName,
+                accountNumber: bankAccount.accountNumber,
+            },
         };
+    }
+
+    /** Receipt for a child's fee, once an admin has approved a payment against it. */
+    async getReceipt(parentId: number, studentId: number, studentFeeId: number) {
+        await this.assertOwnsChild(parentId, studentId);
+
+        const studentFee = await loadStudentFeeForReceipt(studentFeeId);
+        if (!studentFee || studentFee.studentId !== studentId) throw new AppError("Fee record not found", 404);
+
+        if (studentFee.status === "unpaid" || studentFee.payments.length === 0) {
+            throw new AppError("No payment recorded for this fee yet", 400);
+        }
+
+        return buildReceiptData(studentFee);
     }
 
     async getAlerts(parentId: number, limit = 20) {

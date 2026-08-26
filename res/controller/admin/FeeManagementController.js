@@ -2,6 +2,9 @@ const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const { createNotification } = require("../../util/notify");
 const { schoolMediaUrl } = require("../public/publicController");
+const { generateReceiptNo } = require("../../util/receiptNo");
+const { sendEmail } = require("../../Services/EmailService");
+const { loadStudentFeeForReceipt, buildReceiptData } = require("../../util/receiptData");
 
 const PAYMENT_METHODS = ["Bank Transfer", "Cash", "Card"];
 
@@ -9,12 +12,6 @@ const computeStatus = (totalFee, amountPaid) => {
   if (amountPaid <= 0) return "unpaid";
   if (amountPaid >= totalFee) return "paid";
   return "partial";
-};
-
-const generateReceiptNo = async () => {
-  const count = await prisma.payment.count();
-  const year = new Date().getFullYear();
-  return `RCP-${year}-${String(count + 1).padStart(4, "0")}`;
 };
 
 const formatStudentFee = (sf) => ({
@@ -396,14 +393,7 @@ exports.getReceipt = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Invalid student fee ID", code: "INVALID_REQUEST" });
     }
 
-    const studentFee = await prisma.studentFee.findUnique({
-      where: { id: studentFeeId },
-      include: {
-        student: true,
-        feeStructure: { include: { items: true, class: { select: { name: true } } } },
-        payments: { orderBy: { paymentDate: "desc" }, take: 1 },
-      },
-    });
+    const studentFee = await loadStudentFeeForReceipt(studentFeeId);
 
     if (!studentFee) {
       return res.status(404).json({ success: false, message: "Student fee record not found", code: "NOT_FOUND" });
@@ -417,41 +407,314 @@ exports.getReceipt = async (req, res, next) => {
       });
     }
 
-    const latestPayment = studentFee.payments[0];
-
-    const school = await prisma.school.findUnique({
-      where: { id: studentFee.schoolId },
-      select: { name: true, logoUrl: true, stampUrl: true },
-    });
-    const [schoolLogo, schoolStamp] = await Promise.all([
-      schoolMediaUrl(school?.logoUrl),
-      schoolMediaUrl(school?.stampUrl),
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: {
-        receiptNo: latestPayment.receiptNo,
-        studentName: `${studentFee.student.name} ${studentFee.student.surname}`,
-        admissionNo: studentFee.student.registrationNumber,
-        class: studentFee.feeStructure.class.name,
-        amountPaid: studentFee.amountPaid,
-        paymentDate: latestPayment.paymentDate,
-        paymentMethod: latestPayment.paymentMethod,
-        items: studentFee.feeStructure.items.map((i) => ({ name: i.name, amount: i.amount })),
-        term: studentFee.feeStructure.term,
-        session: studentFee.feeStructure.session,
-        isPartial: studentFee.status === "partial",
-        outstanding: Math.max(studentFee.totalFee - studentFee.amountPaid, 0),
-        parentEmail: studentFee.student.guardianEmail,
-        parentPhone: studentFee.student.guardianNumber,
-        schoolName: school?.name,
-        logoUrl: schoolLogo,
-        stampUrl: schoolStamp,
-      },
-    });
+    const data = await buildReceiptData(studentFee);
+    res.status(200).json({ success: true, data });
   } catch (err) {
     logger.error("[GET_RECEIPT] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/admin/fees/bank-accounts
+ * Adds a school bank account parents/students can pay fees into directly.
+ */
+exports.createBankAccount = async (req, res, next) => {
+  try {
+    const { bankName, accountName, accountNumber, label } = req.body;
+    if (!bankName || !accountName || !accountNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "bankName, accountName and accountNumber are required",
+        code: "MISSING_FIELDS",
+      });
+    }
+
+    const account = await prisma.schoolBankAccount.create({
+      data: { schoolId: req.schoolId, bankName, accountName, accountNumber, label: label || null },
+    });
+
+    res.status(201).json({ success: true, message: "Bank account added", data: account });
+  } catch (err) {
+    logger.error("[CREATE_BANK_ACCOUNT] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/** GET /api/admin/fees/bank-accounts */
+exports.getBankAccounts = async (req, res, next) => {
+  try {
+    const accounts = await prisma.schoolBankAccount.findMany({
+      where: { schoolId: req.schoolId },
+      orderBy: { createdAt: "desc" },
+    });
+    res.status(200).json({ success: true, data: accounts });
+  } catch (err) {
+    logger.error("[GET_BANK_ACCOUNTS] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/** PATCH /api/admin/fees/bank-accounts/:id */
+exports.updateBankAccount = async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { bankName, accountName, accountNumber, label, isActive } = req.body;
+
+    const existing = await prisma.schoolBankAccount.findFirst({ where: { id, schoolId: req.schoolId } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: "Bank account not found", code: "NOT_FOUND" });
+    }
+
+    const account = await prisma.schoolBankAccount.update({
+      where: { id },
+      data: {
+        ...(bankName !== undefined && { bankName }),
+        ...(accountName !== undefined && { accountName }),
+        ...(accountNumber !== undefined && { accountNumber }),
+        ...(label !== undefined && { label: label || null }),
+        ...(isActive !== undefined && { isActive: Boolean(isActive) }),
+      },
+    });
+
+    res.status(200).json({ success: true, message: "Bank account updated", data: account });
+  } catch (err) {
+    logger.error("[UPDATE_BANK_ACCOUNT] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/** DELETE /api/admin/fees/bank-accounts/:id */
+exports.deleteBankAccount = async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    const existing = await prisma.schoolBankAccount.findFirst({ where: { id, schoolId: req.schoolId } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: "Bank account not found", code: "NOT_FOUND" });
+    }
+
+    // Historical payments reference this account — deleting it would orphan
+    // that record's "which account was this paid into" trail. Deactivating
+    // (updateBankAccount with isActive:false) hides it from new declarations
+    // without losing that history.
+    const linkedPaymentCount = await prisma.payment.count({ where: { bankAccountId: id } });
+    if (linkedPaymentCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete — ${linkedPaymentCount} payment(s) reference this account. Deactivate it instead.`,
+        code: "ACCOUNT_IN_USE",
+      });
+    }
+
+    await prisma.schoolBankAccount.delete({ where: { id } });
+
+    res.status(200).json({ success: true, message: "Bank account deleted" });
+  } catch (err) {
+    logger.error("[DELETE_BANK_ACCOUNT] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/admin/fees/payments/pending
+ * The approval queue: bank-transfer payments a parent/student has declared,
+ * awaiting an admin to confirm the transfer actually landed.
+ */
+exports.listPendingPayments = async (req, res, next) => {
+  try {
+    const payments = await prisma.payment.findMany({
+      where: { status: "pending", studentFee: { schoolId: req.schoolId } },
+      include: {
+        studentFee: {
+          include: { student: true, feeStructure: { include: { class: { select: { name: true } } } } },
+        },
+        bankAccount: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const data = payments.map((p) => ({
+      id: p.id,
+      amount: p.amount,
+      createdAt: p.createdAt,
+      receiptNo: p.receiptNo,
+      studentFeeId: p.studentFeeId,
+      studentName: `${p.studentFee.student.name} ${p.studentFee.student.surname}`,
+      admissionNo: p.studentFee.student.registrationNumber,
+      class: p.studentFee.feeStructure.class.name,
+      bankAccount: p.bankAccount
+        ? {
+            id: p.bankAccount.id,
+            bankName: p.bankAccount.bankName,
+            accountName: p.bankAccount.accountName,
+            accountNumber: p.bankAccount.accountNumber,
+            label: p.bankAccount.label,
+          }
+        : null,
+    }));
+
+    res.status(200).json({ success: true, data });
+  } catch (err) {
+    logger.error("[LIST_PENDING_PAYMENTS] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/admin/fees/payments/:id/approve
+ * Confirms a declared bank-transfer payment actually landed: credits the
+ * fee and returns the same receipt shape getReceipt() does, ready to
+ * print/email/WhatsApp immediately.
+ */
+exports.approvePayment = async (req, res, next) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    const adminId = req.user?.id;
+    if (isNaN(paymentId)) {
+      return res.status(400).json({ success: false, message: "Invalid payment ID", code: "INVALID_REQUEST" });
+    }
+
+    const payment = await prisma.payment.findFirst({
+      where: { id: paymentId, status: "pending", studentFee: { schoolId: req.schoolId } },
+      include: { studentFee: true },
+    });
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Pending payment not found", code: "NOT_FOUND" });
+    }
+
+    const newAmountPaid = payment.studentFee.amountPaid + payment.amount;
+    const newStatus = computeStatus(payment.studentFee.totalFee, newAmountPaid);
+
+    await prisma.$transaction(
+      [
+        prisma.payment.update({
+          where: { id: payment.id },
+          data: { status: "success", recordedBy: adminId, paymentDate: new Date() },
+        }),
+        prisma.studentFee.update({
+          where: { id: payment.studentFeeId },
+          data: { amountPaid: newAmountPaid, status: newStatus },
+        }),
+      ],
+      { timeout: 20000 }
+    );
+
+    logger.info("[APPROVE_PAYMENT] Payment approved", { paymentId, adminId, amount: payment.amount });
+
+    const studentFee = await loadStudentFeeForReceipt(payment.studentFeeId);
+    const data = await buildReceiptData(studentFee);
+
+    res.status(200).json({ success: true, message: "Payment approved", data });
+  } catch (err) {
+    logger.error("[APPROVE_PAYMENT] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/admin/fees/payments/:id/reject
+ * The transfer never landed, or the amount/account doesn't match — never
+ * touches StudentFee, unlike approve.
+ */
+exports.rejectPayment = async (req, res, next) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    const { reason } = req.body;
+    if (isNaN(paymentId)) {
+      return res.status(400).json({ success: false, message: "Invalid payment ID", code: "INVALID_REQUEST" });
+    }
+
+    const payment = await prisma.payment.findFirst({
+      where: { id: paymentId, status: "pending", studentFee: { schoolId: req.schoolId } },
+    });
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Pending payment not found", code: "NOT_FOUND" });
+    }
+
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: "failed", rejectionReason: reason || null },
+    });
+
+    logger.info("[REJECT_PAYMENT] Payment rejected", { paymentId, reason });
+
+    res.status(200).json({ success: true, message: "Payment rejected" });
+  } catch (err) {
+    logger.error("[REJECT_PAYMENT] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/admin/fees/receipts/:studentFeeId/send-email
+ * Emails the same receipt getReceipt() returns to the student's guardian —
+ * previously a frontend-only fake (a success toast with no real send behind
+ * it; see receipt-generator.tsx's handleSendEmail).
+ */
+exports.sendReceiptEmail = async (req, res, next) => {
+  try {
+    const studentFeeId = parseInt(req.params.studentFeeId, 10);
+    if (isNaN(studentFeeId)) {
+      return res.status(400).json({ success: false, message: "Invalid student fee ID", code: "INVALID_REQUEST" });
+    }
+
+    const studentFee = await loadStudentFeeForReceipt(studentFeeId);
+    if (!studentFee) {
+      return res.status(404).json({ success: false, message: "Student fee record not found", code: "NOT_FOUND" });
+    }
+    if (studentFee.status === "unpaid" || studentFee.payments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No payment recorded for this student yet",
+        code: "NO_PAYMENT",
+      });
+    }
+
+    const recipient = studentFee.student.email || studentFee.student.guardianEmail;
+    if (!recipient) {
+      return res.status(400).json({
+        success: false,
+        message: "No email on file for this student or guardian",
+        code: "NO_EMAIL",
+      });
+    }
+
+    const receipt = await buildReceiptData(studentFee);
+
+    const itemsHtml = receipt.items
+      .map(
+        (i) =>
+          `<tr><td style="padding:6px 12px;border-bottom:1px solid #eee;">${i.name}</td><td style="padding:6px 12px;border-bottom:1px solid #eee;text-align:right;">₦${i.amount.toLocaleString()}</td></tr>`
+      )
+      .join("");
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;">
+        <h2 style="color:#1a237e;">${receipt.schoolName ?? "School"} — Payment Receipt</h2>
+        <p>Receipt No: <strong>${receipt.receiptNo}</strong></p>
+        <p>${receipt.studentName} (${receipt.admissionNo}) — ${receipt.class}</p>
+        <p>${receipt.term} — ${receipt.session}</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;">${itemsHtml}</table>
+        <p style="font-size:18px;font-weight:bold;color:#1a237e;">Amount Paid: ₦${receipt.amountPaid.toLocaleString()}</p>
+        ${
+          receipt.isPartial
+            ? `<p style="color:#b91c1c;">Outstanding: ₦${(receipt.outstanding ?? 0).toLocaleString()}</p>`
+            : ""
+        }
+        <p style="color:#999;font-size:12px;">Paid via ${receipt.paymentMethod} on ${new Date(
+      receipt.paymentDate
+    ).toLocaleDateString()}.</p>
+      </div>
+    `;
+
+    await sendEmail({ to: recipient, subject: `Payment Receipt — ${receipt.receiptNo}`, html });
+
+    logger.info("[SEND_RECEIPT_EMAIL] Sent", { studentFeeId, recipient });
+
+    res.status(200).json({ success: true, message: `Receipt sent to ${recipient}` });
+  } catch (err) {
+    logger.error("[SEND_RECEIPT_EMAIL] Failed", { error: err.message });
     next(err);
   }
 };
