@@ -8,7 +8,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "start": "node dist/app.js",
+    "start": "npx prisma migrate deploy && node dist/app.js",
     "dev": "nodemon -e ts,js,json --watch res --watch app.ts --exec ts-node app.ts",
     "build": "npm run prisma:generate && tsc -p tsconfig.json",
     "build:full": "npm install && npm run prisma:generate && npm run prisma:deploy",
