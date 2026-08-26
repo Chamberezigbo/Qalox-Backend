@@ -1,5 +1,16 @@
+import crypto from "crypto";
 import prisma from "../../util/prisma";
 import { AppError } from "../../util/AppError";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const r2Service = require("../R2Service");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { schoolMediaUrl } = require("../../controller/public/publicController");
+
+interface AttachmentInput {
+    buffer: Buffer;
+    originalname: string;
+    mimetype: string;
+}
 
 interface CreateAssignmentInput {
     staffId: number;
@@ -9,6 +20,7 @@ interface CreateAssignmentInput {
     title: string;
     description?: string;
     dueDate: string;
+    attachment?: AttachmentInput;
 }
 
 interface UpdateAssignmentInput {
@@ -17,6 +29,13 @@ interface UpdateAssignmentInput {
     dueDate?: string;
     classId?: number;
     subjectId?: number;
+    attachment?: AttachmentInput;
+}
+
+/** Keeps the R2 key readable and collision-free without leaking path separators from the original filename. */
+function buildAttachmentKey(schoolId: number, originalname: string) {
+    const safeName = originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+    return `assignments/${schoolId}/${crypto.randomBytes(8).toString("hex")}-${safeName}`;
 }
 
 export class AssignmentService {
@@ -30,13 +49,29 @@ export class AssignmentService {
         }
     }
 
+    /** Uploads to the private R2 bucket, returns the fields to store — never a raw URL, see schema comment. */
+    private async uploadAttachment(schoolId: number, attachment: AttachmentInput) {
+        const key = buildAttachmentKey(schoolId, attachment.originalname);
+        await r2Service.uploadObject({ buffer: attachment.buffer, key, contentType: attachment.mimetype });
+        return { attachmentUrl: `r2:${key}`, attachmentName: attachment.originalname };
+    }
+
+    /** Resolves attachmentUrl to a fresh presigned URL for every row — the raw "r2:<key>" value must never reach a client. */
+    private async withResolvedAttachments<T extends { attachmentUrl: string | null }>(rows: T[]) {
+        return Promise.all(
+            rows.map(async (row) => ({ ...row, attachmentUrl: await schoolMediaUrl(row.attachmentUrl) }))
+        );
+    }
+
     async create(input: CreateAssignmentInput) {
-        const { staffId, schoolId, classId, subjectId, title, description, dueDate } = input;
+        const { staffId, schoolId, classId, subjectId, title, description, dueDate, attachment } = input;
 
         if (!title?.trim()) throw new AppError("Title is required", 400);
         if (!dueDate) throw new AppError("Due date is required", 400);
 
         await this.assertTeaches(staffId, classId, subjectId);
+
+        const attachmentFields = attachment ? await this.uploadAttachment(schoolId, attachment) : {};
 
         return prisma.assignment.create({
             data: {
@@ -47,12 +82,13 @@ export class AssignmentService {
                 title: title.trim(),
                 description: description?.trim() || null,
                 dueDate: new Date(`${dueDate}T00:00:00Z`),
+                ...attachmentFields,
             },
         });
     }
 
     async listForTeacher(staffId: number) {
-        return prisma.assignment.findMany({
+        const rows = await prisma.assignment.findMany({
             where: { staffId },
             include: {
                 class: { select: { id: true, name: true, customName: true } },
@@ -60,6 +96,7 @@ export class AssignmentService {
             },
             orderBy: { dueDate: "asc" },
         });
+        return this.withResolvedAttachments(rows);
     }
 
     async update(staffId: number, id: number, patch: UpdateAssignmentInput) {
@@ -74,6 +111,13 @@ export class AssignmentService {
             await this.assertTeaches(staffId, nextClassId, nextSubjectId);
         }
 
+        // A new file replaces the old one outright — the superseded R2
+        // object is simply left orphaned, same as the existing school
+        // logo/stamp update path (no cleanup job for either).
+        const attachmentFields = patch.attachment
+            ? await this.uploadAttachment(existing.schoolId, patch.attachment)
+            : {};
+
         return prisma.assignment.update({
             where: { id },
             data: {
@@ -82,6 +126,7 @@ export class AssignmentService {
                 ...(patch.dueDate !== undefined && { dueDate: new Date(`${patch.dueDate}T00:00:00Z`) }),
                 ...(patch.classId !== undefined && { classId: patch.classId }),
                 ...(patch.subjectId !== undefined && { subjectId: patch.subjectId }),
+                ...attachmentFields,
             },
         });
     }
@@ -102,7 +147,7 @@ export class AssignmentService {
         });
         if (!student) throw new AppError("Student not found", 404);
 
-        return prisma.assignment.findMany({
+        const rows = await prisma.assignment.findMany({
             where: { classId: student.classId },
             include: {
                 subject: { select: { id: true, name: true } },
@@ -110,5 +155,6 @@ export class AssignmentService {
             },
             orderBy: { dueDate: "asc" },
         });
+        return this.withResolvedAttachments(rows);
     }
 }

@@ -18,6 +18,9 @@ export class AssignmentController {
                 title,
                 description,
                 dueDate,
+                attachment: req.file
+                    ? { buffer: req.file.buffer, originalname: req.file.originalname, mimetype: req.file.mimetype }
+                    : undefined,
             });
 
             return res.status(201).json({ success: true, data });
@@ -48,6 +51,9 @@ export class AssignmentController {
                 ...(title !== undefined && { title }),
                 ...(description !== undefined && { description }),
                 ...(dueDate !== undefined && { dueDate }),
+                ...(req.file && {
+                    attachment: { buffer: req.file.buffer, originalname: req.file.originalname, mimetype: req.file.mimetype },
+                }),
             });
 
             return res.json({ success: true, data });

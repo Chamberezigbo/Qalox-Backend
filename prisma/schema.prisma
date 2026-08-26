@@ -434,6 +434,12 @@ model Assignment {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // "r2:<key>" — resolved to a fresh presigned URL on read via
+  // schoolMediaUrl(), never stored as a raw URL. attachmentName is the
+  // original filename, kept only for display.
+  attachmentUrl  String? @db.VarChar(500)
+  attachmentName String? @db.VarChar(255)
+
   school  School  @relation(fields: [schoolId], references: [id])
   class   Class   @relation(fields: [classId], references: [id])
   subject Subject @relation(fields: [subjectId], references: [id])

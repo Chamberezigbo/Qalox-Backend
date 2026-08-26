@@ -8,6 +8,7 @@ const { TeacherAnalyticsController } = require("../controller/teacher/TeacherAna
 const { AssignmentController } = require("../controller/teacher/AssignmentController");
 const { ExamTimetableController } = require("../controller/teacher/ExamTimetableController");
 const { teacherAuthMiddleware } = require("../middleware/teacherMiddleware");
+const uploadAssignment = require("../middleware/uploadAssignment");
 const notificationController = require("../controller/NotificationController");
 
 
@@ -65,9 +66,9 @@ router.get("/my-subjects", teacherAuthMiddleware, teacherController.getTeacherSu
 router.get("/profile", teacherAuthMiddleware, teacherController.getTeacherDetails);
 
 // Assignment Board
-router.post("/assignments", teacherAuthMiddleware, assignmentController.create);
+router.post("/assignments", teacherAuthMiddleware, uploadAssignment.single("attachment"), assignmentController.create);
 router.get("/assignments", teacherAuthMiddleware, assignmentController.list);
-router.patch("/assignments/:id", teacherAuthMiddleware, assignmentController.update);
+router.patch("/assignments/:id", teacherAuthMiddleware, uploadAssignment.single("attachment"), assignmentController.update);
 router.delete("/assignments/:id", teacherAuthMiddleware, assignmentController.remove);
 
 router.get("/ca", teacherAuthMiddleware, teacherController.getCAs);
