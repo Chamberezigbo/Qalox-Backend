@@ -21,24 +21,31 @@ export class StudentFeeService {
             orderBy: { createdAt: "desc" },
         });
 
-        return fees.map((f) => ({
-            id: f.id,
-            term: f.feeStructure.term,
-            session: f.feeStructure.session,
-            items: f.feeStructure.items,
-            totalFee: f.totalFee,
-            amountPaid: f.amountPaid,
-            outstanding: f.totalFee - f.amountPaid,
-            status: f.status,
-            lastPaymentDate: f.payments[0]?.paymentDate ?? null,
-            payments: f.payments.map((p) => ({
-                id: p.id,
-                amount: p.amount,
-                paymentMethod: p.paymentMethod,
-                paymentDate: p.paymentDate,
-                receiptNo: p.receiptNo,
-            })),
-        }));
+        return fees.map((f) => {
+            // A pending or rejected declaration must never be reported as the
+            // "last payment" — only a school-confirmed one actually happened.
+            const latestConfirmed = f.payments.find((p) => p.status === "success");
+
+            return {
+                id: f.id,
+                term: f.feeStructure.term,
+                session: f.feeStructure.session,
+                items: f.feeStructure.items,
+                totalFee: f.totalFee,
+                amountPaid: f.amountPaid,
+                outstanding: f.totalFee - f.amountPaid,
+                status: f.status,
+                lastPaymentDate: latestConfirmed?.paymentDate ?? null,
+                payments: f.payments.map((p) => ({
+                    id: p.id,
+                    amount: p.amount,
+                    paymentMethod: p.paymentMethod,
+                    paymentDate: p.paymentDate,
+                    receiptNo: p.receiptNo,
+                    status: p.status as "pending" | "success" | "failed",
+                })),
+            };
+        });
     }
 
     /** Active bank accounts the student's school accepts fee payments into. */
