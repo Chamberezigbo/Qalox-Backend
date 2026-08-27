@@ -22,6 +22,12 @@ const studentDash = require("./res/routes/studentDashboard");
 const requestLogger = require("./res/middleware/requestLogger");
 const logger = require("./res/config/logger");
 const documentationMiddleware = require("./res/middleware/documentation");
+const cron = require("node-cron");
+const { cleanupExpiredAssignments } = require("./res/jobs/assignmentCleanup");
+const { cleanupStaleBulkImports } = require("./res/jobs/bulkImportCleanup");
+const { cleanupOldLoginEvents } = require("./res/jobs/auditLogCleanup");
+const { cleanupOldNotifications } = require("./res/jobs/notificationCleanup");
+const { cleanupDeadAuthArtifacts } = require("./res/jobs/tokenCleanup");
 
 const app = express();
 
@@ -130,6 +136,28 @@ async function startServer() {
 
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
+
+    // Daily at 2am server time — purges stale data past each model's
+    // retention window (assignments + R2 attachments, finished bulk-import
+    // staging data, old login events, read/stale notifications, dead auth
+    // artifacts). Deliberately not run on boot: a bad deploy that restarts
+    // repeatedly should not repeatedly re-scan every table. Each job is
+    // independent — one failing logs and moves on rather than blocking the
+    // rest.
+    cron.schedule("0 2 * * *", () => {
+      const jobs = [
+        ["ASSIGNMENT_CLEANUP", cleanupExpiredAssignments],
+        ["BULK_IMPORT_CLEANUP", cleanupStaleBulkImports],
+        ["AUDIT_LOG_CLEANUP", cleanupOldLoginEvents],
+        ["NOTIFICATION_CLEANUP", cleanupOldNotifications],
+        ["TOKEN_CLEANUP", cleanupDeadAuthArtifacts],
+      ];
+      for (const [label, run] of jobs) {
+        run().catch((err) => {
+          logger.error(`[${label}] Run failed`, { error: err.message });
+        });
+      }
+    });
   } catch (error) {
     console.error("Failed to connect to database:", error);
     process.exit(1); // Stop the server if DB connection fails

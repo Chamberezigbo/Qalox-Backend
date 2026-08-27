@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const logger = require("../config/logger");
 
@@ -65,4 +65,15 @@ const getPresignedUrl = async (key) => {
   return getSignedUrl(s3, command, { expiresIn });
 };
 
-module.exports = { uploadObject, getPresignedUrl };
+/**
+ * Permanently delete a stored object. Used by retention cleanup — never
+ * called on a hot read/write path.
+ * @param {string} key
+ */
+const deleteObject = async (key) => {
+  const s3 = getClient();
+  await s3.send(new DeleteObjectCommand({ Bucket: getBucket(), Key: key }));
+  logger.info("[R2] Object deleted", { key });
+};
+
+module.exports = { uploadObject, getPresignedUrl, deleteObject };
