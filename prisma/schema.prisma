@@ -1077,6 +1077,7 @@ model SchoolBankAccount {
   id            Int      @id @default(autoincrement())
   schoolId      Int
   bankName      String   @db.VarChar(100)
+  bankCode      String?  @db.VarChar(10) // NIP code, from Flutterwave's bank list — needed to re-resolve the account name
   accountName   String   @db.VarChar(255)
   accountNumber String   @db.VarChar(20)
   label         String?  @db.VarChar(100) // e.g. "Main Account", "Tuition Only"

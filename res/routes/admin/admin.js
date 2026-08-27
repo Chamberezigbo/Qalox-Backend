@@ -40,6 +40,8 @@ const {
   recordPayment,
   getReceipt,
   sendFeeReminders,
+  getBanks,
+  resolveBankAccount,
   createBankAccount,
   getBankAccounts,
   updateBankAccount,
@@ -222,6 +224,8 @@ router.get("/fees/debt-summary", auth.authenticateSchoolLevelAdmin, auth.require
 router.post("/fees/payments", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, recordPayment);
 router.get("/fees/receipts/:studentFeeId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getReceipt);
 router.post("/fees/reminders/send-email", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, sendFeeReminders);
+router.get("/fees/banks", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getBanks);
+router.get("/fees/resolve-account", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, resolveBankAccount);
 router.post("/fees/bank-accounts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, createBankAccount);
 router.get("/fees/bank-accounts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getBankAccounts);
 router.patch("/fees/bank-accounts/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, updateBankAccount);

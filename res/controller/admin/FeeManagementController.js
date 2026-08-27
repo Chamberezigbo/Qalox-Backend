@@ -5,8 +5,37 @@ const { schoolMediaUrl } = require("../public/publicController");
 const { generateReceiptNo } = require("../../util/receiptNo");
 const { sendEmail } = require("../../Services/EmailService");
 const { loadStudentFeeForReceipt, buildReceiptData } = require("../../util/receiptData");
+const flutterwave = require("../../Services/FlutterwaveService");
 
 const PAYMENT_METHODS = ["Bank Transfer", "Cash", "Card"];
+
+/**
+ * Nigerian banks whose NIP codes are stable and long-established — used only
+ * when Flutterwave's live bank list is unreachable, so the school's own
+ * bank-account form isn't blocked by a provider outage. Same list used for
+ * the marketer withdrawal-account setup (publicController.js).
+ */
+const FALLBACK_NG_BANKS = [
+  { code: "044", name: "Access Bank" },
+  { code: "063", name: "Access Bank (Diamond)" },
+  { code: "023", name: "Citibank Nigeria" },
+  { code: "050", name: "Ecobank Nigeria" },
+  { code: "070", name: "Fidelity Bank" },
+  { code: "011", name: "First Bank of Nigeria" },
+  { code: "214", name: "First City Monument Bank" },
+  { code: "058", name: "Guaranty Trust Bank" },
+  { code: "082", name: "Keystone Bank" },
+  { code: "076", name: "Polaris Bank" },
+  { code: "101", name: "Providus Bank" },
+  { code: "221", name: "Stanbic IBTC Bank" },
+  { code: "068", name: "Standard Chartered Bank" },
+  { code: "232", name: "Sterling Bank" },
+  { code: "032", name: "Union Bank of Nigeria" },
+  { code: "033", name: "United Bank for Africa" },
+  { code: "215", name: "Unity Bank" },
+  { code: "035", name: "Wema Bank" },
+  { code: "057", name: "Zenith Bank" },
+];
 
 const computeStatus = (totalFee, amountPaid) => {
   if (amountPaid <= 0) return "unpaid";
@@ -416,12 +445,96 @@ exports.getReceipt = async (req, res, next) => {
 };
 
 /**
+ * GET /api/admin/fees/banks
+ * Live list of Nigerian banks (name + NIP code), for the bank-account form's
+ * dropdown — degrades to a fixed fallback list on a Flutterwave outage.
+ */
+exports.getBanks = async (req, res, next) => {
+  try {
+    let banks;
+    try {
+      banks = await flutterwave.listBanks();
+    } catch (flwErr) {
+      logger.warn("[GET_BANKS] Flutterwave unavailable, serving fallback list", { error: flwErr.message });
+      banks = FALLBACK_NG_BANKS;
+    }
+    res.status(200).json({ success: true, data: banks });
+  } catch (err) {
+    logger.error("[GET_BANKS] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/admin/fees/resolve-account?accountNumber=&bankCode=
+ * Resolves an account number to its registered name via Flutterwave, so an
+ * admin never has to type the account name by hand (and can't accidentally
+ * enter a name that doesn't match the actual account). Fails CLOSED: any
+ * resolution error is reported as unverified, never silently ignored.
+ */
+exports.resolveBankAccount = async (req, res, next) => {
+  try {
+    const { accountNumber, bankCode } = req.query;
+    if (!accountNumber || !bankCode) {
+      return res.status(400).json({
+        success: false,
+        message: "accountNumber and bankCode are required",
+        code: "MISSING_FIELDS",
+      });
+    }
+
+    let resolved;
+    try {
+      resolved = await flutterwave.resolveAccount({ accountNumber, bankCode });
+    } catch (flwErr) {
+      logger.warn("[RESOLVE_BANK_ACCOUNT] Could not resolve account", { bankCode, error: flwErr.message });
+
+      if (String(process.env.FLW_SECRET_KEY || "").includes("TEST")) {
+        return res.status(503).json({
+          success: false,
+          message:
+            "Bank verification is unavailable while Flutterwave is in test mode. " +
+            "The sandbox only resolves its own test accounts (0690000031 or 0690000032 at bank 044). " +
+            "A live FLW_SECRET_KEY is required to verify real accounts.",
+          code: "PROVIDER_TEST_MODE",
+          data: { accountNumber, bankCode, verified: false },
+        });
+      }
+
+      return res.status(422).json({
+        success: false,
+        message: "Could not verify this account. Check the account number and bank, then try again.",
+        code: "ACCOUNT_VERIFICATION_FAILED",
+        data: { accountNumber, bankCode, verified: false },
+      });
+    }
+
+    if (!resolved.accountName) {
+      return res.status(422).json({
+        success: false,
+        message: "Could not verify this account. Check the account number and bank, then try again.",
+        code: "ACCOUNT_VERIFICATION_FAILED",
+        data: { accountNumber, bankCode, verified: false },
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: { accountNumber: resolved.accountNumber, accountName: resolved.accountName, bankCode, verified: true },
+    });
+  } catch (err) {
+    logger.error("[RESOLVE_BANK_ACCOUNT] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
  * POST /api/admin/fees/bank-accounts
  * Adds a school bank account parents/students can pay fees into directly.
  */
 exports.createBankAccount = async (req, res, next) => {
   try {
-    const { bankName, accountName, accountNumber, label } = req.body;
+    const { bankName, bankCode, accountName, accountNumber, label } = req.body;
     if (!bankName || !accountName || !accountNumber) {
       return res.status(400).json({
         success: false,
@@ -431,7 +544,7 @@ exports.createBankAccount = async (req, res, next) => {
     }
 
     const account = await prisma.schoolBankAccount.create({
-      data: { schoolId: req.schoolId, bankName, accountName, accountNumber, label: label || null },
+      data: { schoolId: req.schoolId, bankName, bankCode: bankCode || null, accountName, accountNumber, label: label || null },
     });
 
     res.status(201).json({ success: true, message: "Bank account added", data: account });
@@ -459,7 +572,7 @@ exports.getBankAccounts = async (req, res, next) => {
 exports.updateBankAccount = async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { bankName, accountName, accountNumber, label, isActive } = req.body;
+    const { bankName, bankCode, accountName, accountNumber, label, isActive } = req.body;
 
     const existing = await prisma.schoolBankAccount.findFirst({ where: { id, schoolId: req.schoolId } });
     if (!existing) {
@@ -470,6 +583,7 @@ exports.updateBankAccount = async (req, res, next) => {
       where: { id },
       data: {
         ...(bankName !== undefined && { bankName }),
+        ...(bankCode !== undefined && { bankCode: bankCode || null }),
         ...(accountName !== undefined && { accountName }),
         ...(accountNumber !== undefined && { accountNumber }),
         ...(label !== undefined && { label: label || null }),
