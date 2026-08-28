@@ -12,6 +12,25 @@ export class ParentService {
         return student;
     }
 
+    /**
+     * The school's actual active term for this child — NOT derived from
+     * whether any result has been published yet. A term with no published
+     * results is still the current term.
+     */
+    private async getActiveTermName(schoolId: number): Promise<string | null> {
+        const activeSession = await prisma.academicSession.findFirst({
+            where: { schoolId, isActive: true },
+            select: { id: true },
+        });
+        if (!activeSession) return null;
+
+        const activeTerm = await prisma.academicTerm.findFirst({
+            where: { sessionId: activeSession.id, isActive: true },
+            select: { name: true },
+        });
+        return activeTerm?.name ?? null;
+    }
+
     async getChildren(parentId: number) {
         const children = await prisma.student.findMany({
             where: { parentId },
@@ -23,21 +42,36 @@ export class ParentService {
                 registrationNumber: true,
                 gender: true,
                 passportUrl: true,
+                schoolId: true,
+                classId: true,
                 class: { select: { id: true, name: true, customName: true } },
             },
             orderBy: { surname: "asc" },
         });
 
-        return children.map((c) => ({
-            id: c.id,
-            name: c.name,
-            surname: c.surname,
-            otherNames: c.otherNames,
-            registrationNumber: c.registrationNumber,
-            gender: c.gender,
-            passportUrl: c.passportUrl,
-            className: c.class.customName ?? c.class.name,
-        }));
+        return Promise.all(
+            children.map(async (c) => {
+                // Subjects the class actually takes — independent of whether a
+                // result has been published for any of them yet.
+                const [subjectCount, currentTerm] = await Promise.all([
+                    prisma.classSubject.count({ where: { classId: c.classId } }),
+                    this.getActiveTermName(c.schoolId),
+                ]);
+
+                return {
+                    id: c.id,
+                    name: c.name,
+                    surname: c.surname,
+                    otherNames: c.otherNames,
+                    registrationNumber: c.registrationNumber,
+                    gender: c.gender,
+                    passportUrl: c.passportUrl,
+                    className: c.class.customName ?? c.class.name,
+                    subjectCount,
+                    currentTerm,
+                };
+            })
+        );
     }
 
     async getChildResults(parentId: number, studentId: number) {
