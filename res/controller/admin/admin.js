@@ -386,7 +386,7 @@ exports.getMySchool = async (req, res, next) => {
     const admin = await prisma.admin.findUnique({
       where: { id: adminId },
       include: {
-        school: { select: { id: true, name: true, email: true, prefix: true, logoUrl: true, brandColor: true } }
+        school: { select: { id: true, name: true, email: true, prefix: true, logoUrl: true, stampUrl: true, brandColor: true } }
       }
     });
     if (!admin) {
@@ -398,10 +398,13 @@ exports.getMySchool = async (req, res, next) => {
         data: { schoolId: null, school: null }
       });
     }
-    const logoUrl = await schoolMediaUrl(admin.school.logoUrl);
+    const [logoUrl, stampUrl] = await Promise.all([
+      schoolMediaUrl(admin.school.logoUrl),
+      schoolMediaUrl(admin.school.stampUrl),
+    ]);
     return res.status(200).json({
       message: "School fetched successfully",
-      data: { schoolId: admin.schoolId, school: { ...admin.school, logoUrl } }
+      data: { schoolId: admin.schoolId, school: { ...admin.school, logoUrl, stampUrl } }
     });
   } catch (error) {
     next(error);

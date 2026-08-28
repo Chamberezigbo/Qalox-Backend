@@ -16,6 +16,8 @@ const {
   getOverview,
 } = require("../../controller/admin/admin");
 
+const { updateSchoolBranding } = require("../../controller/school/schoolController");
+
 const {
   getStudentDetails, createStudent,
   updateStudent, changeStudentClass,
@@ -158,6 +160,13 @@ router.get("/", checkHealth);
 
 // My school info for any authenticated admin
 router.get("/my-school", auth.authenticateAdmin, getMySchool);
+router.patch(
+  "/school/branding",
+  auth.authenticateSchoolLevelAdmin,
+  auth.attachSchoolId,
+  upload.fields([{ name: "logoUrl", maxCount: 1 }, { name: "stampUrl", maxCount: 1 }]),
+  updateSchoolBranding
+);
 
 // Notification bell — admin/sub-admin
 router.get("/notifications", auth.authenticateSchoolLevelAdmin, notificationController.admin.list);

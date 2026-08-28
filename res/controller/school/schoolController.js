@@ -234,6 +234,86 @@ exports.setupSchool = async (req, res, next) => {
 };
 
 /**
+ * PATCH /api/admin/school/branding
+ * Lets a school's own admin re-upload their logo and/or stamp after
+ * onboarding — until now these were set once at signup with no way to fix
+ * a mistake or rebrand later. Logo and stamp are independently optional;
+ * an admin can update just one without touching the other.
+ *
+ * Re-uploading the logo re-runs color extraction and overwrites
+ * School.brandColor (including clearing it to null if the new logo yields
+ * no usable color) so the dashboard theme actually follows the new logo
+ * rather than staying stuck on whatever was extracted the first time.
+ */
+exports.updateSchoolBranding = async (req, res, next) => {
+  try {
+    const schoolId = req.schoolId;
+    if (!schoolId) {
+      return res.status(400).json({ success: false, message: "School not resolved from token" });
+    }
+
+    const files = req.files || {};
+    const logoFile = files.logoUrl?.[0];
+    const stampFile = files.stampUrl?.[0];
+
+    if (!logoFile && !stampFile) {
+      return res.status(400).json({ success: false, message: "Provide a new logo and/or stamp to upload" });
+    }
+
+    const school = await prisma.school.findUnique({
+      where: { id: schoolId },
+      select: { prefix: true, logoUrl: true, stampUrl: true },
+    });
+    if (!school) {
+      return res.status(404).json({ success: false, message: "School not found" });
+    }
+
+    const updateData = {};
+
+    if (logoFile) {
+      const [processedLogo, brandColor] = await Promise.all([
+        processImageToBuffer(logoFile.buffer),
+        // Original (pre-JPEG-conversion) buffer — same reasoning as setupSchool.
+        extractDominantColor(logoFile.buffer),
+      ]);
+      // Overwrite the existing R2 object in place rather than minting a new
+      // key — keeps the stored logoUrl stable and avoids orphaning the old
+      // file. Falls back to the standard onboarding key shape on the
+      // (should-never-happen) chance a school has no logo key yet.
+      const logoKey = school.logoUrl?.startsWith("r2:") ? school.logoUrl.slice(3) : `logos/${school.prefix}-logo.jpeg`;
+      await r2Service.uploadObject({ buffer: processedLogo.buffer, key: logoKey, contentType: processedLogo.contentType });
+      updateData.logoUrl = `r2:${logoKey}`;
+      updateData.brandColor = brandColor;
+    }
+
+    if (stampFile) {
+      const processedStamp = await processImageToBuffer(stampFile.buffer);
+      const stampKey = school.stampUrl?.startsWith("r2:") ? school.stampUrl.slice(3) : `stamps/${school.prefix}-stamp.jpeg`;
+      await r2Service.uploadObject({ buffer: processedStamp.buffer, key: stampKey, contentType: processedStamp.contentType });
+      updateData.stampUrl = `r2:${stampKey}`;
+    }
+
+    const updated = await prisma.school.update({ where: { id: schoolId }, data: updateData });
+
+    const [logoUrl, stampUrl] = await Promise.all([
+      schoolMediaUrl(updated.logoUrl),
+      schoolMediaUrl(updated.stampUrl),
+    ]);
+
+    logger.info("[UPDATE_SCHOOL_BRANDING] Updated", { schoolId, logoChanged: !!logoFile, stampChanged: !!stampFile });
+
+    res.status(200).json({
+      success: true,
+      message: "Branding updated successfully",
+      data: { logoUrl, stampUrl, brandColor: updated.brandColor },
+    });
+  } catch (err) {
+    logger.error("[UPDATE_SCHOOL_BRANDING] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
  * List all schools (for Super Admin & Marketer Portal)
  * GET /api/schools?page=1&limit=20&search=school_name
  */
