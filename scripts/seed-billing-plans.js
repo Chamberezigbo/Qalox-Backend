@@ -35,6 +35,7 @@ const PLANS = [
     annualPrice: 110000,
     minStudents: 0,
     maxStudents: 300,
+    smsQuotaPerTerm: null, // mirrors maxStudents (300)
     maxSubAdmins: 1,
     isActive: true,
     highlighted: false,
@@ -47,6 +48,7 @@ const PLANS = [
     annualPrice: 200000,
     minStudents: 301,
     maxStudents: 700,
+    smsQuotaPerTerm: null, // mirrors maxStudents (700)
     maxSubAdmins: 5,
     isActive: true,
     highlighted: true,
@@ -59,6 +61,7 @@ const PLANS = [
     annualPrice: 800000,
     minStudents: 701,
     maxStudents: null,
+    smsQuotaPerTerm: 2500, // maxStudents is unlimited, so this needs an explicit cap
     maxSubAdmins: null,
     isActive: true,
     highlighted: false,

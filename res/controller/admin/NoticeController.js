@@ -1,11 +1,12 @@
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
-const smartSms = require("../../Services/SmartSmsService");
+const bulkSms = require("../../Services/BulkSmsService");
+const { getSmsQuotaForSchool } = require("../../util/getSmsQuotaForSchool");
 
 const CATEGORIES = ["fee", "pta", "event", "general"];
 const RECIPIENT_TYPES = ["all", "parents", "teachers", "students"];
 
-// Normalize a Nigerian phone number to the international format SmartSMS expects (234XXXXXXXXXX)
+// Normalize a Nigerian phone number to the international format BulkSMSNigeria expects (234XXXXXXXXXX)
 const toInternationalFormat = (phone) => {
   if (!phone) return null;
   const digits = phone.replace(/[^0-9]/g, "");
@@ -78,19 +79,21 @@ exports.getSmsQuota = async (req, res, next) => {
     const schoolId = req.schoolId;
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
-      select: { smsQuotaPerTerm: true, smsUsedThisTerm: true },
+      select: { smsUsedThisTerm: true },
     });
 
     if (!school) {
       return res.status(404).json({ success: false, message: "School not found" });
     }
 
+    const quotaPerTerm = await getSmsQuotaForSchool(schoolId);
+
     res.status(200).json({
       success: true,
       data: {
-        quotaPerTerm: school.smsQuotaPerTerm,
+        quotaPerTerm,
         used: school.smsUsedThisTerm,
-        remaining: Math.max(school.smsQuotaPerTerm - school.smsUsedThisTerm, 0),
+        remaining: Math.max(quotaPerTerm - school.smsUsedThisTerm, 0),
       },
     });
   } catch (err) {
@@ -147,16 +150,17 @@ exports.createBroadcast = async (req, res, next) => {
 
       const school = await prisma.school.findUnique({
         where: { id: schoolId },
-        select: { smsQuotaPerTerm: true, smsUsedThisTerm: true, prefix: true },
+        select: { smsUsedThisTerm: true, prefix: true },
       });
 
+      const quotaPerTerm = await getSmsQuotaForSchool(schoolId);
       const phones = await resolveRecipientPhones(schoolId, recipientType);
-      const remaining = school.smsQuotaPerTerm - school.smsUsedThisTerm;
+      const remaining = quotaPerTerm - school.smsUsedThisTerm;
 
       if (phones.length > remaining) {
         return res.status(400).json({
           success: false,
-          message: `This broadcast would send ${phones.length} SMS but only ${remaining} remain in this term's quota (${school.smsUsedThisTerm}/${school.smsQuotaPerTerm} used). Reduce the audience or ask Super Admin to raise the quota.`,
+          message: `This broadcast would send ${phones.length} SMS but only ${remaining} remain in this term's quota (${school.smsUsedThisTerm}/${quotaPerTerm} used). Reduce the audience, select a plan, or ask Super Admin to raise the quota.`,
           code: "SMS_QUOTA_EXCEEDED",
         });
       }
@@ -164,8 +168,8 @@ exports.createBroadcast = async (req, res, next) => {
       if (phones.length === 0) {
         logger.warn("[CREATE_BROADCAST] No phone numbers found for SMS send", { schoolId, recipientType });
       } else {
-        const result = await smartSms.sendSms({
-          recipients: phones.map((msidn, i) => ({ msidn, msgid: `bcast-${Date.now()}-${i}` })),
+        const result = await bulkSms.sendSms({
+          recipients: phones,
           message: `${title}: ${message}`,
           sender: school.prefix || "SCHOOL",
         });
@@ -173,7 +177,7 @@ exports.createBroadcast = async (req, res, next) => {
         if (!result.success) {
           return res.status(502).json({
             success: false,
-            message: `SmartSMS send failed: ${result.status}`,
+            message: `BulkSMSNigeria send failed: ${result.message || result.status}`,
             code: "SMS_PROVIDER_ERROR",
           });
         }

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+const { getSchoolLockStatus } = require("../util/getSchoolLockStatus");
 
 export interface TeacherRequest extends Request {
     staffId?: number;
@@ -7,9 +8,9 @@ export interface TeacherRequest extends Request {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
+const SAFE_METHODS = ["GET", "HEAD", "OPTIONS"];
 
-
-export const teacherAuthMiddleware = (
+export const teacherAuthMiddleware = async (
     req: TeacherRequest,
     res: Response,
     next: NextFunction
@@ -41,6 +42,21 @@ export const teacherAuthMiddleware = (
 
         req.staffId = Number(decoded.staffId);
         req.schoolId = Number(decoded.schoolId);
+
+        // Only the school admin can pay/redeem a coupon to unlock the school,
+        // so unlike the admin auth middleware, teachers have no allowlisted
+        // routes here — every mutation is blocked while locked, GETs pass.
+        if (!SAFE_METHODS.includes(req.method)) {
+            const { locked, graceEndsAt } = await getSchoolLockStatus(req.schoolId);
+            if (locked) {
+                return res.status(402).json({
+                    success: false,
+                    message: "This school's free period has ended. Ask your school admin to select a plan or redeem a coupon.",
+                    code: "PAYMENT_REQUIRED",
+                    lockedSince: graceEndsAt,
+                });
+            }
+        }
 
         next();
     } catch (err) {

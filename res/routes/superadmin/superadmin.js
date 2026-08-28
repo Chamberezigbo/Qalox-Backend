@@ -28,6 +28,11 @@ const {
   startTrial,
 } = require("../../controller/superadmin/BillingController");
 const {
+  createCoupon,
+  getCoupons,
+  deactivateCoupon,
+} = require("../../controller/superadmin/CouponController");
+const {
   getCommunications,
   sendCommunication,
   getCommunicationRecipients,
@@ -168,6 +173,9 @@ router.patch("/billing/subscriptions/:id", authenticateSuperAdminJWT, updateSubs
 router.post("/billing/plans", authenticateSuperAdminJWT, createBillingPlan);
 router.patch("/billing/plans/:id", authenticateSuperAdminJWT, updateBillingPlan);
 router.post("/billing/schools/:schoolId/start-trial", authenticateSuperAdminJWT, startTrial);
+router.post("/billing/coupons", authenticateSuperAdminJWT, createCoupon);
+router.get("/billing/coupons", authenticateSuperAdminJWT, getCoupons);
+router.patch("/billing/coupons/:id/deactivate", authenticateSuperAdminJWT, deactivateCoupon);
 
 // ============================================
 // COMMUNICATIONS

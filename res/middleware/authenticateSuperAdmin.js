@@ -1,9 +1,37 @@
 const jwt = require("jsonwebtoken");
 const prisma = require("../util/prisma");
 const { AppError } = require("../util/AppError");
+const { getSchoolLockStatus } = require("../util/getSchoolLockStatus");
 
 // Environment variables for JWT
 const JWT_SECRET = process.env.JWT_SECRET;
+
+const SAFE_METHODS = ["GET", "HEAD", "OPTIONS"];
+
+// The /billing/* routes are how a locked school pays or redeems a coupon to
+// unlock itself, so they must stay reachable even while locked.
+const isLockAllowlisted = (req) => req.path.startsWith("/billing");
+
+// Shared by every school-tenant admin auth path below: once the 48h grace
+// period has passed with no active/trial plan, every mutating request except
+// the billing self-service routes gets rejected — the dashboard stays
+// visible (GETs pass) but nothing can be changed until the school pays or
+// redeems a coupon.
+const enforcePaymentLock = async (req, res, next, schoolId) => {
+  if (SAFE_METHODS.includes(req.method) || isLockAllowlisted(req)) {
+    return next();
+  }
+  const { locked, graceEndsAt } = await getSchoolLockStatus(schoolId);
+  if (locked) {
+    return res.status(402).json({
+      success: false,
+      message: "Your school's free period has ended. Select a plan or redeem a coupon to continue.",
+      code: "PAYMENT_REQUIRED",
+      lockedSince: graceEndsAt,
+    });
+  }
+  next();
+};
 
 // Generic authentication for any admin (super_admin or school_admin)
 const authenticateAdmin = async (req, res, next) => {
@@ -22,7 +50,8 @@ const authenticateAdmin = async (req, res, next) => {
       return next(new AppError("Unauthorized: Admin not found", 401));
     }
     req.user = admin; // Attach full admin basics
-    next();
+    if (!admin.schoolId) return next();
+    return enforcePaymentLock(req, res, next, admin.schoolId);
   } catch (err) {
     return next(new AppError("Unauthorized: Invalid token", 401));
   }
@@ -83,7 +112,8 @@ const authenticateSchoolLevelAdmin = async (req, res, next) => {
     }
 
     req.user = admin;
-    next();
+    if (!admin.schoolId) return next();
+    return enforcePaymentLock(req, res, next, admin.schoolId);
   } catch (error) {
     return next(new AppError("Unauthorized: Invalid token", 401));
   }

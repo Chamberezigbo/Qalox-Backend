@@ -205,6 +205,7 @@ exports.setupSchool = async (req, res, next) => {
         email,
         phoneNumber,
         address,
+        setupCompletedAt: new Date(), // precise timestamp for the 48h payment-lock grace period
       },
     });
 

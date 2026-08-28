@@ -1,8 +1,7 @@
-const crypto = require("crypto");
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
-const flutterwave = require("../../Services/FlutterwaveService");
 const { parsePlanFeatures } = require("../../util/planFeatures");
+const billingService = require("../../Services/BillingService");
 
 /**
  * POST /api/billing/initialize-payment
@@ -15,101 +14,14 @@ const { parsePlanFeatures } = require("../../util/planFeatures");
 exports.initializePayment = async (req, res, next) => {
   try {
     const { schoolId, billingPlanId, billingCycle } = req.body;
+    const result = await billingService.initializePaymentForSchool({ schoolId, billingPlanId, billingCycle });
 
-    if (!schoolId || !billingPlanId || !["monthly", "annual"].includes(billingCycle)) {
-      logger.warn("[BILLING] Invalid initialize-payment request", { schoolId, billingPlanId, billingCycle });
-      return res.status(400).json({
-        success: false,
-        message: "schoolId, billingPlanId and billingCycle ('monthly'|'annual') are required",
-        code: "INVALID_REQUEST",
-      });
+    if (!result.success) {
+      const statusByCode = { INVALID_REQUEST: 400, SCHOOL_NOT_FOUND: 404, PLAN_NOT_FOUND: 404, INVALID_PLAN_PRICE: 400, MISSING_SCHOOL_EMAIL: 400 };
+      return res.status(statusByCode[result.code] || 400).json(result);
     }
 
-    const school = await prisma.school.findUnique({
-      where: { id: schoolId },
-      include: { admins: { take: 1, select: { name: true, email: true, phone: true } } },
-    });
-    if (!school) {
-      return res.status(404).json({ success: false, message: "School not found", code: "SCHOOL_NOT_FOUND" });
-    }
-
-    const plan = await prisma.billingPlan.findUnique({ where: { id: billingPlanId } });
-    if (!plan || !plan.isActive) {
-      return res.status(404).json({ success: false, message: "Billing plan not found", code: "PLAN_NOT_FOUND" });
-    }
-
-    const amount = billingCycle === "annual" ? plan.annualPrice : plan.monthlyPrice;
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Plan has no price configured for the '${billingCycle}' cycle`,
-        code: "INVALID_PLAN_PRICE",
-      });
-    }
-
-    const email = school.email || school.admins[0]?.email;
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: "School has no email on file — required to initiate a Flutterwave charge",
-        code: "MISSING_SCHOOL_EMAIL",
-      });
-    }
-
-    // Flutterwave's v3 API throws a misleading "decrypt" error on non-ASCII
-    // characters (confirmed live — an em-dash alone was enough to trigger it).
-    // Strip anything outside printable ASCII from fields we send them.
-    const toAscii = (str) => String(str).replace(/[^\x20-\x7E]/g, "").trim();
-
-    const reference = `qalox-${schoolId}-${crypto.randomUUID().slice(0, 8)}`;
-    const charge = await flutterwave.createBankTransferCharge({
-      amount,
-      email,
-      fullname: toAscii(school.admins[0]?.name || school.name),
-      phoneNumber: school.phoneNumber || school.admins[0]?.phone || undefined,
-      reference,
-      narration: toAscii(`Qalox ${plan.name} (${billingCycle}) - ${school.name}`),
-    });
-
-    let subscription = await prisma.schoolSubscription.findFirst({
-      where: { schoolId },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (subscription) {
-      subscription = await prisma.schoolSubscription.update({
-        where: { id: subscription.id },
-        data: { billingPlanId, billingCycle, status: "past_due" },
-      });
-    } else {
-      subscription = await prisma.schoolSubscription.create({
-        data: { schoolId, billingPlanId, billingCycle, status: "past_due" },
-      });
-    }
-
-    await prisma.schoolPayment.create({
-      data: {
-        schoolId,
-        subscriptionId: subscription.id,
-        amount,
-        flwReference: reference,
-        flwChargeId: charge.transferReference,
-        status: "pending",
-      },
-    });
-
-    logger.info("[BILLING] Payment initialized", { schoolId, billingPlanId, billingCycle, reference });
-
-    res.status(201).json({
-      success: true,
-      message: "Payment initialized",
-      data: {
-        reference,
-        amount,
-        currency: "NGN",
-        bankTransfer: charge.bankTransfer,
-      },
-    });
+    res.status(201).json({ success: true, message: "Payment initialized", data: result.data });
   } catch (err) {
     logger.error("[BILLING] Failed to initialize payment", { error: err.message });
     next(err);
@@ -274,7 +186,7 @@ exports.updateSubscription = async (req, res, next) => {
  */
 exports.createBillingPlan = async (req, res, next) => {
   try {
-    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins } = req.body;
+    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins, smsQuotaPerTerm } = req.body;
     if (!name) {
       return res.status(400).json({ success: false, message: "name is required" });
     }
@@ -291,6 +203,7 @@ exports.createBillingPlan = async (req, res, next) => {
         minStudents: minStudents || 0,
         maxStudents: maxStudents === "" || maxStudents == null ? null : maxStudents,
         maxSubAdmins: maxSubAdmins === "" || maxSubAdmins == null ? null : maxSubAdmins,
+        smsQuotaPerTerm: smsQuotaPerTerm === "" || smsQuotaPerTerm == null ? null : smsQuotaPerTerm,
       },
     });
 
@@ -308,7 +221,7 @@ exports.createBillingPlan = async (req, res, next) => {
 exports.updateBillingPlan = async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins } = req.body;
+    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins, smsQuotaPerTerm } = req.body;
 
     const updateData = {};
     if (name !== undefined) updateData.name = name;
@@ -321,6 +234,7 @@ exports.updateBillingPlan = async (req, res, next) => {
     if (minStudents !== undefined) updateData.minStudents = minStudents || 0;
     if (maxStudents !== undefined) updateData.maxStudents = maxStudents === "" || maxStudents == null ? null : maxStudents;
     if (maxSubAdmins !== undefined) updateData.maxSubAdmins = maxSubAdmins === "" || maxSubAdmins == null ? null : maxSubAdmins;
+    if (smsQuotaPerTerm !== undefined) updateData.smsQuotaPerTerm = smsQuotaPerTerm === "" || smsQuotaPerTerm == null ? null : smsQuotaPerTerm;
 
     const plan = await prisma.billingPlan.update({ where: { id }, data: updateData });
 
@@ -359,42 +273,19 @@ exports.startTrial = async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Billing plan not found", code: "PLAN_NOT_FOUND" });
     }
 
-    const trialEndsAt = new Date(Date.now() + (durationDays || 90) * 24 * 60 * 60 * 1000);
-
-    let subscription = await prisma.schoolSubscription.findFirst({
-      where: { schoolId },
-      orderBy: { createdAt: "desc" },
+    const subscription = await billingService.grantTrial({
+      schoolId,
+      billingPlanId,
+      durationDays,
+      trialGrantedByAdminId: adminId,
     });
 
-    if (subscription) {
-      subscription = await prisma.schoolSubscription.update({
-        where: { id: subscription.id },
-        data: {
-          billingPlanId,
-          status: "trial",
-          trialEndsAt,
-          trialGrantedByAdminId: adminId,
-        },
-      });
-    } else {
-      subscription = await prisma.schoolSubscription.create({
-        data: {
-          schoolId,
-          billingPlanId,
-          billingCycle: "monthly",
-          status: "trial",
-          trialEndsAt,
-          trialGrantedByAdminId: adminId,
-        },
-      });
-    }
-
-    logger.info("[BILLING] Trial started", { schoolId, billingPlanId, trialEndsAt, adminId });
+    logger.info("[BILLING] Trial started", { schoolId, billingPlanId, trialEndsAt: subscription.trialEndsAt, adminId });
 
     res.json({
       success: true,
-      message: `Trial started for ${school.name}, ends ${trialEndsAt.toISOString().slice(0, 10)}`,
-      data: { id: subscription.id, schoolId, billingPlanId, status: "trial", trialEndsAt },
+      message: `Trial started for ${school.name}, ends ${subscription.trialEndsAt.toISOString().slice(0, 10)}`,
+      data: { id: subscription.id, schoolId, billingPlanId, status: "trial", trialEndsAt: subscription.trialEndsAt },
     });
   } catch (err) {
     logger.error("[BILLING] Failed to start trial", { error: err.message });

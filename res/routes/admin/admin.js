@@ -61,6 +61,13 @@ const {
 } = require("../../controller/admin/NoticeController");
 
 const {
+  getAvailablePlans,
+  getMyBillingStatus,
+  selectPlan,
+  redeemCoupon,
+} = require("../../controller/admin/AdminBillingController");
+
+const {
   getCampusAnalytics,
 } = require("../../controller/admin/AnalyticsController");
 
@@ -248,6 +255,14 @@ router.post("/fees/receipts/:studentFeeId/send-email", auth.authenticateSchoolLe
 router.get("/sms/quota", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, getSmsQuota);
 router.post("/broadcasts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, createBroadcast);
 router.get("/broadcasts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, getBroadcasts);
+
+// Self-service billing — how a school pays or redeems a coupon, including
+// while locked (see isLockAllowlisted in authenticateSuperAdmin.js), so no
+// permission gate here beyond being a recognized school-level admin.
+router.get("/billing/plans", auth.authenticateSchoolLevelAdmin, getAvailablePlans);
+router.get("/billing/status", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, getMyBillingStatus);
+router.post("/billing/select-plan", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, selectPlan);
+router.post("/billing/redeem-coupon", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, redeemCoupon);
 
 // Analytics routes — sub-admins need PERMISSIONS.ANALYTICS_VIEW; head admins always pass
 router.get("/analytics/campuses", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.ANALYTICS_VIEW), auth.attachSchoolId, getCampusAnalytics);

@@ -156,12 +156,22 @@ model School {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  // SMS broadcast quota — per-term allowance, reset when a new AcademicTerm is
-  // activated. Set directly by Super Admin for now (defaults to Basic-tier
-  // limit of 300). Once schools are formally linked to a BillingPlan, this
-  // should be derived from the plan's smsQuotaPerTerm instead of set ad-hoc.
-  smsQuotaPerTerm Int @default(300)
-  smsUsedThisTerm Int @default(0)
+  // The global Prisma middleware in res/util/prisma.js truncates every
+  // model's `createdAt` to a date-only value (drops time-of-day), which is
+  // too imprecise for the 48h payment-lock grace period (see
+  // res/util/getSchoolLockStatus.js) — a school set up late in the day could
+  // otherwise be locked after as little as ~24h. This field is set once, at
+  // setup time, and is exempt from that truncation since it isn't named
+  // `createdAt`.
+  setupCompletedAt DateTime?
+
+  // SMS broadcast quota is now derived from the school's active BillingPlan
+  // (see res/util/getSmsQuotaForSchool.js). smsQuotaOverride is a Super Admin
+  // manual escape hatch on top of that — null means "use the plan's quota".
+  // smsUsedThisTerm is the actual per-term usage counter, reset when a new
+  // AcademicTerm is activated.
+  smsQuotaOverride Int?
+  smsUsedThisTerm  Int  @default(0)
 
   // Current active billing plan (denormalized convenience alongside
   // SchoolSubscription, which holds the full billing-cycle history).
@@ -190,6 +200,7 @@ model School {
   examSchedules       ExamSchedule[]
   assignments         Assignment[]
   bankAccounts        SchoolBankAccount[]
+  couponRedemptions   CouponRedemption[]
 
   @@index([billingPlanId])
   @@map("schools")
@@ -941,6 +952,7 @@ model BillingPlan {
   minStudents   Int      @default(0)
   maxStudents   Int?     // null = unlimited (Premium)
   maxSubAdmins  Int?     // null = unlimited (Premium)
+  smsQuotaPerTerm Int?   // null = mirror maxStudents; set explicitly for unlimited-student plans (e.g. Premium)
   isActive      Boolean  @default(true)
   highlighted   Boolean  @default(false)
   createdAt     DateTime @default(now())
@@ -948,6 +960,7 @@ model BillingPlan {
 
   schools       School[]
   subscriptions SchoolSubscription[]
+  coupons       Coupon[]
 
   @@index([isActive])
   @@index([name])
@@ -997,6 +1010,42 @@ model SchoolPayment {
   @@index([schoolId])
   @@index([subscriptionId])
   @@map("school_payments")
+}
+
+// A launch-campaign promo code: redeeming it grants a school N free days on
+// a specific plan (see res/Services/BillingService.js#grantTrial), so SMS
+// quota and everything else plan-derived is already correct during the trial.
+model Coupon {
+  id               Int       @id @default(autoincrement())
+  code             String    @unique @db.VarChar(50)
+  billingPlanId    Int
+  freeDays         Int       @default(30)
+  maxRedemptions   Int?      // null = unlimited
+  redemptionCount  Int       @default(0)
+  expiresAt        DateTime? // null = never expires
+  isActive         Boolean   @default(true)
+  createdByAdminId Int?      // platform Super Admin who created it, for audit
+  createdAt        DateTime  @default(now())
+
+  billingPlan BillingPlan        @relation(fields: [billingPlanId], references: [id])
+  redemptions CouponRedemption[]
+
+  @@index([code])
+  @@map("coupons")
+}
+
+model CouponRedemption {
+  id         Int      @id @default(autoincrement())
+  couponId   Int
+  schoolId   Int
+  redeemedAt DateTime @default(now())
+
+  coupon Coupon @relation(fields: [couponId], references: [id])
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@unique([schoolId]) // one coupon redemption per school, ever
+  @@index([couponId])
+  @@map("coupon_redemptions")
 }
 
 // ============================================

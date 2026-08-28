@@ -13,6 +13,7 @@ const twoFactorService = require("../../Services/TwoFactorService");
 const twoFactorTempToken = require("../../util/twoFactorTempToken");
 const processImage = require("../../config/compress");
 const flutterwave = require("../../Services/FlutterwaveService");
+const { getSmsQuotaForSchool } = require("../../util/getSmsQuotaForSchool");
 const r2Service = require("../../Services/R2Service");
 const { generateUniqueReferralCode } = require("../../util/referralCode");
 const { signDocumentUrl } = require("../../util/documentUrlSignature");
@@ -479,7 +480,8 @@ exports.getSchoolById = async (req, res, next) => {
         suspendedAt: school.suspendedAt,
         suspensionReason: school.suspensionReason,
         updatedAt: school.updatedAt,
-        smsQuotaPerTerm: school.smsQuotaPerTerm,
+        smsQuotaOverride: school.smsQuotaOverride,
+        smsQuotaPerTerm: await getSmsQuotaForSchool(schoolId), // effective, plan-derived unless overridden
         smsUsedThisTerm: school.smsUsedThisTerm,
         billingPlanId: school.billingPlanId,
         campusCount: school.campuses.length,
@@ -569,11 +571,13 @@ exports.suspendSchool = async (req, res, next) => {
 };
 
 // PATCH /api/public/schools/:id/sms-quota
-// Set a school's per-term SMS broadcast quota (Super Admin Portal, service-to-service)
+// Set (or clear) a school's manual SMS quota override, an exception on top of
+// the plan-derived quota (Super Admin Portal, service-to-service). Pass
+// smsQuotaOverride: null to clear the override and revert to plan-derived.
 exports.updateSchoolSmsQuota = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { quotaPerTerm } = req.body;
+    const { smsQuotaOverride } = req.body;
     const schoolId = parseInt(id, 10);
 
     if (isNaN(schoolId)) {
@@ -584,26 +588,28 @@ exports.updateSchoolSmsQuota = async (req, res, next) => {
       });
     }
 
-    if (typeof quotaPerTerm !== "number" || quotaPerTerm < 0) {
+    if (smsQuotaOverride !== null && (typeof smsQuotaOverride !== "number" || smsQuotaOverride < 0)) {
       return res.status(400).json({
         success: false,
-        message: "quotaPerTerm must be a non-negative number",
+        message: "smsQuotaOverride must be a non-negative number, or null to clear the override",
         code: "INVALID_QUOTA",
       });
     }
 
     const school = await prisma.school.update({
       where: { id: schoolId },
-      data: { smsQuotaPerTerm: quotaPerTerm },
-      select: { id: true, name: true, smsQuotaPerTerm: true, smsUsedThisTerm: true },
+      data: { smsQuotaOverride },
+      select: { id: true, name: true, smsQuotaOverride: true, smsUsedThisTerm: true },
     });
 
-    logger.info(`[UPDATE_SMS_QUOTA] School SMS quota updated`, { schoolId, quotaPerTerm });
+    const effectiveQuotaPerTerm = await getSmsQuotaForSchool(schoolId);
+
+    logger.info(`[UPDATE_SMS_QUOTA] School SMS quota override updated`, { schoolId, smsQuotaOverride });
 
     res.status(200).json({
       success: true,
-      message: "SMS quota updated successfully",
-      data: school,
+      message: smsQuotaOverride === null ? "SMS quota override cleared — now using plan-derived quota" : "SMS quota override updated successfully",
+      data: { ...school, effectiveQuotaPerTerm },
     });
   } catch (err) {
     if (err.code === "P2025") {
