@@ -33,6 +33,9 @@ const generateTokenSchema = Joi.object({
     .messages({
       "string.max": "School name must not exceed 255 characters",
     }),
+  // Set when issuing a token directly from the Leads page — marks that
+  // LandingPageLead as resolved in the same request (see generateToken).
+  leadId: Joi.number().integer().positive().optional(),
 });
 
 // POST /api/super-admin/register

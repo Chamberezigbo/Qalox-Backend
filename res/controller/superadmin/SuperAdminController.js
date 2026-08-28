@@ -195,11 +195,12 @@ exports.getProfile = async (req, res, next) => {
 exports.generateToken = async (req, res, next) => {
   try {
     const adminId = req.admin?.id;
-    const { email, schoolName } = req.body;
+    const { email, schoolName, leadId } = req.body;
 
     logger.debug("[SUPER_ADMIN_GENERATE_TOKEN] Generating registration token", {
       email,
       schoolName,
+      leadId,
     });
 
     // Validate input
@@ -231,20 +232,36 @@ exports.generateToken = async (req, res, next) => {
     const uniqueKey = generateRegistrationToken();
     const expiresAt = calculateTokenExpiration();
 
-    const newToken = await prisma.token.create({
-      data: {
-        email,
-        uniqueKey,
-        status: "active",
-        schoolName: schoolName || "",
-        expiresAt,
-      },
+    // When issued from a landing-page lead (Super Admin's Leads page), mark
+    // that lead as resolved in the same transaction as the token — no
+    // separate follow-up call, and no window where a token exists but the
+    // lead still shows as "new".
+    const [newToken] = await prisma.$transaction(async (tx) => {
+      const created = await tx.token.create({
+        data: {
+          email,
+          uniqueKey,
+          status: "active",
+          schoolName: schoolName || "",
+          expiresAt,
+        },
+      });
+
+      if (leadId) {
+        await tx.landingPageLead.update({
+          where: { id: Number(leadId) },
+          data: { status: "token_issued", issuedTokenId: created.id },
+        });
+      }
+
+      return [created];
     });
 
     logger.info("[SUPER_ADMIN_GENERATE_TOKEN] Token generated successfully", {
       email,
       uniqueKey,
       expiresAt,
+      leadId,
     });
 
     res.status(201).json({
@@ -958,6 +975,112 @@ exports.getBillingPlans = async (req, res, next) => {
     });
   } catch (err) {
     logger.error("[SUPER_ADMIN_GET_PLANS] Failed to fetch plans", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * POST /api/public/leads
+ * A prospective school's submission from the landing page's "Book a Demo"
+ * form. Public, no auth — mirrors the trust level of the existing public
+ * /plans endpoint. This is a queue for Super Admin to follow up from, not
+ * itself a signup — schools still can't self-register.
+ */
+exports.createLandingPageLead = async (req, res, next) => {
+  try {
+    const {
+      schoolName, contactPerson, position, phone, schoolEmail,
+      personalEmail, location, studentCount, campusCount, currentSystem, planInterest,
+    } = req.body;
+
+    if (!schoolName || !contactPerson || !phone || !schoolEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "schoolName, contactPerson, phone and schoolEmail are required",
+        code: "MISSING_FIELDS",
+      });
+    }
+
+    const lead = await prisma.landingPageLead.create({
+      data: {
+        schoolName, contactPerson, position, phone, schoolEmail,
+        personalEmail, location, studentCount,
+        campusCount: campusCount != null ? Number(campusCount) : null,
+        currentSystem, planInterest,
+      },
+    });
+
+    logger.info("[CREATE_LANDING_PAGE_LEAD] Lead captured", { leadId: lead.id, schoolEmail });
+
+    res.status(201).json({ success: true, data: { id: lead.id } });
+  } catch (err) {
+    logger.error("[CREATE_LANDING_PAGE_LEAD] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/super-admin/leads?status=&page=&limit=
+ * The follow-up queue Super Admin works from.
+ */
+exports.getLandingPageLeads = async (req, res, next) => {
+  try {
+    const { status } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+
+    const where = status ? { status } : {};
+
+    const [total, leads] = await Promise.all([
+      prisma.landingPageLead.count({ where }),
+      prisma.landingPageLead.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: { leads, total, page, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    logger.error("[GET_LANDING_PAGE_LEADS] Failed", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/super-admin/leads/:id/status
+ * Manual status tracking only (e.g. "contacted", "closed") — issuing a token
+ * for a lead goes through generateToken (with leadId), which sets
+ * status to "token_issued" itself.
+ */
+exports.updateLandingPageLeadStatus = async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { status } = req.body;
+    const allowed = ["new", "contacted", "token_issued", "closed"];
+
+    if (isNaN(id) || !allowed.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `status must be one of: ${allowed.join(", ")}`,
+        code: "INVALID_STATUS",
+      });
+    }
+
+    const existing = await prisma.landingPageLead.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ success: false, message: "Lead not found", code: "NOT_FOUND" });
+    }
+
+    const updated = await prisma.landingPageLead.update({ where: { id }, data: { status } });
+
+    res.status(200).json({ success: true, data: updated });
+  } catch (err) {
+    logger.error("[UPDATE_LANDING_PAGE_LEAD_STATUS] Failed", { error: err.message });
     next(err);
   }
 };

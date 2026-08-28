@@ -1,6 +1,6 @@
 const express = require("express");
 const { getSchoolsPublic, getAssessmentsPublic } = require("../controller/public/publicController");
-const { getBillingPlans } = require("../controller/superadmin/SuperAdminController");
+const { getBillingPlans, createLandingPageLead } = require("../controller/superadmin/SuperAdminController");
 const { serviceAuth } = require("../middleware/serviceAuth");
 
 const router = express.Router();
@@ -13,5 +13,8 @@ router.get("/assessments", serviceAuth, getAssessmentsPublic);
 
 // GET /api/public/plans - List active billing plans (Super Admin Portal, no auth required)
 router.get("/plans", getBillingPlans);
+
+// POST /api/public/leads - Landing page "Book a Demo" form submission (no auth required)
+router.post("/leads", createLandingPageLead);
 
 module.exports = router;

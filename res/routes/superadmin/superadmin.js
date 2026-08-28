@@ -15,6 +15,8 @@ const {
   suspendSchoolAdmin,
   resetSchoolAdminPassword,
   getMarketerStats,
+  getLandingPageLeads,
+  updateLandingPageLeadStatus,
 } = require("../../controller/superadmin/SuperAdminController");
 const {
   initializePayment,
@@ -73,6 +75,10 @@ router.post("/generate", authenticateSuperAdminJWT, validate(generateTokenSchema
 
 // List all registration tokens (paginated) - Requires super_admin JWT
 router.get("/tokens", authenticateSuperAdminJWT, getTokens);
+
+// Landing page lead follow-up queue - Requires super_admin JWT
+router.get("/leads", authenticateSuperAdminJWT, getLandingPageLeads);
+router.patch("/leads/:id/status", authenticateSuperAdminJWT, updateLandingPageLeadStatus);
 
 // ============================================
 // PHASE 2 - HIGH PRIORITY ENDPOINTS

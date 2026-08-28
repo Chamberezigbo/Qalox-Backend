@@ -209,6 +209,32 @@ model Token {
   @@map("tokens") // Maps to a table named `tokens`
 }
 
+// A prospective school's submission from the public landing page's "Book a
+// Demo" form. Schools can't self-register — only staff/marketers issue a
+// Token — so this is the queue Super Admin follows up from, ending in either
+// a token being issued (see issuedTokenId) or the lead being closed out.
+model LandingPageLead {
+  id            Int      @id @default(autoincrement())
+  schoolName    String   @db.VarChar(255)
+  contactPerson String   @db.VarChar(255)
+  position      String?  @db.VarChar(100)
+  phone         String   @db.VarChar(50)
+  schoolEmail   String   @db.VarChar(255)
+  personalEmail String?  @db.VarChar(255)
+  location      String?  @db.VarChar(255)
+  studentCount  String?  @db.VarChar(50)
+  campusCount   Int?
+  currentSystem String?  @db.VarChar(255)
+  planInterest  String?  @db.VarChar(100) // which pricing plan card they clicked "Get Started" from, if any
+  status        String   @default("new") @db.VarChar(20) // new | contacted | token_issued | closed
+  issuedTokenId Int?     // Token.id, set once a token has been generated for this lead
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@map("landing_page_leads")
+}
+
 model Campus {
   id            Int      @id @default(autoincrement())
   schoolId      Int
