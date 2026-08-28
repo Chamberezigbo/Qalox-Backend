@@ -3,6 +3,7 @@ import prisma from "../util/prisma";
 import { AppError } from "../util/AppError";
 import { generateReceiptNo } from "../util/receiptNo";
 import { loadStudentFeeForReceipt, buildReceiptData } from "../util/receiptData";
+import { schoolMediaUrl } from "../controller/public/publicController";
 
 export class ParentService {
     /** Confirms the requesting parent actually owns this child before any read. */
@@ -53,10 +54,12 @@ export class ParentService {
             children.map(async (c) => {
                 // Subjects the class actually takes — independent of whether a
                 // result has been published for any of them yet.
-                const [subjectCount, currentTerm] = await Promise.all([
+                const [subjectCount, currentTerm, school] = await Promise.all([
                     prisma.classSubject.count({ where: { classId: c.classId } }),
                     this.getActiveTermName(c.schoolId),
+                    prisma.school.findUnique({ where: { id: c.schoolId }, select: { name: true, logoUrl: true, brandColor: true } }),
                 ]);
+                const schoolLogo = await schoolMediaUrl(school?.logoUrl ?? null);
 
                 return {
                     id: c.id,
@@ -69,6 +72,9 @@ export class ParentService {
                     className: c.class.customName ?? c.class.name,
                     subjectCount,
                     currentTerm,
+                    schoolName: school?.name ?? null,
+                    schoolLogo,
+                    brandColor: school?.brandColor ?? null,
                 };
             })
         );

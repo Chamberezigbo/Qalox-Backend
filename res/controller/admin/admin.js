@@ -6,6 +6,7 @@ const prisma = require("../../util/prisma");
 const { logLoginEvent } = require("../../util/logLoginEvent");
 const emailService = require("../../Services/EmailService");
 const logger = require("../../config/logger");
+const { schoolMediaUrl } = require("../public/publicController");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -385,7 +386,7 @@ exports.getMySchool = async (req, res, next) => {
     const admin = await prisma.admin.findUnique({
       where: { id: adminId },
       include: {
-        school: { select: { id: true, name: true, email: true, prefix: true } }
+        school: { select: { id: true, name: true, email: true, prefix: true, logoUrl: true, brandColor: true } }
       }
     });
     if (!admin) {
@@ -397,9 +398,10 @@ exports.getMySchool = async (req, res, next) => {
         data: { schoolId: null, school: null }
       });
     }
+    const logoUrl = await schoolMediaUrl(admin.school.logoUrl);
     return res.status(200).json({
       message: "School fetched successfully",
-      data: { schoolId: admin.schoolId, school: admin.school }
+      data: { schoolId: admin.schoolId, school: { ...admin.school, logoUrl } }
     });
   } catch (error) {
     next(error);

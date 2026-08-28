@@ -64,6 +64,7 @@ router.get("/students", teacherAuthMiddleware, teacherController.getStudents);
 router.get("/students-with-scores", teacherAuthMiddleware, teacherController.getStudentsWithScores);
 router.get("/my-subjects", teacherAuthMiddleware, teacherController.getTeacherSubjects);
 router.get("/profile", teacherAuthMiddleware, teacherController.getTeacherDetails);
+router.get("/school/branding", teacherAuthMiddleware, teacherController.getSchoolBranding);
 
 // Assignment Board
 router.post("/assignments", teacherAuthMiddleware, uploadAssignment.single("attachment"), assignmentController.create);

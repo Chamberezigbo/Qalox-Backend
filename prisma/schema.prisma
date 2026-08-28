@@ -146,6 +146,7 @@ model School {
   prefix      String   @db.VarChar(10)
   logoUrl     String?  @db.VarChar(255)
   stampUrl    String?  @db.VarChar(255)
+  brandColor  String?  @db.VarChar(7) // hex, e.g. "#1a237e" — extracted from the school's logo on upload
   email       String?  @db.VarChar(255)
   phoneNumber String?  @db.VarChar(50)
   address     String?  @db.Text

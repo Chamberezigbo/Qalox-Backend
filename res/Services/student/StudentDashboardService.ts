@@ -1,4 +1,5 @@
 import prisma from "../../util/prisma";
+import { schoolMediaUrl } from "../../controller/public/publicController";
 
 export class StudentDashboardService {
 
@@ -7,7 +8,7 @@ export class StudentDashboardService {
         const student = await prisma.student.findUnique({
             where: { id: studentId },
             include: {
-                school: { select: { id: true, name: true } },
+                school: { select: { id: true, name: true, logoUrl: true, brandColor: true } },
                 campus: { select: { id: true, name: true } },
                 class:  { select: { id: true, name: true } }
             }
@@ -77,12 +78,14 @@ export class StudentDashboardService {
         const totalSchoolFee = currentTermFee?.totalFee ?? 0;
         const pendingDebt = fees.reduce((sum, f) => sum + Math.max(f.totalFee - f.amountPaid, 0), 0);
 
+        const schoolLogoUrl = await schoolMediaUrl(student.school.logoUrl);
+
         return {
             student: {
                 name: `${student.name} ${student.surname}`,
                 registrationNumber: student.registrationNumber,
                 class: student.class.name,
-                school: student.school
+                school: { id: student.school.id, name: student.school.name, logoUrl: schoolLogoUrl, brandColor: student.school.brandColor }
             },
             currentTerm,
             stats: {

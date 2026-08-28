@@ -1,6 +1,6 @@
 // controllers/schoolController.js
 const processImage = require("../../config/compress");
-const { processImageToBuffer } = require("../../config/compress");
+const { processImageToBuffer, extractDominantColor } = require("../../config/compress");
 const r2Service = require("../../Services/R2Service");
 const { schoolMediaUrl } = require("../public/publicController");
 const prisma = require("../../util/prisma");
@@ -178,9 +178,13 @@ exports.setupSchool = async (req, res, next) => {
     // Process images in memory, then upload to R2 (private bucket) — the
     // stored value is `r2:<object key>`, never a public URL. schoolMediaUrl()
     // turns this into a fresh presigned GET URL whenever the school is read.
-    const [processedLogo, processedStamp] = await Promise.all([
+    const [processedLogo, processedStamp, brandColor] = await Promise.all([
       processImageToBuffer(files.logoUrl[0].buffer),
       processImageToBuffer(files.stampUrl[0].buffer),
+      // Runs on the ORIGINAL buffer, not processedLogo's JPEG-converted one —
+      // a transparent PNG's background would otherwise flatten to black
+      // before extraction ever sees it.
+      extractDominantColor(files.logoUrl[0].buffer),
     ]);
 
     const logoKey = `logos/${finalPrefix}-logo.jpeg`;
@@ -197,6 +201,7 @@ exports.setupSchool = async (req, res, next) => {
         prefix: finalPrefix,
         logoUrl: `r2:${logoKey}`,
         stampUrl: `r2:${stampKey}`,
+        brandColor,
         email,
         phoneNumber,
         address,

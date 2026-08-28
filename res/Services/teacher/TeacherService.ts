@@ -1,5 +1,6 @@
 // src/services/teacher/TeacherService.ts
 import prisma from "../../util/prisma";
+import { schoolMediaUrl } from "../../controller/public/publicController";
 
 type GetStudentsForGradingInput = {
     staffId: number;
@@ -1321,6 +1322,18 @@ export class TeacherService {
         }
 
         return teacher;
+    }
+
+    /** School name/logo/brandColor for re-theming the frontend shell. */
+    async getSchoolBranding(schoolId: number) {
+        const school = await prisma.school.findUnique({
+            where: { id: schoolId },
+            select: { name: true, logoUrl: true, brandColor: true },
+        });
+        if (!school) throw new Error("School not found");
+
+        const logoUrl = await schoolMediaUrl(school.logoUrl);
+        return { schoolName: school.name, logoUrl, brandColor: school.brandColor };
     }
 
 }

@@ -76,4 +76,20 @@ const deleteObject = async (key) => {
   logger.info("[R2] Object deleted", { key });
 };
 
-module.exports = { uploadObject, getPresignedUrl, deleteObject };
+/**
+ * Download a stored object's raw bytes. Used by one-off backfill/processing
+ * scripts that need the actual file content, not just a URL to it.
+ * @param {string} key
+ * @returns {Promise<Buffer>}
+ */
+const getObjectBuffer = async (key) => {
+  const s3 = getClient();
+  const response = await s3.send(new GetObjectCommand({ Bucket: getBucket(), Key: key }));
+  const chunks = [];
+  for await (const chunk of response.Body) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+};
+
+module.exports = { uploadObject, getPresignedUrl, deleteObject, getObjectBuffer };
