@@ -48,10 +48,10 @@ tags:
   - name: Admin - Notices
     description: |
       Broadcast announcements (fee/pta/event/general) to parents/teachers/students,
-      always recorded in-app and optionally also sent as real SMS via SmartSMS
-      Nigeria (https://developer.smartsmssolutions.com/). SMS is subject to a
-      per-term quota on the School record, reset when a new AcademicTerm is
-      activated. Gated by PERMISSIONS.SMS_BROADCAST_SEND for sub-admins.
+      always recorded in-app and optionally also sent as real SMS via
+      BulkSMSNigeria (https://www.bulksmsnigeria.com/app/api/docs). SMS is
+      subject to a per-term quota on the School record, reset when a new
+      AcademicTerm is activated. Gated by PERMISSIONS.SMS_BROADCAST_SEND for sub-admins.
   - name: Admin - Analytics
     description: |
       Per-campus dashboard: pass rate (derived from each class's own GradingScheme —
@@ -2127,7 +2127,7 @@ paths:
       summary: Send a notice/announcement
       description: |
         Always recorded in-app. If `sendSms` is true, also sends a real SMS via
-        SmartSMS to the phone numbers on file for the resolved audience
+        BulkSMSNigeria to the phone numbers on file for the resolved audience
         (parents: Student.guardianNumber, teachers: Staff.phoneNumber). Rejected
         with SMS_QUOTA_EXCEEDED if the audience size would exceed the school's
         remaining per-term quota — checked before any SMS API call is made.
@@ -2161,7 +2161,7 @@ paths:
         '400':
           description: Missing/invalid fields, SMS unavailable for recipientType, or SMS_QUOTA_EXCEEDED
         '502':
-          description: SmartSMS provider returned an error (e.g. INSUFFICIENT_CREDIT)
+          description: BulkSMSNigeria provider returned an error (e.g. INSUFFICIENT_CREDITS)
     get:
       summary: List notice/broadcast history
       tags: [Admin - Notices]

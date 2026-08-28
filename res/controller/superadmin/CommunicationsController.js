@@ -151,8 +151,8 @@ exports.getCommunicationRecipients = async (req, res, next) => {
  * Resolves real recipients (schools/admins) and records a real communication
  * row. For type "email", actually dispatches via Resend. For type "sms",
  * still just records as "pending" — no SMS provider is wired up for
- * platform-wide broadcasts (the existing SmartSMS integration is scoped to
- * a single school's own quota, not a cross-school broadcast budget).
+ * platform-wide broadcasts (the existing BulkSMSNigeria integration is scoped
+ * to a single school's own quota, not a cross-school broadcast budget).
  */
 exports.sendCommunication = async (req, res, next) => {
   try {
