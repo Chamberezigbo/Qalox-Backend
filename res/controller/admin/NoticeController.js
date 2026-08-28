@@ -2,18 +2,10 @@ const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const bulkSms = require("../../Services/BulkSmsService");
 const { getSmsQuotaForSchool } = require("../../util/getSmsQuotaForSchool");
+const { toInternationalFormat } = require("../../util/phoneFormat");
 
 const CATEGORIES = ["fee", "pta", "event", "general"];
 const RECIPIENT_TYPES = ["all", "parents", "teachers", "students"];
-
-// Normalize a Nigerian phone number to the international format BulkSMSNigeria expects (234XXXXXXXXXX)
-const toInternationalFormat = (phone) => {
-  if (!phone) return null;
-  const digits = phone.replace(/[^0-9]/g, "");
-  if (digits.startsWith("234")) return digits;
-  if (digits.startsWith("0")) return `234${digits.slice(1)}`;
-  return digits;
-};
 
 /**
  * Resolve the phone numbers for a given recipientType, deduplicated.

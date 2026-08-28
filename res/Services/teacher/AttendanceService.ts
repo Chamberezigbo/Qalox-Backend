@@ -1,5 +1,9 @@
 // src/services/teacher/AttendanceService.ts
 import prisma from "../../util/prisma";
+const logger = require("../../config/logger");
+const bulkSms = require("../../Services/BulkSmsService");
+const { getSmsQuotaForSchool } = require("../../util/getSmsQuotaForSchool");
+const { toInternationalFormat } = require("../../util/phoneFormat");
 
 type AttendanceStatus = "present" | "absent" | "late";
 type MarkRecord = { studentId: number; status: AttendanceStatus };
@@ -34,7 +38,7 @@ export class AttendanceService {
         // shouldn't be able to mark students outside the group they picked).
         const validStudents = await prisma.student.findMany({
             where: { schoolId, classId, ...(groupId != null ? { classGroupId: groupId } : {}), id: { in: records.map(r => r.studentId) } },
-            select: { id: true, parentId: true, name: true, surname: true },
+            select: { id: true, parentId: true, name: true, surname: true, guardianNumber: true },
         });
         const validById = new Map(validStudents.map(s => [s.id, s]));
         const toMark = records.filter(r => validById.has(r.studentId));
@@ -66,7 +70,71 @@ export class AttendanceService {
             }
         }, { timeout: 20000 });
 
+        // Real SMS to the guardian's phone, on absence only — deliberately outside
+        // the transaction above (a network call has no business holding a DB
+        // transaction open, and an SMS failure must never roll back attendance
+        // that's already been recorded). Never lets a quota/provider problem
+        // fail the attendance-marking response itself.
+        await this.sendAbsenceSms(schoolId, date, toMark, validById);
+
         return { marked: toMark.length, skipped: records.length - toMark.length };
+    }
+
+    private async sendAbsenceSms(
+        schoolId: number,
+        date: string,
+        toMark: MarkRecord[],
+        validById: Map<number, { id: number; parentId: number | null; name: string; surname: string; guardianNumber: string | null }>,
+    ) {
+        const newlyAbsent = toMark
+            .filter(r => r.status === "absent")
+            .map(r => validById.get(r.studentId)!)
+            .filter(s => s.guardianNumber);
+
+        if (newlyAbsent.length === 0) return;
+
+        try {
+            const school = await prisma.school.findUnique({
+                where: { id: schoolId },
+                select: { name: true, prefix: true, smsUsedThisTerm: true },
+            });
+            if (!school) return;
+
+            const quotaPerTerm = await getSmsQuotaForSchool(schoolId);
+            let remaining = quotaPerTerm - school.smsUsedThisTerm;
+            let sentCount = 0;
+
+            for (const student of newlyAbsent) {
+                if (remaining <= 0) {
+                    logger.warn("[ATTENDANCE_SMS] Quota exhausted — skipping", { schoolId, studentId: student.id });
+                    break;
+                }
+                const phone = toInternationalFormat(student.guardianNumber);
+                if (!phone) continue;
+
+                try {
+                    const result = await bulkSms.sendSms({
+                        recipients: [phone],
+                        message: `${school.name}: ${student.name} ${student.surname} was marked absent on ${date}.`,
+                        sender: school.prefix || "SCHOOL",
+                    });
+                    if (result.success) {
+                        sentCount += result.totalSent;
+                        remaining -= result.totalSent;
+                    } else {
+                        logger.warn("[ATTENDANCE_SMS] Send failed", { schoolId, studentId: student.id, status: result.status });
+                    }
+                } catch (err: any) {
+                    logger.error("[ATTENDANCE_SMS] Send threw", { schoolId, studentId: student.id, error: err.message });
+                }
+            }
+
+            if (sentCount > 0) {
+                await prisma.school.update({ where: { id: schoolId }, data: { smsUsedThisTerm: { increment: sentCount } } });
+            }
+        } catch (err: any) {
+            logger.error("[ATTENDANCE_SMS] Failed", { schoolId, error: err.message });
+        }
     }
 
     async getAttendance(input: { staffId: number; schoolId: number; classId: number; groupId?: number | null; date: string }) {
