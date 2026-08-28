@@ -9,11 +9,15 @@ const flutterwave = require("./FlutterwaveService");
 const toAscii = (str) => String(str).replace(/[^\x20-\x7E]/g, "").trim();
 
 /**
- * Creates a Flutterwave bank-transfer charge for a school + plan + cycle, and
- * upserts the SchoolSubscription ("past_due" until the webhook confirms) and
- * a "pending" SchoolPayment. Shared by the Super Admin-initiated flow and the
- * school admin self-service flow — identical behavior either way, since the
- * webhook that confirms payment operates generically on schoolId/subscriptionId.
+ * Creates a Flutterwave Standard Checkout link for a school + plan + cycle,
+ * and upserts the SchoolSubscription ("past_due" until the webhook confirms)
+ * and a "pending" SchoolPayment. Shared by the Super Admin-initiated flow and
+ * the school admin self-service flow — identical behavior either way, since
+ * the webhook that confirms payment operates generically on
+ * schoolId/subscriptionId regardless of which payment method the school used
+ * on Flutterwave's hosted page (card, bank transfer, USSD, etc.). This is
+ * platform subscription billing only — unrelated to parent/student school-fee
+ * payments, which are direct bank transfer + admin approval, no Flutterwave.
  * @returns {Promise<{success: boolean, code?: string, message?: string, data?: object}>}
  */
 async function initializePaymentForSchool({ schoolId, billingPlanId, billingCycle }) {
@@ -57,13 +61,16 @@ async function initializePaymentForSchool({ schoolId, billingPlanId, billingCycl
   }
 
   const reference = `qalox-${schoolId}-${crypto.randomUUID().slice(0, 8)}`;
-  const charge = await flutterwave.createBankTransferCharge({
+  const redirectUrl = `${(process.env.SCHOOL_PORTAL_URL || "").replace(/\/+$/, "")}/admin/billing`;
+  const charge = await flutterwave.createStandardCheckout({
     amount,
     email,
     fullname: toAscii(school.admins[0]?.name || school.name),
     phoneNumber: school.phoneNumber || school.admins[0]?.phone || undefined,
     reference,
-    narration: toAscii(`Qalox ${plan.name} (${billingCycle}) - ${school.name}`),
+    redirectUrl,
+    title: `Qalox ${plan.name} (${billingCycle})`,
+    description: toAscii(`Qalox ${plan.name} (${billingCycle}) - ${school.name}`),
   });
 
   let subscription = await prisma.schoolSubscription.findFirst({
@@ -88,7 +95,6 @@ async function initializePaymentForSchool({ schoolId, billingPlanId, billingCycl
       subscriptionId: subscription.id,
       amount,
       flwReference: reference,
-      flwChargeId: charge.transferReference,
       status: "pending",
     },
   });
@@ -101,7 +107,7 @@ async function initializePaymentForSchool({ schoolId, billingPlanId, billingCycl
       reference,
       amount,
       currency: "NGN",
-      bankTransfer: charge.bankTransfer,
+      checkoutUrl: charge.checkoutUrl,
     },
   };
 }

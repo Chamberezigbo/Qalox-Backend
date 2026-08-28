@@ -77,6 +77,37 @@ const createBankTransferCharge = async ({ amount, email, fullname, phoneNumber, 
 };
 
 /**
+ * Initiates a Standard (hosted) Checkout — a single call returns a payment
+ * link. Flutterwave's own hosted page then offers every payment method
+ * enabled on the account (card, bank transfer, USSD, mobile money, etc.),
+ * handling all card 3DS/OTP complexity itself; the browser is redirected
+ * back to redirectUrl afterward with ?status=&tx_ref=&transaction_id=. Used
+ * for school subscription payments — NOT the same charge type as
+ * createBankTransferCharge above, which parent/student fee payments used to
+ * use before that flow moved to direct-bank-transfer-only (see
+ * StudentFeeService.ts) and is now reserved for this admin-billing flow.
+ * @param {{amount: number, email: string, fullname: string, phoneNumber?: string, reference: string, redirectUrl: string, title?: string, description?: string}} params
+ * @returns {Promise<{checkoutUrl: string, raw: object}>}
+ */
+const createStandardCheckout = async ({ amount, email, fullname, phoneNumber, reference, redirectUrl, title, description }) => {
+  const json = await request("/payments", {
+    method: "POST",
+    body: {
+      tx_ref: reference,
+      amount: String(amount),
+      currency: "NGN",
+      redirect_url: redirectUrl,
+      customer: { email, phonenumber: phoneNumber, name: fullname },
+      customizations: { title: title || "Qalox Subscription", description: description || "Qalox subscription payment" },
+    },
+  });
+
+  logger.info("[FLUTTERWAVE] Standard checkout initiated", { reference });
+
+  return { checkoutUrl: json.data?.link || null, raw: json };
+};
+
+/**
  * Re-verifies a transaction server-side rather than trusting the webhook
  * payload alone, per Flutterwave's own recommendation.
  * @param {number|string} transactionId - Flutterwave's data.id from the webhook payload
@@ -141,6 +172,7 @@ const resolveAccount = async ({ accountNumber, bankCode }) => {
 
 module.exports = {
   createBankTransferCharge,
+  createStandardCheckout,
   verifyTransaction,
   verifyWebhookSignature,
   listBanks,
