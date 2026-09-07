@@ -4,6 +4,7 @@ const logger = require("../../config/logger");
 const bulkSms = require("../../Services/BulkSmsService");
 const { getSmsQuotaForSchool } = require("../../util/getSmsQuotaForSchool");
 const { toInternationalFormat } = require("../../util/phoneFormat");
+const { smsSenderIdFromSchoolName } = require("../../util/smsSenderId");
 
 type AttendanceStatus = "present" | "absent" | "late";
 type MarkRecord = { studentId: number; status: AttendanceStatus };
@@ -116,7 +117,7 @@ export class AttendanceService {
                     const result = await bulkSms.sendSms({
                         recipients: [phone],
                         message: `${school.name}: ${student.name} ${student.surname} was marked absent on ${date}.`,
-                        sender: school.prefix || "SCHOOL",
+                        sender: smsSenderIdFromSchoolName(school),
                     });
                     if (result.success) {
                         sentCount += result.totalSent;

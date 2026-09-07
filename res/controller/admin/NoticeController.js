@@ -3,6 +3,7 @@ const logger = require("../../config/logger");
 const bulkSms = require("../../Services/BulkSmsService");
 const { getSmsQuotaForSchool } = require("../../util/getSmsQuotaForSchool");
 const { toInternationalFormat } = require("../../util/phoneFormat");
+const { smsSenderIdFromSchoolName } = require("../../util/smsSenderId");
 
 const CATEGORIES = ["fee", "pta", "event", "general"];
 const RECIPIENT_TYPES = ["all", "parents", "teachers", "students"];
@@ -142,7 +143,7 @@ exports.createBroadcast = async (req, res, next) => {
 
       const school = await prisma.school.findUnique({
         where: { id: schoolId },
-        select: { smsUsedThisTerm: true, prefix: true },
+        select: { smsUsedThisTerm: true, prefix: true, name: true },
       });
 
       const quotaPerTerm = await getSmsQuotaForSchool(schoolId);
@@ -163,7 +164,7 @@ exports.createBroadcast = async (req, res, next) => {
         const result = await bulkSms.sendSms({
           recipients: phones,
           message: `${title}: ${message}`,
-          sender: school.prefix || "SCHOOL",
+          sender: smsSenderIdFromSchoolName(school),
         });
 
         if (!result.success) {
