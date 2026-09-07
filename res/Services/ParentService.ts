@@ -1,4 +1,5 @@
 // src/services/ParentService.ts
+import bcrypt from "bcryptjs";
 import prisma from "../util/prisma";
 import { AppError } from "../util/AppError";
 import { generateReceiptNo } from "../util/receiptNo";
@@ -274,5 +275,25 @@ export class ParentService {
 
         await prisma.parentAlert.update({ where: { id: alertId }, data: { isRead: true } });
         return { id: alertId, isRead: true };
+    }
+
+    /**
+     * Self-service password change — lets a parent replace the
+     * admin-generated password (from Parent Credentials) with one they'll
+     * actually remember, without needing the admin to reset it again.
+     */
+    async changePassword(parentId: number, currentPassword: string, newPassword: string) {
+        const parent = await prisma.parent.findUnique({ where: { id: parentId } });
+        if (!parent) throw new AppError("Parent not found", 404);
+
+        const matches = await bcrypt.compare(currentPassword || "", parent.password);
+        if (!matches) throw new AppError("Current password is incorrect", 401);
+
+        if (!newPassword || newPassword.length < 6) {
+            throw new AppError("New password must be at least 6 characters", 400);
+        }
+
+        const hashed = await bcrypt.hash(newPassword, 10);
+        await prisma.parent.update({ where: { id: parentId }, data: { password: hashed } });
     }
 }

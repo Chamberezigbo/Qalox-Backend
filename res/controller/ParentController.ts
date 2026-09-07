@@ -117,4 +117,15 @@ export class ParentController {
             next(err);
         }
     };
+
+    changePassword = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const { currentPassword, newPassword } = req.body;
+            await this.service.changePassword(req.parentId, currentPassword, newPassword);
+            res.json({ success: true, message: "Password changed successfully" });
+        } catch (err) {
+            next(err);
+        }
+    };
 }

@@ -23,5 +23,6 @@ router.get("/children/:studentId/fees/:studentFeeId/receipt", parentAuthMiddlewa
 
 router.get("/alerts", parentAuthMiddleware, parentController.getAlerts);
 router.patch("/alerts/:alertId/read", parentAuthMiddleware, parentController.markAlertRead);
+router.patch("/change-password", parentAuthMiddleware, parentController.changePassword);
 
 module.exports = router;
