@@ -18,7 +18,7 @@ const buildReceiptData = async (studentFee) => {
 
   const school = await prisma.school.findUnique({
     where: { id: studentFee.schoolId },
-    select: { name: true, logoUrl: true, stampUrl: true },
+    select: { name: true, logoUrl: true, stampUrl: true, brandColor: true },
   });
   const [schoolLogo, schoolStamp] = await Promise.all([
     schoolMediaUrl(school?.logoUrl),
@@ -43,6 +43,7 @@ const buildReceiptData = async (studentFee) => {
     schoolName: school?.name,
     logoUrl: schoolLogo,
     stampUrl: schoolStamp,
+    brandColor: school?.brandColor,
   };
 };
 

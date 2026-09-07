@@ -4,6 +4,7 @@ const { createNotification } = require("../../util/notify");
 const { schoolMediaUrl } = require("../public/publicController");
 const { generateReceiptNo } = require("../../util/receiptNo");
 const { sendEmail } = require("../../Services/EmailService");
+const { brandedEmail } = require("../../util/emailTemplate");
 const { loadStudentFeeForReceipt, buildReceiptData } = require("../../util/receiptData");
 const flutterwave = require("../../Services/FlutterwaveService");
 
@@ -803,24 +804,28 @@ exports.sendReceiptEmail = async (req, res, next) => {
       )
       .join("");
 
-    const html = `
-      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;">
-        <h2 style="color:#1a237e;">${receipt.schoolName ?? "School"} — Payment Receipt</h2>
-        <p>Receipt No: <strong>${receipt.receiptNo}</strong></p>
-        <p>${receipt.studentName} (${receipt.admissionNo}) — ${receipt.class}</p>
-        <p>${receipt.term} — ${receipt.session}</p>
-        <table style="width:100%;border-collapse:collapse;margin:16px 0;">${itemsHtml}</table>
-        <p style="font-size:18px;font-weight:bold;color:#1a237e;">Amount Paid: ₦${receipt.amountPaid.toLocaleString()}</p>
+    const schoolName = receipt.schoolName ?? "Your School";
+    const html = brandedEmail({
+      schoolName,
+      logoUrl: receipt.logoUrl,
+      brandColor: receipt.brandColor,
+      title: "Payment Receipt",
+      bodyHtml: `
+        <p style="margin:0 0 4px;">Receipt No: <strong>${receipt.receiptNo}</strong></p>
+        <p style="margin:0 0 4px;color:#555;">${receipt.studentName} (${receipt.admissionNo}) — ${receipt.class}</p>
+        <p style="margin:0 0 16px;color:#555;">${receipt.term} — ${receipt.session}</p>
+        <table style="width:100%;border-collapse:collapse;margin:0 0 16px;">${itemsHtml}</table>
+        <p style="font-size:18px;font-weight:bold;color:#1a237e;margin:0 0 8px;">Amount Paid: ₦${receipt.amountPaid.toLocaleString()}</p>
         ${
           receipt.isPartial
-            ? `<p style="color:#b91c1c;">Outstanding: ₦${(receipt.outstanding ?? 0).toLocaleString()}</p>`
+            ? `<p style="color:#b91c1c;margin:0 0 8px;">Outstanding: ₦${(receipt.outstanding ?? 0).toLocaleString()}</p>`
             : ""
         }
-        <p style="color:#999;font-size:12px;">Paid via ${receipt.paymentMethod} on ${new Date(
-      receipt.paymentDate
-    ).toLocaleDateString()}.</p>
-      </div>
-    `;
+        <p style="color:#999;font-size:12px;margin:0;">Paid via ${receipt.paymentMethod} on ${new Date(
+        receipt.paymentDate
+      ).toLocaleDateString()}.</p>
+      `,
+    });
 
     await sendEmail({ to: recipient, subject: `Payment Receipt — ${receipt.receiptNo}`, html });
 
