@@ -195,6 +195,7 @@ class BulkImportImporter {
               gender: data.gender || null,
               dateOfBirth: data.dob || null,
               guardianName: data.guardianName || null,
+              guardianEmail: data.guardianEmail || null,
               guardianNumber: data.parentPhone || null,
               email: data.email || null,
               academicSessionId: session.id,

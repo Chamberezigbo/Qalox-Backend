@@ -308,6 +308,7 @@ function validateStudent(data, reference, errors, warnings) {
   checkRequired(data, "students", errors);
   checkGender(data, errors, { required: true });
   checkEmail(data, errors);
+  checkEmail(data, errors, "guardianEmail");
   checkPhone(data, warnings, "parentPhone");
 
   // --- date of birth ---

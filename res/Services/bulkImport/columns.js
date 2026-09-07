@@ -23,6 +23,7 @@ const STUDENT_COLUMNS = [
   { key: "groupName", label: "Class Group", required: false, type: "select", options: [] },
   { key: "campusName", label: "Campus", required: false, type: "select", options: [] },
   { key: "guardianName", label: "Guardian Name", required: false, type: "text" },
+  { key: "guardianEmail", label: "Guardian Email", required: false, type: "email" },
   { key: "parentPhone", label: "Parent Phone", required: false, type: "tel" },
   { key: "email", label: "Email", required: false, type: "email" },
 ];

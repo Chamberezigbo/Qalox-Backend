@@ -85,6 +85,13 @@ const HEADER_ALIASES = {
   "parent guardian name": "guardianName",
   "next of kin name": "guardianName",
 
+  "guardian email": "guardianEmail",
+  "parent email": "guardianEmail",
+  "email of guardian": "guardianEmail",
+  "email of parent": "guardianEmail",
+  "guardian email address": "guardianEmail",
+  "parent email address": "guardianEmail",
+
   "parent phone": "parentPhone",
   "parent number": "parentPhone",
   "parent phone number": "parentPhone",
@@ -407,7 +414,7 @@ function buildRow(rawRow, entity) {
       if (parsed.ambiguous) meta.ambiguousDates.push(key);
     } else if (key === "parentPhone" || key === "phone") {
       data[key] = normalizePhone(value);
-    } else if (key === "email") {
+    } else if (key === "email" || key === "guardianEmail") {
       data[key] = stringifyCell(value).toLowerCase();
     } else {
       data[key] = stringifyCell(value);
