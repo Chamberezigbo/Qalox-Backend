@@ -75,3 +75,37 @@ exports.deactivateCoupon = async (req, res, next) => {
     next(err);
   }
 };
+
+/**
+ * DELETE /api/billing/coupons/:id
+ * Only allowed for coupons nobody has redeemed yet — once a school has
+ * redeemed one, deleting it would orphan that school's CouponRedemption
+ * history, so deactivation is the correct action there instead.
+ */
+exports.deleteCoupon = async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    const coupon = await prisma.coupon.findUnique({ where: { id }, select: { redemptionCount: true } });
+    if (!coupon) {
+      return res.status(404).json({ success: false, message: "Coupon not found", code: "COUPON_NOT_FOUND" });
+    }
+    if (coupon.redemptionCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "This coupon has already been redeemed and can't be deleted — deactivate it instead.",
+        code: "COUPON_ALREADY_REDEEMED",
+      });
+    }
+
+    await prisma.coupon.delete({ where: { id } });
+    logger.info("[COUPON] Deleted", { couponId: id });
+    res.status(200).json({ success: true, message: "Coupon deleted", data: { deleted: true, couponId: id } });
+  } catch (err) {
+    if (err.code === "P2025") {
+      return res.status(404).json({ success: false, message: "Coupon not found", code: "COUPON_NOT_FOUND" });
+    }
+    logger.error("[COUPON] Failed to delete", { error: err.message });
+    next(err);
+  }
+};

@@ -31,6 +31,7 @@ const {
   createCoupon,
   getCoupons,
   deactivateCoupon,
+  deleteCoupon,
 } = require("../../controller/superadmin/CouponController");
 const {
   getCommunications,
@@ -176,6 +177,7 @@ router.post("/billing/schools/:schoolId/start-trial", authenticateSuperAdminJWT,
 router.post("/billing/coupons", authenticateSuperAdminJWT, createCoupon);
 router.get("/billing/coupons", authenticateSuperAdminJWT, getCoupons);
 router.patch("/billing/coupons/:id/deactivate", authenticateSuperAdminJWT, deactivateCoupon);
+router.delete("/billing/coupons/:id", authenticateSuperAdminJWT, deleteCoupon);
 
 // ============================================
 // COMMUNICATIONS
