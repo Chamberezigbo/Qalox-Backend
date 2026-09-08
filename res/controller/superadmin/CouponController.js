@@ -78,9 +78,11 @@ exports.deactivateCoupon = async (req, res, next) => {
 
 /**
  * DELETE /api/billing/coupons/:id
- * Only allowed for coupons nobody has redeemed yet — once a school has
- * redeemed one, deleting it would orphan that school's CouponRedemption
- * history, so deactivation is the correct action there instead.
+ * Permanently removes a coupon, including any CouponRedemption rows logged
+ * against it (onDelete: Cascade on that relation — see schema.prisma). This
+ * only erases the "code X was redeemed by school Y" record; it does NOT
+ * revert the free trial days a school already received, since those live on
+ * the school's Subscription, not on the coupon.
  */
 exports.deleteCoupon = async (req, res, next) => {
   try {
@@ -90,16 +92,10 @@ exports.deleteCoupon = async (req, res, next) => {
     if (!coupon) {
       return res.status(404).json({ success: false, message: "Coupon not found", code: "COUPON_NOT_FOUND" });
     }
-    if (coupon.redemptionCount > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "This coupon has already been redeemed and can't be deleted — deactivate it instead.",
-        code: "COUPON_ALREADY_REDEEMED",
-      });
-    }
 
+    await prisma.couponRedemption.deleteMany({ where: { couponId: id } });
     await prisma.coupon.delete({ where: { id } });
-    logger.info("[COUPON] Deleted", { couponId: id });
+    logger.info("[COUPON] Deleted", { couponId: id, redemptionsRemoved: coupon.redemptionCount });
     res.status(200).json({ success: true, message: "Coupon deleted", data: { deleted: true, couponId: id } });
   } catch (err) {
     if (err.code === "P2025") {

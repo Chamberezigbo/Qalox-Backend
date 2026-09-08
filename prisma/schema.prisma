@@ -1040,7 +1040,7 @@ model CouponRedemption {
   schoolId   Int
   redeemedAt DateTime @default(now())
 
-  coupon Coupon @relation(fields: [couponId], references: [id])
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
   school School @relation(fields: [schoolId], references: [id])
 
   @@unique([schoolId]) // one coupon redemption per school, ever
