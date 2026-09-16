@@ -26,7 +26,7 @@ const studentSchema = Joi.object({
   campus_id: Joi.number().required().optional(),
   class_id: Joi.number().required(),
   name: Joi.string().max(255).required(),
-  email: Joi.string().email().required(),
+  email: Joi.string().email().optional(),
   phoneNumber: Joi.string().max(50).optional(),
 });
 
