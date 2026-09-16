@@ -236,13 +236,21 @@ exports.sendSuperAdminNotification = async (req, res, next) => {
     const scheduledAtValue = scheduledAt ? new Date(scheduledAt) : null;
     const isScheduled = Boolean(scheduledAtValue && scheduledAtValue > new Date());
 
-    if (recipientTarget.startsWith("marketer")) {
+    const MARKETER_TARGETS = new Set(["all_marketers", "active_marketers", "top_performing"]);
+
+    if (MARKETER_TARGETS.has(recipientTarget) || recipientTarget.startsWith("marketer:")) {
       // Marketer targeting
       let targetMarketerIds = [];
       let recipientCount = 0;
 
       if (recipientTarget === "all_marketers") {
         const marketers = await prisma.admin.findMany({ where: { role: "marketer" }, select: { id: true } });
+        targetMarketerIds = marketers.map(m => m.id);
+      } else if (recipientTarget === "active_marketers") {
+        const marketers = await prisma.admin.findMany({ where: { role: "marketer", isSuspended: false }, select: { id: true } });
+        targetMarketerIds = marketers.map(m => m.id);
+      } else if (recipientTarget === "top_performing") {
+        const marketers = await prisma.admin.findMany({ where: { role: "marketer", tier: { in: ["gold", "platinum"] } }, select: { id: true } });
         targetMarketerIds = marketers.map(m => m.id);
       } else if (recipientTarget.startsWith("marketer:")) {
         targetMarketerIds = [parseInt(recipientTarget.split(":")[1])];
