@@ -91,6 +91,15 @@ exports.createStudent = async (req, res, next) => {
 
     const schoolId = req.schoolId;
 
+    // An empty string means "left blank" for these optional fields — store
+    // null rather than "" so it matches every other "not provided" case.
+    const normalizedOtherNames = otherNames?.trim() || null;
+    const normalizedGuardianName = guardianName?.trim() || null;
+    const normalizedGuardianNumber = guardianNumber?.trim() || null;
+    const normalizedGuardianEmail = guardianEmail?.trim() || null;
+    const normalizedLifestyle = lifestyle?.trim() || null;
+    const normalizedEmail = email?.trim() || null;
+
     // Convert string IDs to integers (HTTP always sends strings)
     const campusId = rawCampusId ? parseInt(rawCampusId) : null;
     const classId = rawClassId ? parseInt(rawClassId) : null;
@@ -218,16 +227,16 @@ exports.createStudent = async (req, res, next) => {
         campusId,
         classId,
         surname,
-        otherNames,
+        otherNames: normalizedOtherNames,
         gender,
         dateOfBirth,
-        guardianName,
-        guardianNumber,
-        guardianEmail,
-        lifestyle,
+        guardianName: normalizedGuardianName,
+        guardianNumber: normalizedGuardianNumber,
+        guardianEmail: normalizedGuardianEmail,
+        lifestyle: normalizedLifestyle,
         academicSessionId: resolvedAcademicSession.id,
         // session,
-        email,
+        email: normalizedEmail,
         registrationNumber: uniqueId,
         passportUrl,
         ...groupData, // ✅ Attach group if provided

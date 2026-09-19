@@ -33,6 +33,11 @@ exports.createStaff = async (req, res, next) => {
 
     const uniqueId = generateUniqueIdentifier(school.prefix, "STA");
 
+    // An empty string means "left blank" for these optional fields — store
+    // null rather than "" so it matches every other "not provided" case.
+    const normalizedPhoneNumber = phoneNumber?.trim() || null;
+    const normalizedAddress = address?.trim() || null;
+    const normalizedNextOfKin = nextOfKin?.trim() || null;
 
     // ✅ Check duplicate email
     const existingStaff = await prisma.staff.findUnique({
@@ -53,10 +58,10 @@ exports.createStaff = async (req, res, next) => {
         name,
         email,
         gender,
-        phoneNumber,
-        address,
+        phoneNumber: normalizedPhoneNumber,
+        address: normalizedAddress,
         duty,
-        nextOfKin,
+        nextOfKin: normalizedNextOfKin,
         registrationNumber: uniqueId,
         dateEmployed: dateEmployed ? new Date(dateEmployed) : null,
         payroll,
@@ -220,6 +225,12 @@ exports.updateStaff = async (req, res, next) => {
           message: "A staff with this email already exists.",
         });
       }
+    }
+
+    // An empty string means "clear this field" for these optional fields —
+    // store null rather than "" so it matches every other "not provided" case.
+    for (const key of ["phoneNumber", "address", "nextOfKin"]) {
+      if (typeof value[key] === "string") value[key] = value[key].trim() || null;
     }
 
     // Update staff

@@ -35,13 +35,13 @@ exports.loginSchema = Joi.object({
 exports.studentSchema = Joi.object({
   surname: Joi.string().max(100).required(),
   name: Joi.string().max(100).required(),
-  otherNames: Joi.string().max(255).optional(),
+  otherNames: Joi.string().max(255).allow("").optional(),
   gender: Joi.string().valid("Male", "Female", "Other").required(),
   dateOfBirth: Joi.date().iso().required(),
-  guardianName: Joi.string().max(255).optional(),
-  guardianNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).optional(), // allows phone numbers
-  guardianEmail: Joi.string().email().max(255).optional(),
-  lifestyle: Joi.string().max(255).optional(),
+  guardianName: Joi.string().max(255).allow("").optional(),
+  guardianNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).allow("").optional(), // allows phone numbers
+  guardianEmail: Joi.string().email().max(255).allow("").optional(),
+  lifestyle: Joi.string().max(255).allow("").optional(),
   session: Joi.string().max(50).required(),
 
   // Associations
@@ -51,7 +51,7 @@ exports.studentSchema = Joi.object({
   groupId: Joi.number().integer().optional(),
 
   // Optional contact info
-  email: Joi.string().email().max(255).optional(),
+  email: Joi.string().email().max(255).allow("").optional(),
   // phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).optional(),
 });
 
@@ -60,12 +60,12 @@ exports.staffSchema = Joi.object({
   name: Joi.string().max(100).required(),
   email: Joi.string().email().max(255).required(),
   gender: Joi.string().valid("Male", "Female", "Other").optional(),
-  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).optional(),
-  address: Joi.string().max(255).optional(),
+  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).allow("").optional(),
+  address: Joi.string().max(255).allow("").optional(),
 
   // Job-related info
   duty: Joi.string().max(255).required(),
-  nextOfKin: Joi.string().max(255).optional(),
+  nextOfKin: Joi.string().max(255).allow("").optional(),
   dateEmployed: Joi.date().iso().optional(),
   payroll: Joi.number().precision(2).optional(), // decimal salary
 
@@ -79,12 +79,12 @@ exports.editStaffSchema = Joi.object({
   name: Joi.string().max(100).optional(),
   email: Joi.string().email().max(255).optional(),
   gender: Joi.string().valid("Male", "Female", "Other").optional(),
-  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).optional(),
-  address: Joi.string().max(255).optional(),
+  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).allow("").optional(),
+  address: Joi.string().max(255).allow("").optional(),
 
   // Job-related info
   duty: Joi.string().max(255).optional(),
-  nextOfKin: Joi.string().max(255).optional(),
+  nextOfKin: Joi.string().max(255).allow("").optional(),
   dateEmployed: Joi.date().iso().optional(),
   payroll: Joi.number().precision(2).optional(), // decimal salary
 
@@ -103,9 +103,9 @@ exports.assignTeacherSchema = Joi.object({
 exports.classSchema = Joi.object({
   name: Joi.string().max(100).required(),
   campusId: Joi.number().integer().optional(), // optional since not all schools have campuses
-  customName: Joi.string().max(255).optional(), // custom class name (if school uses custom naming)
+  customName: Joi.string().max(255).allow("").optional(), // custom class name (if school uses custom naming)
   staffId: Joi.number().integer().optional(), // optional, assign class teacher at creation
-  department: Joi.string().max(100).optional(), // e.g. Sciences, Arts, Commercial, Social Sciences
+  department: Joi.string().max(100).allow("").optional(), // e.g. Sciences, Arts, Commercial, Social Sciences
 });
 
 // ✅ Validation schema for class groups
