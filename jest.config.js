@@ -16,5 +16,10 @@ module.exports = {
   ],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/res/$1'
-  }
+  },
+  // Several suites are integration tests against a remote database. Connecting
+  // through Railway's public proxy alone takes ~4s, so Jest's 5s default left
+  // no room for the query itself and timed the hooks out. This is a ceiling,
+  // not a wait — the mocked suites still finish in milliseconds.
+  testTimeout: 60000
 };

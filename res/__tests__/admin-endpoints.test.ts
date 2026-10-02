@@ -1,8 +1,18 @@
 import { AssessmentService } from "../Services/AssessmentService";
 import { AcademicTermService } from "../Services/AcademicTermService";
 import prisma from "../util/prisma";
+import { describeIfDestructiveAllowed } from "./helpers/test-database-guard";
 
-describe("Admin Endpoints Tests", () => {
+// This suite writes: it creates remark schemes and updates academic terms.
+//
+// Its fixture ids are also wrong in a way that has been quietly protecting
+// production — it asks to update termId 1 "belonging to" schoolId 1, but term
+// 1 actually belongs to school 5, so the update finds nothing and fails. Point
+// those ids at records that genuinely match and the term tests start
+// succeeding, overwriting a real school's resumption date with a 2024 test
+// value. So the ids are deliberately left as they are, and the suite is gated
+// instead: it needs a throwaway database, not consistent ids.
+describeIfDestructiveAllowed("Admin Endpoints Tests")("Admin Endpoints Tests", () => {
   const assessmentService = new AssessmentService();
   const termService = new AcademicTermService();
 

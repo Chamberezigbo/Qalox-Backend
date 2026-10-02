@@ -1,12 +1,35 @@
 import { StudentDashboardService } from "../Services/student/StudentDashboardService";
 import { StudentResultService } from "../Services/student/StudentResultService";
+import prisma from "../util/prisma";
 
 describe("Student Endpoints Tests", () => {
   const dashboardService = new StudentDashboardService();
   const resultService = new StudentResultService();
-  const testStudentId = 1;
-  const testSchoolId = 1;
-  const testAcademicSessionId = 1;
+
+  // Resolved from the database rather than hardcoded. These were pinned to id
+  // 1, which was deleted at some point — every test then failed on "Student
+  // not found" long before reaching what it meant to assert. Deriving the
+  // school and session from the student itself also keeps the three consistent.
+  let testStudentId: number;
+  let testSchoolId: number;
+  let testAcademicSessionId: number;
+
+  beforeAll(async () => {
+    const student = await prisma.student.findFirst({
+      orderBy: { id: "asc" },
+      select: { id: true, schoolId: true, academicSessionId: true },
+    });
+
+    if (!student) {
+      throw new Error(
+        "No students in the database — these tests read live data and cannot run against an empty one."
+      );
+    }
+
+    testStudentId = student.id;
+    testSchoolId = student.schoolId;
+    testAcademicSessionId = student.academicSessionId;
+  });
 
   describe("Student Dashboard Endpoint", () => {
     test("Should return student basic information", async () => {
