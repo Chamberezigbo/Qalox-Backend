@@ -1,7 +1,10 @@
 import { GradingService } from "../Services/teacher/GradingService";
 import prisma from "../util/prisma";
+import { describeIfDestructiveAllowed } from "./helpers/test-database-guard";
 
-describe("Grading Endpoints Tests", () => {
+// This suite deletes real gradingSchemeClass rows in beforeAll, so it only
+// runs against a database explicitly marked as throwaway — see the guard.
+describeIfDestructiveAllowed("Grading Endpoints Tests")("Grading Endpoints Tests", () => {
   const gradingService = new GradingService();
   const testSchoolId = 1;
   const testCampusId = 1;
