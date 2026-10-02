@@ -114,6 +114,7 @@ model Admin {
   createdContinuousAssessments ContinuousAssessment[] @relation("AdminCreatedCAs")
   createdExams                 Exam[]                 @relation("AdminCreatedExams")
   createdExamSchedules         ExamSchedule[]         @relation("AdminCreatedExamSchedules")
+  uploadedSchemeOfWork         SchemeOfWork[]
 
   publishedResults PublishedResult[]
   commissions      Commission[]
@@ -173,6 +174,18 @@ model School {
   smsQuotaOverride Int?
   smsUsedThisTerm  Int  @default(0)
 
+  // AI generation credits (Scheme of Work → AI Lesson Notes / Exam Questions)
+  // follow the exact same pattern — see res/util/getAiCreditsAllowanceForSchool.js.
+  // aiCreditsOverride is a Super Admin manual escape hatch; null means "use
+  // the plan's allowance" (and a school on a plan with aiCreditsPerTerm=null,
+  // e.g. Basic, gets 0 — the feature is excluded, not just quota-limited).
+  // aiCreditsUsedThisTerm resets alongside smsUsedThisTerm when a new
+  // AcademicTerm is activated. Credits are reserved optimistically against
+  // the worst-case cost of a generation request, then trued up (refunded
+  // down) once the real Gemini token usage is known — see AiCreditService.
+  aiCreditsOverride     Int?
+  aiCreditsUsedThisTerm Int  @default(0)
+
   // Current active billing plan (denormalized convenience alongside
   // SchoolSubscription, which holds the full billing-cycle history).
   billingPlanId Int?
@@ -201,6 +214,10 @@ model School {
   assignments         Assignment[]
   bankAccounts        SchoolBankAccount[]
   couponRedemptions   CouponRedemption[]
+  schemeOfWork        SchemeOfWork[]
+  lessonNotes         LessonNote[]
+  aiGenerationJobs    AiGenerationJob[]
+  tests               Test[]
 
   @@index([billingPlanId])
   @@map("schools")
@@ -298,6 +315,10 @@ model Class {
   attendance    Attendance[]
   examScheduleEntries ExamScheduleEntry[]
   postedAssignments   Assignment[]
+  schemeOfWork        SchemeOfWork[]
+  lessonNotes         LessonNote[]
+  aiGenerationJobs    AiGenerationJob[]
+  tests               Test[]
 
   // Optionally, add a unique constraint for name, school, and campus
   @@unique([name, schoolId, campusId])
@@ -337,6 +358,9 @@ model Staff {
   resultSubmissions ResultSubmission[]
   markedAttendance Attendance[]
   postedAssignments Assignment[]
+  lessonNotes       LessonNote[]
+  aiGenerationJobs  AiGenerationJob[]
+  createdTests      Test[]
 
   @@unique([schoolId, registrationNumber])
   @@map("staffs")
@@ -379,6 +403,7 @@ model Student {
   studentFees StudentFee[]
   attendance  Attendance[]
   parentAlerts ParentAlert[]
+  testAttempts StudentTestAttempt[]
 
   // ✅ NEW: Unique constraint for registration number per school
   @@unique([schoolId, registrationNumber])
@@ -436,6 +461,10 @@ model Subject {
   resultSubmissions ResultSubmission[]
   examScheduleEntries ExamScheduleEntry[]
   postedAssignments Assignment[]
+  schemeOfWork      SchemeOfWork[]
+  lessonNotes       LessonNote[]
+  aiGenerationJobs  AiGenerationJob[]
+  tests             Test[]
 
   @@map("subjects")
 }
@@ -849,6 +878,10 @@ model AcademicTerm {
   examResults       ExamResult[]
   resultSubmissions ResultSubmission[]
   publishedResults  PublishedResult[]
+  schemeOfWork      SchemeOfWork[]
+  lessonNotes       LessonNote[]
+  aiGenerationJobs  AiGenerationJob[]
+  tests             Test[]
 
   @@unique([schoolId, sessionId, name])
   @@map("academic_terms")
@@ -953,6 +986,7 @@ model BillingPlan {
   maxStudents   Int?     // null = unlimited (Premium)
   maxSubAdmins  Int?     // null = unlimited (Premium)
   smsQuotaPerTerm Int?   // null = mirror maxStudents; set explicitly for unlimited-student plans (e.g. Premium)
+  aiCreditsPerTerm Int?  // null = AI Lesson Note/Exam Question Generator not included on this plan (e.g. Basic)
   isActive      Boolean  @default(true)
   highlighted   Boolean  @default(false)
   createdAt     DateTime @default(now())
@@ -1520,4 +1554,301 @@ model UserNotification {
   @@index([recipientType, recipientId])
   @@index([isRead])
   @@map("user_notifications")
+}
+
+// ============================================
+// AI LESSON NOTES, EXAM QUESTIONS & CBT
+// ============================================
+// Admins upload a Scheme of Work (curriculum document) per class+subject+
+// term. Teachers use AI, grounded in that document, to generate Lesson
+// Notes and Exam Questions; Exam Questions become a CBT Test students take
+// from their own dashboard. AI cost is metered via School.aiCreditsUsedThisTerm
+// (see res/Services/AiCreditService.js) — SchemeOfWork extraction itself is
+// NOT an AI call (pdf-parse only), so uploading one never costs credits.
+
+model SchemeOfWork {
+  id             Int      @id @default(autoincrement())
+  schoolId       Int
+  classId        Int
+  subjectId      Int
+  academicTermId Int
+  title          String   @db.VarChar(255)
+
+  // How this scheme was supplied. A PDF is read with pdf-parse and costs
+  // nothing; snapped photos need a Gemini Vision call per page, which DOES
+  // consume AI credits (creditsCharged below) — falling back to local
+  // Tesseract, free but lower quality, when the school has none left.
+  sourceType       String @default("pdf") @db.VarChar(16) // pdf | images
+  extractionMethod String @default("pdf_parse") @db.VarChar(20) // pdf_parse | gemini_vision | tesseract
+  creditsCharged   Int    @default(0) // 0 for a PDF upload
+
+  // Plain prose pulled out of the source at upload time, truncated to a
+  // bounded excerpt when fed to Gemini at generation time — see
+  // res/Services/SchemeOfWorkService.js. For a multi-page photo upload this
+  // is every page's text joined in page order.
+  extractedText       String? @db.LongText
+  extractedTextStatus String  @default("pending") @db.VarChar(16) // pending | ready | failed
+  extractionError     String? @db.Text
+
+  // Re-uploading for the same (classId, subjectId, academicTermId) archives
+  // the previous active row rather than overwriting it, so history survives
+  // for audit — "the" current document is always status = "active".
+  status            String   @default("active") @db.VarChar(16) // active | archived
+  uploadedByAdminId Int
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  school          School       @relation(fields: [schoolId], references: [id])
+  class           Class        @relation(fields: [classId], references: [id])
+  subject         Subject      @relation(fields: [subjectId], references: [id])
+  academicTerm    AcademicTerm @relation(fields: [academicTermId], references: [id])
+  uploadedByAdmin Admin        @relation(fields: [uploadedByAdminId], references: [id])
+
+  files            SchemeOfWorkFile[]
+  lessonNotes      LessonNote[]
+  tests            Test[]
+  aiGenerationJobs AiGenerationJob[]
+
+  @@index([schoolId, classId, subjectId, academicTermId])
+  @@index([schoolId])
+  @@map("scheme_of_work")
+}
+
+// One uploaded source file per row: a single PDF, or one row per snapped
+// page when the admin photographs a scheme booklet (capped per upload in
+// the middleware). `order` is the page sequence the extracted text is
+// joined in, so a scheme photographed out of order can be corrected without
+// re-uploading.
+model SchemeOfWorkFile {
+  id             Int    @id @default(autoincrement())
+  schemeOfWorkId Int
+  order          Int    @default(0)
+
+  // "r2:<key>" — resolved to a fresh presigned URL on read via
+  // schoolMediaUrl(), never stored/returned as a raw URL (same convention
+  // as Assignment.attachmentUrl).
+  fileUrl  String @db.VarChar(500)
+  fileName String @db.VarChar(255)
+  fileSize Int
+  mimeType String @db.VarChar(128)
+
+  createdAt DateTime @default(now())
+
+  schemeOfWork SchemeOfWork @relation(fields: [schemeOfWorkId], references: [id], onDelete: Cascade)
+
+  @@index([schemeOfWorkId])
+  @@map("scheme_of_work_files")
+}
+
+// One row per AI generation request (lesson note or exam questions),
+// polled by the frontend while processing — same lifecycle shape as
+// BulkImportJob (queued/processing -> done|failed, id prefix convention,
+// stage/progress for a staged-checklist UI).
+model AiGenerationJob {
+  id       String @id @db.VarChar(64) // "aig_<random hex>"
+  schoolId Int
+  staffId  Int // requesting teacher
+  jobType  String @db.VarChar(24) // "lesson_note" | "exam_questions"
+
+  schemeOfWorkId Int
+  classId        Int
+  subjectId      Int
+  academicTermId Int
+
+  inputParamsJson String @db.LongText // { topic, weekRange, length|questionCount, difficulty, ... }
+
+  status       String  @default("queued") @db.VarChar(16) // queued | processing | done | failed
+  stage        String  @default("Queued") @db.VarChar(64)
+  progress     Int     @default(0)
+  errorMessage String? @db.Text
+
+  // Cost accounting — see res/Services/AiCreditService.js. Credits are
+  // reserved against the worst-case output-token cap at job creation, then
+  // trued up (refunded down) once Gemini's real usageMetadata comes back;
+  // fully refunded on failure. model is stored per-row so a future model
+  // swap can't retroactively change the cost of historical jobs.
+  model                 String @default("gemini-2.0-flash") @db.VarChar(64)
+  estimatedInputTokens  Int?
+  estimatedOutputTokens Int?
+  actualInputTokens     Int?
+  actualOutputTokens    Int?
+  creditsReserved       Int
+  creditsCharged        Int?
+
+  resultLessonNoteId Int? // set when jobType = lesson_note and it completes
+  resultTestId       Int? // set when jobType = exam_questions and it completes
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  school       School       @relation(fields: [schoolId], references: [id])
+  staff        Staff        @relation(fields: [staffId], references: [id])
+  schemeOfWork SchemeOfWork @relation(fields: [schemeOfWorkId], references: [id])
+  class        Class        @relation(fields: [classId], references: [id])
+  subject      Subject      @relation(fields: [subjectId], references: [id])
+  academicTerm AcademicTerm @relation(fields: [academicTermId], references: [id])
+
+  @@index([schoolId])
+  @@index([staffId])
+  @@index([status])
+  @@map("ai_generation_jobs")
+}
+
+model LessonNote {
+  id              Int     @id @default(autoincrement())
+  schoolId        Int
+  classId         Int
+  subjectId       Int
+  academicTermId  Int
+  staffId         Int
+  schemeOfWorkId  Int?
+  generationJobId String? @db.VarChar(64)
+
+  title          String  @db.VarChar(255)
+  topic          String? @db.VarChar(255) // specific topic/week this note covers
+  objectivesJson String? @db.Text
+  content        String  @db.LongText // markdown; teacher edits in place after generation
+
+  // Written as "draft" the moment generation finishes — never auto-published.
+  // The teacher's review screen flips it to "final" via an explicit action.
+  status String @default("draft") @db.VarChar(16) // draft | final
+  source String @default("ai_generated") @db.VarChar(24) // ai_generated | ai_generated_edited | manual
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school       School        @relation(fields: [schoolId], references: [id])
+  class        Class         @relation(fields: [classId], references: [id])
+  subject      Subject       @relation(fields: [subjectId], references: [id])
+  academicTerm AcademicTerm  @relation(fields: [academicTermId], references: [id])
+  staff        Staff         @relation(fields: [staffId], references: [id])
+  schemeOfWork SchemeOfWork? @relation(fields: [schemeOfWorkId], references: [id])
+
+  @@index([schoolId, classId, subjectId])
+  @@index([staffId])
+  @@map("lesson_notes")
+}
+
+// ---- CBT (computer-based test) subsystem — Phase 3. Schema designed now
+// alongside the rest of this feature set since it shares SchemeOfWork and
+// AiGenerationJob; no controllers/services exist for it yet. Grading is
+// pure comparison logic (isCorrect = selectedOptionId matches the option
+// flagged isCorrect) — administering a test to any number of students costs
+// zero additional AI credits; only the one-time question generation does. ----
+
+enum TestStatus {
+  draft
+  published
+  closed
+}
+
+model Test {
+  id               Int     @id @default(autoincrement())
+  schoolId         Int
+  classId          Int
+  subjectId        Int
+  academicTermId   Int
+  createdByStaffId Int
+  schemeOfWorkId   Int?
+  generationJobId  String? @db.VarChar(64)
+
+  title                  String     @db.VarChar(255)
+  instructions           String?    @db.Text
+  durationMinutes        Int        @default(30)
+  maxAttempts            Int        @default(1)
+  shuffleQuestions       Boolean    @default(true)
+  showResultsImmediately Boolean    @default(true)
+  opensAt                DateTime?
+  closesAt               DateTime?
+  status                 TestStatus @default(draft)
+  publishedAt            DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school       School        @relation(fields: [schoolId], references: [id])
+  class        Class         @relation(fields: [classId], references: [id])
+  subject      Subject       @relation(fields: [subjectId], references: [id])
+  academicTerm AcademicTerm  @relation(fields: [academicTermId], references: [id])
+  createdBy    Staff         @relation(fields: [createdByStaffId], references: [id])
+  schemeOfWork SchemeOfWork? @relation(fields: [schemeOfWorkId], references: [id])
+
+  questions Question[]
+  attempts  StudentTestAttempt[]
+
+  @@index([schoolId, classId, subjectId])
+  @@index([status])
+  @@map("cbt_tests")
+}
+
+model Question {
+  id          Int     @id @default(autoincrement())
+  testId      Int
+  type        String  @default("multiple_choice") @db.VarChar(24) // multiple_choice only in v1 — see plan notes
+  text        String  @db.Text
+  marks       Int     @default(1)
+  order       Int
+  explanation String? @db.Text // optional, shown after submission if showResultsImmediately
+
+  test    Test             @relation(fields: [testId], references: [id], onDelete: Cascade)
+  options QuestionOption[]
+  answers StudentAnswer[]
+
+  @@index([testId])
+  @@map("cbt_questions")
+}
+
+model QuestionOption {
+  id         Int     @id @default(autoincrement())
+  questionId Int
+  text       String  @db.Text
+  isCorrect  Boolean @default(false)
+  order      Int
+
+  question   Question        @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selectedBy StudentAnswer[] @relation("SelectedOption")
+
+  @@index([questionId])
+  @@map("cbt_question_options")
+}
+
+model StudentTestAttempt {
+  id            Int       @id @default(autoincrement())
+  testId        Int
+  studentId     Int
+  attemptNumber Int       @default(1)
+  startedAt     DateTime  @default(now())
+  deadlineAt    DateTime // startedAt + test.durationMinutes, frozen at start — immune to a later duration edit
+  submittedAt   DateTime?
+  status        String    @default("in_progress") @db.VarChar(16) // in_progress | submitted | auto_submitted
+  score         Decimal?
+  totalPossible Decimal?
+
+  test    Test            @relation(fields: [testId], references: [id])
+  student Student         @relation(fields: [studentId], references: [id])
+  answers StudentAnswer[]
+
+  @@unique([testId, studentId, attemptNumber])
+  @@index([testId])
+  @@index([studentId])
+  @@map("cbt_attempts")
+}
+
+model StudentAnswer {
+  id               Int      @id @default(autoincrement())
+  attemptId        Int
+  questionId       Int
+  selectedOptionId Int?
+  isCorrect        Boolean?
+  marksAwarded     Decimal?
+  answeredAt       DateTime @updatedAt
+
+  attempt        StudentTestAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question       Question           @relation(fields: [questionId], references: [id])
+  selectedOption QuestionOption?    @relation("SelectedOption", fields: [selectedOptionId], references: [id])
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+  @@map("cbt_answers")
 }

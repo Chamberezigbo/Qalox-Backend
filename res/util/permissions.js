@@ -24,6 +24,7 @@ const PERMISSIONS = {
   ANALYTICS_VIEW: "analytics.view",
   EXAMS_MANAGE: "exams.manage",
   PARENTS_MANAGE: "parents.manage",
+  SCHEME_OF_WORK_MANAGE: "scheme_of_work.manage",
 };
 
 // Human-readable labels, matching the frontend's sidebar module names exactly.
@@ -42,6 +43,7 @@ const PERMISSION_LABELS = {
   [PERMISSIONS.ANALYTICS_VIEW]: "Campus Analytics",
   [PERMISSIONS.EXAMS_MANAGE]: "Manage Exams",
   [PERMISSIONS.PARENTS_MANAGE]: "Parent Credentials",
+  [PERMISSIONS.SCHEME_OF_WORK_MANAGE]: "Scheme of Work",
 };
 
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);

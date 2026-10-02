@@ -33,6 +33,14 @@ const {
 } = require("../../controller/admin/BulkImportController");
 
 const uploadBulkImport = require("../../middleware/uploadBulkImport");
+const uploadSchemeOfWork = require("../../middleware/uploadSchemeOfWork");
+const {
+  uploadSchemeOfWork: uploadSchemeOfWorkDocument,
+  listSchemesOfWork,
+  getSchemeOfWork,
+  deleteSchemeOfWork,
+  getAiCredits,
+} = require("../../controller/admin/SchemeOfWorkController");
 
 const {
   upsertFeeStructure,
@@ -275,6 +283,16 @@ router.post("/class-groups/create", validate(classGroupSchema), auth.authenticat
 router.get("/class-groups", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.CLASSES_MANAGE, PERMISSIONS.STUDENTS_MANAGE]), auth.attachSchoolId, getClassGroups);
 router.patch("/class/update/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClass);
 router.patch("/class-group/update/:groupId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClassGroup);
+
+// Scheme of Work routes — sub-admins need PERMISSIONS.SCHEME_OF_WORK_MANAGE; head admins always pass.
+// Accepts one PDF or up to 10 page photos per upload (see uploadSchemeOfWork).
+router.post("/scheme-of-work", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SCHEME_OF_WORK_MANAGE), auth.attachSchoolId, uploadSchemeOfWork.array("files"), uploadSchemeOfWorkDocument);
+router.get("/scheme-of-work", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.SCHEME_OF_WORK_MANAGE, PERMISSIONS.CLASSES_MANAGE]), auth.attachSchoolId, listSchemesOfWork);
+router.get("/scheme-of-work/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.SCHEME_OF_WORK_MANAGE, PERMISSIONS.CLASSES_MANAGE]), auth.attachSchoolId, getSchemeOfWork);
+router.delete("/scheme-of-work/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SCHEME_OF_WORK_MANAGE), auth.attachSchoolId, deleteSchemeOfWork);
+
+// AI credit meter — read-only, used by any screen that's about to spend credits.
+router.get("/ai/credits", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, getAiCredits);
 
 // Campus routes — sub-admins need PERMISSIONS.CAMPUSES_MANAGE; head admins always pass
 router.post("/campus/create", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, createCampus);

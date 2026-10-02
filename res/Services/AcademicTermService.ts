@@ -62,10 +62,11 @@ export class AcademicTermService {
                 where: { id: term.sessionId },
                 data: { isActive: true }
             }),
-            // Reset the SMS broadcast quota for the new term
+            // Reset the per-term usage counters (SMS broadcasts and AI
+            // generation credits) for the new term
             prisma.school.update({
                 where: { id: schoolId },
-                data: { smsUsedThisTerm: 0 }
+                data: { smsUsedThisTerm: 0, aiCreditsUsedThisTerm: 0 }
             }),
         ]);
 

@@ -31,11 +31,12 @@ const PLANS = [
   {
     name: "Basic",
     description: "For schools with up to 300 students",
-    monthlyPrice: 40000,
+    monthlyPrice: 45000,
     annualPrice: 110000,
     minStudents: 0,
     maxStudents: 300,
     smsQuotaPerTerm: null, // mirrors maxStudents (300)
+    aiCreditsPerTerm: null, // AI generator not included on Basic — see the features list below
     maxSubAdmins: 1,
     isActive: true,
     highlighted: false,
@@ -49,6 +50,7 @@ const PLANS = [
     minStudents: 301,
     maxStudents: 700,
     smsQuotaPerTerm: null, // mirrors maxStudents (700)
+    aiCreditsPerTerm: 600, // ≈300 lesson notes or ≈150 exam question sets per term
     maxSubAdmins: 5,
     isActive: true,
     highlighted: true,
@@ -62,6 +64,7 @@ const PLANS = [
     minStudents: 701,
     maxStudents: null,
     smsQuotaPerTerm: 2500, // maxStudents is unlimited, so this needs an explicit cap
+    aiCreditsPerTerm: 2000, // ≈1000 lesson notes or ≈500 exam question sets per term
     maxSubAdmins: null,
     isActive: true,
     highlighted: false,
