@@ -180,17 +180,14 @@ exports.getClassGroups = async (req, res, next) => {
          const filters = {};
          if (classId) filters.classId = Number(classId);
      
+         const where = { ...filters, class: { schoolId: schoolId } };
+
          // ✅ Get total count (for pagination metadata)
-         const totalCount = await prisma.classGroup.count({ where: filters });
-     
+         const totalCount = await prisma.classGroup.count({ where });
+
          // ✅ Fetch groups with pagination
          const groups = await prisma.classGroup.findMany({
-           where: {
-            ...filters, class: {
-              schoolId:schoolId
-            }
-
-           },
+           where,
            skip: (page - 1) * limit,
            take: Number(limit),
            orderBy: { createdAt: "desc" },

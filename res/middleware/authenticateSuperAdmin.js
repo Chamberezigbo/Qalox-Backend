@@ -120,10 +120,13 @@ const authenticateSchoolLevelAdmin = async (req, res, next) => {
 };
 
 // Middleware factory: gates a route behind a permission key for sub-admins.
+// Accepts either a single key or an array of keys where any one is enough
+// (e.g. a read endpoint that's a dependency of more than one feature).
 // Head admins (super_admin/school_admin) always pass. Must run after
 // authenticateSchoolLevelAdmin.
 const requirePermission = (permissionKey) => (req, res, next) => {
   const { role, permissions } = req.user || {};
+  const requiredKeys = Array.isArray(permissionKey) ? permissionKey : [permissionKey];
 
   if (role === "super_admin" || role === "school_admin") {
     return next();
@@ -132,10 +135,10 @@ const requirePermission = (permissionKey) => (req, res, next) => {
   if (role === "sub_admin") {
     const { parsePermissions } = require("../util/permissions");
     const granted = parsePermissions(permissions);
-    if (granted.includes(permissionKey)) {
+    if (requiredKeys.some((key) => granted.includes(key))) {
       return next();
     }
-    return next(new AppError(`Unauthorized: Missing permission "${permissionKey}"`, 403));
+    return next(new AppError(`Unauthorized: Missing permission "${requiredKeys.join('" or "')}"`, 403));
   }
 
   return next(new AppError("Unauthorized", 403));
