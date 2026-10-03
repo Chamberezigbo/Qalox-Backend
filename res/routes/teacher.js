@@ -20,6 +20,7 @@ const teacherController = new TeacherController();
 const attendanceController = new AttendanceController();
 const teacherAnalyticsController = new TeacherAnalyticsController();
 const assignmentController = new AssignmentController();
+const lessonNoteController = require("../controller/teacher/LessonNoteController");
 const examTimetableController = new ExamTimetableController();
 
 router.post("/login", teacherAuthController.login);
@@ -71,6 +72,16 @@ router.post("/assignments", teacherAuthMiddleware, uploadAssignment.single("atta
 router.get("/assignments", teacherAuthMiddleware, assignmentController.list);
 router.patch("/assignments/:id", teacherAuthMiddleware, uploadAssignment.single("attachment"), assignmentController.update);
 router.delete("/assignments/:id", teacherAuthMiddleware, assignmentController.remove);
+
+// AI Lesson Notes. Generation is async — /generate returns a jobId the client
+// polls, because a Gemini call takes far longer than a request should hold open.
+router.post("/lesson-notes/generate", teacherAuthMiddleware, lessonNoteController.generateLessonNote);
+router.get("/lesson-notes/generate/:jobId", teacherAuthMiddleware, lessonNoteController.getGenerationStatus);
+router.get("/lesson-notes", teacherAuthMiddleware, lessonNoteController.listLessonNotes);
+router.get("/lesson-notes/:id", teacherAuthMiddleware, lessonNoteController.getLessonNote);
+router.patch("/lesson-notes/:id", teacherAuthMiddleware, lessonNoteController.updateLessonNote);
+router.delete("/lesson-notes/:id", teacherAuthMiddleware, lessonNoteController.deleteLessonNote);
+router.get("/ai/credits", teacherAuthMiddleware, lessonNoteController.getAiCredits);
 
 router.get("/ca", teacherAuthMiddleware, teacherController.getCAs);
 router.get("/exam", teacherAuthMiddleware, teacherController.getExams);
