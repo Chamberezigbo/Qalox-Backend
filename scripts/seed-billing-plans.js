@@ -27,20 +27,40 @@ const commonFeatures = [
 
 const AI_FEATURE = "AI Lesson Note and Exam Question Generator";
 
+// Lite is for schools too small to need either of these, and dropping them is
+// what stops Lite and Basic rendering as two identical cards on the public
+// pricing page that differ only in price.
+const LITE_EXCLUDES = ["Multi-Campus Support", "Advanced Reporting"];
+const liteFeatures = commonFeatures.filter((f) => !LITE_EXCLUDES.includes(f));
+
 const PLANS = [
   {
-    name: "Basic",
-    description: "For schools with up to 300 students",
-    monthlyPrice: 45000,
-    annualPrice: 110000,
+    name: "Lite",
+    description: "For schools with up to 50 students",
+    monthlyPrice: 20000,
+    annualPrice: 54000, // 3 terms less 10%
     minStudents: 0,
-    maxStudents: 300,
-    smsQuotaPerTerm: null, // mirrors maxStudents (300)
-    aiCreditsPerTerm: null, // AI generator not included on Basic — see the features list below
+    maxStudents: 50,
+    smsQuotaPerTerm: null, // mirrors maxStudents (50)
+    aiCreditsPerTerm: 150, // ≈75 lesson notes per term — AI is the reason this tier exists
     maxSubAdmins: 1,
     isActive: true,
     highlighted: false,
-    features: ["Admin Portal (Admin & 1 Sub-Admin only)", ...commonFeatures],
+    features: ["Admin Portal (Admin & 1 Sub-Admin only)", AI_FEATURE, ...liteFeatures],
+  },
+  {
+    name: "Basic",
+    description: "For schools with 51-300 students",
+    monthlyPrice: 45000,
+    annualPrice: 110000,
+    minStudents: 51,
+    maxStudents: 300,
+    smsQuotaPerTerm: null, // mirrors maxStudents (300)
+    aiCreditsPerTerm: 400, // ≈200 lesson notes per term
+    maxSubAdmins: 1,
+    isActive: true,
+    highlighted: false,
+    features: ["Admin Portal (Admin & 1 Sub-Admin only)", AI_FEATURE, ...commonFeatures],
   },
   {
     name: "Standard",
@@ -74,7 +94,7 @@ const PLANS = [
 
 async function seedBillingPlans() {
   try {
-    console.log("🌱 Seeding real billing plans (Basic / Standard / Premium)...");
+    console.log("🌱 Seeding real billing plans (Lite / Basic / Standard / Premium)...");
 
     for (const plan of PLANS) {
       const { features, ...rest } = plan;

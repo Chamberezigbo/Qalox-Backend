@@ -27,7 +27,7 @@ const resolveRecipientTargetFilter = (recipientTarget, regionFilter) => {
     };
   }
 
-  if (["premium", "enterprise", "basic"].includes(target)) {
+  if (["premium", "enterprise", "basic", "standard", "lite"].includes(target)) {
     return {
       billingPlan: { name: { contains: target, mode: "insensitive" } },
     };

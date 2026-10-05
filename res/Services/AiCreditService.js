@@ -76,9 +76,13 @@ async function reserveCredits(schoolId, credits) {
     const used = school?.aiCreditsUsedThisTerm ?? 0;
     const remaining = allowance - used;
 
+    // Every paid plan now carries an AI allowance, so reaching this means the
+    // school has no active plan at all — getActivePlanForSchool returned null
+    // because the subscription lapsed or was never started. Naming a tier to
+    // upgrade to would be misleading advice.
     if (allowance <= 0) {
       throw new AppError(
-        "AI generation isn't included on your school's current plan. Upgrade to Standard or Premium to use it.",
+        "AI generation needs an active subscription. Ask your school admin to renew your plan.",
         403
       );
     }

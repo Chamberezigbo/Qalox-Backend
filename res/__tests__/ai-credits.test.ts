@@ -86,13 +86,27 @@ describe("reserveCredits — pre-flight gate", () => {
     expect(mockPrisma.school.update).not.toHaveBeenCalled();
   });
 
-  it("refuses when the plan excludes AI entirely", async () => {
-    mockPlan.mockResolvedValue({ aiCreditsPerTerm: null }); // Basic
+  it("refuses when the school has no active plan", async () => {
+    // Every paid tier now carries an AI allowance, so a zero allowance means
+    // the subscription lapsed or never started, not that a tier excludes AI.
+    mockPlan.mockResolvedValue(null);
     mockPrisma.school.findUnique
       .mockResolvedValueOnce({ aiCreditsOverride: null })
       .mockResolvedValueOnce({ aiCreditsUsedThisTerm: 0 });
 
-    await expect(reserveCredits(1, 2)).rejects.toThrow(/isn't included on your school's current plan/);
+    await expect(reserveCredits(1, 2)).rejects.toThrow(/needs an active subscription/);
+    expect(mockPrisma.school.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses when a plan has AI switched off explicitly", async () => {
+    // Still reachable: the Super Admin plan form's "AI not included" checkbox
+    // writes aiCreditsPerTerm: null.
+    mockPlan.mockResolvedValue({ aiCreditsPerTerm: null });
+    mockPrisma.school.findUnique
+      .mockResolvedValueOnce({ aiCreditsOverride: null })
+      .mockResolvedValueOnce({ aiCreditsUsedThisTerm: 0 });
+
+    await expect(reserveCredits(1, 2)).rejects.toThrow(/needs an active subscription/);
     expect(mockPrisma.school.update).not.toHaveBeenCalled();
   });
 

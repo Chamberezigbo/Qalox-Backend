@@ -937,7 +937,14 @@ exports.getBillingPlans = async (req, res, next) => {
   try {
     logger.debug("[SUPER_ADMIN_GET_PLANS] Fetching billing plans");
 
-    // Get all active plans
+    // Get all active plans.
+    //
+    // The limit fields below are not optional extras: the Super Admin plan edit
+    // modal pre-fills itself from this response and treats a missing value as
+    // "unlimited" (`maxStudents == null` → the Unlimited checkbox), so omitting
+    // them made every save from that modal silently wipe the plan's caps. They
+    // are published pricing terms, so there is nothing to withhold from the
+    // unauthenticated marketing-site caller either.
     const plans = await prisma.billingPlan.findMany({
       where: { isActive: true },
       select: {
@@ -948,6 +955,12 @@ exports.getBillingPlans = async (req, res, next) => {
         annualPrice: true,
         features: true,
         highlighted: true,
+        isActive: true,
+        minStudents: true,
+        maxStudents: true,
+        maxSubAdmins: true,
+        smsQuotaPerTerm: true,
+        aiCreditsPerTerm: true,
         createdAt: true,
       },
       orderBy: [

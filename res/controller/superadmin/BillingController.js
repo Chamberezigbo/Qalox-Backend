@@ -186,7 +186,7 @@ exports.updateSubscription = async (req, res, next) => {
  */
 exports.createBillingPlan = async (req, res, next) => {
   try {
-    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins, smsQuotaPerTerm } = req.body;
+    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins, smsQuotaPerTerm, aiCreditsPerTerm } = req.body;
     if (!name) {
       return res.status(400).json({ success: false, message: "name is required" });
     }
@@ -204,6 +204,10 @@ exports.createBillingPlan = async (req, res, next) => {
         maxStudents: maxStudents === "" || maxStudents == null ? null : maxStudents,
         maxSubAdmins: maxSubAdmins === "" || maxSubAdmins == null ? null : maxSubAdmins,
         smsQuotaPerTerm: smsQuotaPerTerm === "" || smsQuotaPerTerm == null ? null : smsQuotaPerTerm,
+        // null here means AI generation is excluded from the plan outright, not
+        // "zero credits" — getAiCreditsAllowanceForSchool treats both the same,
+        // but the distinction is what the plan form's blank field expresses.
+        aiCreditsPerTerm: aiCreditsPerTerm === "" || aiCreditsPerTerm == null ? null : aiCreditsPerTerm,
       },
     });
 
@@ -221,7 +225,7 @@ exports.createBillingPlan = async (req, res, next) => {
 exports.updateBillingPlan = async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins, smsQuotaPerTerm } = req.body;
+    const { name, description, monthlyPrice, annualPrice, features, isActive, highlighted, minStudents, maxStudents, maxSubAdmins, smsQuotaPerTerm, aiCreditsPerTerm } = req.body;
 
     const updateData = {};
     if (name !== undefined) updateData.name = name;
@@ -235,6 +239,7 @@ exports.updateBillingPlan = async (req, res, next) => {
     if (maxStudents !== undefined) updateData.maxStudents = maxStudents === "" || maxStudents == null ? null : maxStudents;
     if (maxSubAdmins !== undefined) updateData.maxSubAdmins = maxSubAdmins === "" || maxSubAdmins == null ? null : maxSubAdmins;
     if (smsQuotaPerTerm !== undefined) updateData.smsQuotaPerTerm = smsQuotaPerTerm === "" || smsQuotaPerTerm == null ? null : smsQuotaPerTerm;
+    if (aiCreditsPerTerm !== undefined) updateData.aiCreditsPerTerm = aiCreditsPerTerm === "" || aiCreditsPerTerm == null ? null : aiCreditsPerTerm;
 
     const plan = await prisma.billingPlan.update({ where: { id }, data: updateData });
 
