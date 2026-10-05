@@ -125,15 +125,14 @@ async function buildDuplicateError(existing) {
     existing.uploadedByStaffId
       ? prisma.staff.findUnique({
           where: { id: existing.uploadedByStaffId },
-          select: { firstName: true, lastName: true },
+          select: { name: true },
         })
       : null,
     prisma.subject.findUnique({ where: { id: existing.subjectId }, select: { name: true } }),
   ]);
 
-  const uploadedBy = uploader
-    ? `${uploader.firstName ?? ""} ${uploader.lastName ?? ""}`.trim()
-    : "a school admin";
+  // Staff carries one `name` field, not firstName/lastName.
+  const uploadedBy = uploader?.name?.trim() || "a school admin";
 
   const error = new AppError(
     `A scheme of work for ${subject?.name ?? "this subject"} already exists for this class this term ("${existing.title}", uploaded by ${uploadedBy}). Replace it if you want to use a new document.`,
@@ -289,7 +288,7 @@ async function listSchemesOfWork(schoolId, { classId, subjectId, academicTermId,
       subject: { select: { id: true, name: true } },
       academicTerm: { select: { id: true, name: true } },
       // Teachers upload too, so an admin needs to see whose document this is.
-      uploadedByStaff: { select: { id: true, firstName: true, lastName: true } },
+      uploadedByStaff: { select: { id: true, name: true } },
       uploadedByAdmin: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: "desc" },

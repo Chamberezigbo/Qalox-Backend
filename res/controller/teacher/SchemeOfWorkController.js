@@ -121,7 +121,7 @@ exports.listSchemesOfWork = async (req, res, next) => {
         class: { select: { id: true, name: true, customName: true } },
         subject: { select: { id: true, name: true } },
         academicTerm: { select: { id: true, name: true } },
-        uploadedByStaff: { select: { id: true, firstName: true, lastName: true } },
+        uploadedByStaff: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: "desc" },
     });

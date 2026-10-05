@@ -95,7 +95,10 @@ beforeEach(() => {
   db.subject.findFirst.mockResolvedValue({ id: 12 });
   db.academicTerm.findFirst.mockResolvedValue({ id: 2 });
   db.subject.findUnique.mockResolvedValue({ name: "Biology" });
-  db.staff.findUnique.mockResolvedValue({ firstName: "Ada", lastName: "Obi" });
+  // Staff carries one `name` field — mirroring the real column matters here,
+  // since a mock shaped wrongly is exactly how the firstName/lastName bug
+  // survived the first round of these tests.
+  db.staff.findUnique.mockResolvedValue({ name: "Ada Obi" });
   extraction.textFromPdf.mockResolvedValue("Week 1: Photosynthesis.");
 
   // Runs the callback against a tx object that proxies to the mocked prisma.

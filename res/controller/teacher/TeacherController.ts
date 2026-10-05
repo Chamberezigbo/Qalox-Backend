@@ -3,6 +3,7 @@ import { Response, NextFunction } from "express";
 import { TeacherRequest } from "../../middleware/teacherMiddleware";
 import { TeacherService } from "../../Services/teacher/TeacherService";
 import { AcademicTermService } from "../../Services/AcademicTermService";
+import prisma from "../../util/prisma";
 
 
 export class TeacherController {
@@ -389,6 +390,54 @@ export class TeacherController {
             });
         }
     }
+
+    /**
+     * GET /api/teacher/subjects?classId=N
+     *
+     * The subjects this teacher is assigned to teach IN a given class — not
+     * every subject they teach anywhere, which is what /my-subjects returns.
+     * Any screen that asks "which subject, in this class?" needs this one:
+     * the AI lesson note generator and the scheme of work upload both do, and
+     * both were calling this path while nothing served it (404), which is why
+     * their Subject dropdowns came up empty.
+     */
+    getSubjectsForClass = async (req: TeacherRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.staffId || !req.schoolId) {
+                return res.status(401).json({ message: "Unauthorized" });
+            }
+
+            const classId = Number(req.query.classId);
+            if (!classId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "classId is required",
+                    code: "INVALID_REQUEST",
+                });
+            }
+
+            const assignments = await prisma.teacherAssignment.findMany({
+                where: { staffId: req.staffId, classId },
+                select: { subject: { select: { id: true, name: true } } },
+            });
+
+            // subjectId is nullable on TeacherAssignment (a teacher can be
+            // assigned to a class without a subject), and the same pair can
+            // appear more than once across campuses — so drop the empties and
+            // de-duplicate rather than handing the dropdown repeats.
+            const byId = new Map<number, { id: number; name: string }>();
+            for (const { subject } of assignments) {
+                if (subject) byId.set(subject.id, subject);
+            }
+
+            return res.status(200).json({
+                success: true,
+                data: [...byId.values()].sort((a, b) => a.name.localeCompare(b.name)),
+            });
+        } catch (err) {
+            next(err);
+        }
+    };
 
     getTeacherDetails = async (req: TeacherRequest, res: Response, next: NextFunction) => {
         try {

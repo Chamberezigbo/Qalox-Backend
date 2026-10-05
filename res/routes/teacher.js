@@ -46,6 +46,10 @@ router.get("/results", teacherAuthMiddleware, teacherController.getComputedResul
 
 // NOTE: Grading scheme creation/management has been moved to admin-only endpoints (POST /admin/grading/create)
 // Teachers can view results using existing schemes but cannot create/modify grading schemes
+// Subjects this teacher teaches in one class. Declared before the
+// /subjects/:subjectId/* routes; Express matches the exact path first either
+// way, but keeping them together makes the pair obvious.
+router.get("/subjects", teacherAuthMiddleware, teacherController.getSubjectsForClass);
 router.get("/subjects/:subjectId/cas", teacherAuthMiddleware, teacherController.getSubjectCAs);
 router.get("/subjects/:subjectId/exams", teacherAuthMiddleware, teacherController.getSubjectExams);
 
