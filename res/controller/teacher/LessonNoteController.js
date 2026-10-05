@@ -106,7 +106,7 @@ exports.generateLessonNote = async (req, res, next) => {
       return res.status(404).json({
         success: false,
         message:
-          "No scheme of work has been uploaded for this class and subject this term. Ask your admin to upload one first.",
+          "No scheme of work has been uploaded for this class and subject this term. Upload one first, or ask your admin to.",
         code: "SCHEME_OF_WORK_NOT_FOUND",
       });
     }
@@ -114,7 +114,7 @@ exports.generateLessonNote = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message:
-          "The scheme of work for this class and subject couldn't be read. Ask your admin to re-upload it as a PDF or clearer photos.",
+          "The scheme of work for this class and subject couldn't be read. Replace it with a PDF or clearer photos.",
         code: "SCHEME_OF_WORK_UNREADABLE",
       });
     }

@@ -18,8 +18,14 @@ export const errorMiddleware = (
   const statusCode = isAppError ? err.statusCode : 500;
   const message = isAppError ? err.message : (err?.message || "Internal Server Error");
 
+  // `code` and `details` are forwarded only for AppError. Clients branch on
+  // the code (a duplicate scheme of work offers "Replace" rather than just
+  // showing the message), but an unhandled Prisma failure also carries a
+  // `code` like P2002, and that is an internal detail a client must not see.
   return res.status(statusCode).json({
     success: false,
-    message
+    message,
+    ...(isAppError && (err as any).code ? { code: (err as any).code } : {}),
+    ...(isAppError && (err as any).details ? { details: (err as any).details } : {}),
   });
 };

@@ -361,6 +361,7 @@ model Staff {
   lessonNotes       LessonNote[]
   aiGenerationJobs  AiGenerationJob[]
   createdTests      Test[]
+  schemeOfWork      SchemeOfWork[]
 
   @@unique([schoolId, registrationNumber])
   @@map("staffs")
@@ -1590,11 +1591,22 @@ model SchemeOfWork {
   extractedTextStatus String  @default("pending") @db.VarChar(16) // pending | ready | failed
   extractionError     String? @db.Text
 
-  // Re-uploading for the same (classId, subjectId, academicTermId) archives
-  // the previous active row rather than overwriting it, so history survives
+  // Exactly one active row per (classId, subjectId, academicTermId). A second
+  // upload is refused rather than silently shadowing the first — several
+  // teachers share a class, and one quietly overwriting another's scheme was
+  // the duplicate problem this guards. Replacing is explicit (replaceExisting),
+  // and archives the previous row rather than deleting it so history survives
   // for audit — "the" current document is always status = "active".
+  //
+  // Not a DB unique index: that would also collide across archived rows, and
+  // MySQL has no partial index. SchemeOfWorkService enforces it inside the
+  // create transaction instead.
   status            String   @default("active") @db.VarChar(16) // active | archived
-  uploadedByAdminId Int
+
+  // Either an admin or a teacher uploads it — exactly one of these is set.
+  // Both are nullable because a row can only ever carry one of them.
+  uploadedByAdminId Int?
+  uploadedByStaffId Int?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -1602,7 +1614,8 @@ model SchemeOfWork {
   class           Class        @relation(fields: [classId], references: [id])
   subject         Subject      @relation(fields: [subjectId], references: [id])
   academicTerm    AcademicTerm @relation(fields: [academicTermId], references: [id])
-  uploadedByAdmin Admin        @relation(fields: [uploadedByAdminId], references: [id])
+  uploadedByAdmin Admin?       @relation(fields: [uploadedByAdminId], references: [id])
+  uploadedByStaff Staff?       @relation(fields: [uploadedByStaffId], references: [id])
 
   files            SchemeOfWorkFile[]
   lessonNotes      LessonNote[]
@@ -1611,6 +1624,7 @@ model SchemeOfWork {
 
   @@index([schoolId, classId, subjectId, academicTermId])
   @@index([schoolId])
+  @@index([uploadedByStaffId])
   @@map("scheme_of_work")
 }
 

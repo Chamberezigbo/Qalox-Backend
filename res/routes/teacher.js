@@ -9,6 +9,7 @@ const { AssignmentController } = require("../controller/teacher/AssignmentContro
 const { ExamTimetableController } = require("../controller/teacher/ExamTimetableController");
 const { teacherAuthMiddleware } = require("../middleware/teacherMiddleware");
 const uploadAssignment = require("../middleware/uploadAssignment");
+const uploadSchemeOfWork = require("../middleware/uploadSchemeOfWork");
 const notificationController = require("../controller/NotificationController");
 
 
@@ -21,6 +22,7 @@ const attendanceController = new AttendanceController();
 const teacherAnalyticsController = new TeacherAnalyticsController();
 const assignmentController = new AssignmentController();
 const lessonNoteController = require("../controller/teacher/LessonNoteController");
+const teacherSchemeOfWorkController = require("../controller/teacher/SchemeOfWorkController");
 const examTimetableController = new ExamTimetableController();
 
 router.post("/login", teacherAuthController.login);
@@ -75,6 +77,14 @@ router.delete("/assignments/:id", teacherAuthMiddleware, assignmentController.re
 
 // AI Lesson Notes. Generation is async — /generate returns a jobId the client
 // polls, because a Gemini call takes far longer than a request should hold open.
+// Scheme of Work — teachers upload for classes they teach; admins still have
+// their own school-wide routes under /api/admin/scheme-of-work. Accepts one
+// PDF or up to 10 page photos per upload (see uploadSchemeOfWork).
+router.post("/scheme-of-work", teacherAuthMiddleware, uploadSchemeOfWork.array("files"), teacherSchemeOfWorkController.uploadSchemeOfWork);
+router.get("/scheme-of-work", teacherAuthMiddleware, teacherSchemeOfWorkController.listSchemesOfWork);
+router.get("/scheme-of-work/:id", teacherAuthMiddleware, teacherSchemeOfWorkController.getSchemeOfWork);
+router.delete("/scheme-of-work/:id", teacherAuthMiddleware, teacherSchemeOfWorkController.deleteSchemeOfWork);
+
 router.post("/lesson-notes/generate", teacherAuthMiddleware, lessonNoteController.generateLessonNote);
 router.get("/lesson-notes/generate/:jobId", teacherAuthMiddleware, lessonNoteController.getGenerationStatus);
 router.get("/lesson-notes", teacherAuthMiddleware, lessonNoteController.listLessonNotes);

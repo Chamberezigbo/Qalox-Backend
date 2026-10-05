@@ -116,9 +116,49 @@ async function extractTextFromFiles(schoolId, files) {
 }
 
 /**
- * Stores a new scheme of work, archiving whatever was active for the same
- * class + subject + term. Archiving rather than overwriting keeps the history
- * for audit; "the" current document is always the active row.
+ * Builds the 409 a duplicate upload is refused with. The existing document's
+ * details go in the payload because the client offers "Replace" from here, and
+ * the teacher needs to see whose scheme they would be replacing.
+ */
+async function buildDuplicateError(existing) {
+  const [uploader, subject] = await Promise.all([
+    existing.uploadedByStaffId
+      ? prisma.staff.findUnique({
+          where: { id: existing.uploadedByStaffId },
+          select: { firstName: true, lastName: true },
+        })
+      : null,
+    prisma.subject.findUnique({ where: { id: existing.subjectId }, select: { name: true } }),
+  ]);
+
+  const uploadedBy = uploader
+    ? `${uploader.firstName ?? ""} ${uploader.lastName ?? ""}`.trim()
+    : "a school admin";
+
+  const error = new AppError(
+    `A scheme of work for ${subject?.name ?? "this subject"} already exists for this class this term ("${existing.title}", uploaded by ${uploadedBy}). Replace it if you want to use a new document.`,
+    409
+  );
+  error.code = "SCHEME_OF_WORK_EXISTS";
+  error.details = {
+    existing: {
+      id: existing.id,
+      title: existing.title,
+      uploadedBy,
+      createdAt: existing.createdAt,
+    },
+  };
+  return error;
+}
+
+/**
+ * Stores a new scheme of work.
+ *
+ * Exactly one active document per class + subject + term. A second upload is
+ * refused with 409 SCHEME_OF_WORK_EXISTS unless replaceExisting is set, at
+ * which point the previous row is archived rather than deleted so history
+ * survives. Teachers share classes, so silently shadowing a colleague's upload
+ * would make it ambiguous which document a generated note was grounded in.
  */
 async function createSchemeOfWork({
   schoolId,
@@ -128,6 +168,8 @@ async function createSchemeOfWork({
   title,
   files,
   uploadedByAdminId,
+  uploadedByStaffId,
+  replaceExisting = false,
 }) {
   if (!files?.length) throw new AppError("Upload a PDF or at least one page photo", 400);
   if (!title?.trim()) throw new AppError("Title is required", 400);
@@ -144,6 +186,16 @@ async function createSchemeOfWork({
   const mixed = files.some((f) => isImage(f.mimetype)) && files.some((f) => !isImage(f.mimetype));
   if (mixed) {
     throw new AppError("Upload either one PDF or page photos — not both in the same upload", 400);
+  }
+
+  // Checked here, before extraction, because reading a photographed scheme
+  // spends AI credits. Refusing after that would charge a school for a
+  // document it was never allowed to store.
+  if (!replaceExisting) {
+    const existing = await prisma.schemeOfWork.findFirst({
+      where: { schoolId, classId, subjectId, academicTermId, status: "active" },
+    });
+    if (existing) throw await buildDuplicateError(existing);
   }
 
   // Read the document before writing anything, so a scheme that can't be read
@@ -164,6 +216,17 @@ async function createSchemeOfWork({
   }
 
   const created = await prisma.$transaction(async (tx) => {
+    // Re-checked inside the transaction: extraction and the R2 uploads above
+    // take seconds, and a colleague's upload can land in that window. The
+    // early check saves the credits; this one is what actually guarantees a
+    // single active row.
+    if (!replaceExisting) {
+      const raced = await tx.schemeOfWork.findFirst({
+        where: { schoolId, classId, subjectId, academicTermId, status: "active" },
+      });
+      if (raced) throw await buildDuplicateError(raced);
+    }
+
     await tx.schemeOfWork.updateMany({
       where: { schoolId, classId, subjectId, academicTermId, status: "active" },
       data: { status: "archived" },
@@ -181,7 +244,8 @@ async function createSchemeOfWork({
         creditsCharged: extraction.creditsCharged,
         extractedText: extraction.text,
         extractedTextStatus: extraction.text.trim() ? "ready" : "failed",
-        uploadedByAdminId,
+        uploadedByAdminId: uploadedByAdminId ?? null,
+        uploadedByStaffId: uploadedByStaffId ?? null,
         files: { create: uploaded },
       },
       include: { files: { orderBy: { order: "asc" } } },
@@ -224,6 +288,9 @@ async function listSchemesOfWork(schoolId, { classId, subjectId, academicTermId,
       class: { select: { id: true, name: true, customName: true } },
       subject: { select: { id: true, name: true } },
       academicTerm: { select: { id: true, name: true } },
+      // Teachers upload too, so an admin needs to see whose document this is.
+      uploadedByStaff: { select: { id: true, firstName: true, lastName: true } },
+      uploadedByAdmin: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -291,4 +358,7 @@ module.exports = {
   getActiveSchemeOfWork,
   deleteSchemeOfWork,
   getAiCreditsStatusForSchool,
+  // Exported for the teacher controller, which builds its own scoped list
+  // query but must still turn stored "r2:<key>" values into presigned URLs.
+  withResolvedFiles,
 };

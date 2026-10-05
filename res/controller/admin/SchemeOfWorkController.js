@@ -17,7 +17,7 @@ const { getAiCreditsStatusForSchool } = require("../../util/getAiCreditsAllowanc
 exports.uploadSchemeOfWork = async (req, res, next) => {
   try {
     const schoolId = req.schoolId;
-    const { classId, subjectId, academicTermId, title } = req.body;
+    const { classId, subjectId, academicTermId, title, replaceExisting } = req.body;
 
     if (!classId || !subjectId) {
       return res.status(400).json({
@@ -56,6 +56,9 @@ exports.uploadSchemeOfWork = async (req, res, next) => {
       title,
       files: req.files || [],
       uploadedByAdminId: req.user?.id,
+      // Multipart form values arrive as strings, so a plain truthiness check
+      // would treat "false" as true.
+      replaceExisting: replaceExisting === "true" || replaceExisting === true,
     });
 
     return res.status(201).json({
