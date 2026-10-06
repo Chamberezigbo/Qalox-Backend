@@ -19,8 +19,17 @@ const logger = require("../config/logger");
 const DEFAULT_MODEL = "gemini-2.0-flash";
 const REQUEST_TIMEOUT_MS = 60000; // generation is slower than transcription
 
-/** Also the ceiling AiCreditService reserves against — keep the two in step. */
-const LESSON_NOTE_MAX_OUTPUT_TOKENS = 2048;
+/**
+ * Also the ceiling AiCreditService reserves against — keep the two in step.
+ *
+ * This budget covers the model's *thinking* tokens as well as the text it
+ * returns. gemini-2.5-flash was spending 700-1200 tokens thinking before
+ * writing anything, which at the previous 2048 ceiling left too little for the
+ * note itself: roughly one generation in three came back truncated mid-string
+ * and therefore unparseable as JSON. Thinking is disabled below and the
+ * ceiling raised, so the whole budget goes to the note.
+ */
+const LESSON_NOTE_MAX_OUTPUT_TOKENS = 4096;
 
 /** How much scheme-of-work text is ever sent as context, in characters. */
 const MAX_CONTEXT_CHARS = 12000;
@@ -126,6 +135,12 @@ async function generateLessonNote({ schemeText, className, subjectName, topic, w
       responseMimeType: "application/json",
       responseSchema: LESSON_NOTE_SCHEMA,
       maxOutputTokens: LESSON_NOTE_MAX_OUTPUT_TOKENS,
+      // Writing a lesson note from a short scheme of work is not a reasoning
+      // task, and thinking tokens are billed exactly like output tokens — so
+      // leaving this on cost the school roughly half of every generation's
+      // credits to produce nothing the teacher ever sees. Ignored by models
+      // that do not think, so it is safe for gemini-2.0-flash too.
+      thinkingConfig: { thinkingBudget: 0 },
     },
   };
 
@@ -148,15 +163,29 @@ async function generateLessonNote({ schemeText, className, subjectName, topic, w
     throw new Error(json?.error?.message || `Gemini request failed with status ${response.status}`);
   }
 
+  const finish = json.candidates?.[0]?.finishReason;
   const raw = json.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  // Checked before parsing, not just when text is missing. A run that stops at
+  // the ceiling usually DOES return text — just a JSON document cut off
+  // mid-string — so testing this only on an empty response reported a
+  // truthful-looking "could not be parsed as JSON" that pointed at the wrong
+  // cause entirely.
+  if (finish === "MAX_TOKENS") {
+    logger.warn("[GEMINI_TEXT] Hit the output ceiling", {
+      thoughtsTokens: json.usageMetadata?.thoughtsTokenCount,
+      outputTokens: json.usageMetadata?.candidatesTokenCount,
+    });
+    throw new Error(
+      "The lesson note was cut off before it finished. Try a single topic rather than several weeks."
+    );
+  }
+
   if (!raw) {
-    // A response truncated at the token ceiling arrives with no usable text —
-    // say so plainly rather than reporting a generic failure.
-    const finish = json.candidates?.[0]?.finishReason;
     logger.warn("[GEMINI_TEXT] No text in response", { finishReason: finish });
     throw new Error(
-      finish === "MAX_TOKENS"
-        ? "The lesson note was too long to finish. Try generating for a single topic rather than several weeks."
+      finish === "SAFETY"
+        ? "Gemini declined to write this lesson note. Try rewording the topic."
         : "Gemini returned no lesson note"
     );
   }
@@ -165,7 +194,11 @@ async function generateLessonNote({ schemeText, className, subjectName, topic, w
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    logger.warn("[GEMINI_TEXT] Response was not valid JSON");
+    logger.warn("[GEMINI_TEXT] Response was not valid JSON", {
+      finishReason: finish,
+      rawLength: raw.length,
+      tail: raw.slice(-120),
+    });
     throw new Error("Gemini returned a response that could not be parsed as JSON");
   }
 
