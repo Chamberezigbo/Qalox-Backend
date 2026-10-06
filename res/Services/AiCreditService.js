@@ -19,16 +19,27 @@ const { getAiCreditsAllowanceForSchool } = require("../util/getAiCreditsAllowanc
  * charged for output it didn't get.
  */
 
-// Gemini 2.0 Flash list price, USD per 1M tokens. Re-verify against current
-// Google AI pricing when changing models — AiGenerationJob.model records which
-// model a historical job used so old rows stay interpretable.
-const USD_PER_1M_INPUT_TOKENS = 0.1;
-const USD_PER_1M_OUTPUT_TOKENS = 0.4;
+// Gemini 2.5 Flash list price, USD per 1M tokens (paid tier, text input),
+// verified against ai.google.dev/gemini-api/docs/pricing. Re-verify when
+// changing models — AiGenerationJob.model records which model a historical job
+// used so old rows stay interpretable.
+//
+// These were previously set to Gemini 2.0 Flash's $0.10/$0.40 while GEMINI_MODEL
+// was already gemini-2.5-flash, so every generation was costed at roughly a
+// sixth of what it actually billed. Google's own thinking tokens are charged at
+// the output rate too, which is a further reason GeminiTextService disables
+// them rather than paying output prices for text no teacher ever reads.
+const USD_PER_1M_INPUT_TOKENS = 0.3;
+const USD_PER_1M_OUTPUT_TOKENS = 2.5;
 
-// 1 credit = $0.0005 of spend, so $1 ≈ 2000 credits. Chosen so a typical
-// lesson note lands at ~2 credits and a 30-question exam set at ~4 — small
-// enough to price fairly, large enough that a termly allowance is a round
-// number a school admin can reason about.
+// 1 credit = $0.0005 of spend, so $1 ≈ 2000 credits — small enough to price
+// fairly, large enough that a termly allowance is a round number a school admin
+// can reason about.
+//
+// At 2.5 Flash prices a measured lesson note (≈350 input, ≈650 output tokens)
+// costs about $0.0017, so ~4 credits. The reservation taken before a call is
+// larger because it assumes the full output ceiling; the difference is refunded
+// on completion, so what a school is actually charged tracks real usage.
 const USD_PER_CREDIT = 0.0005;
 
 // Nothing in this codebase does real tokenisation and Gemini has no cheap

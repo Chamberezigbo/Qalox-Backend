@@ -21,8 +21,16 @@ jest.mock("../Services/R2Service", () => ({
   deleteObject: jest.fn().mockResolvedValue(undefined),
 }));
 
+// Long enough to clear the minimum-usable-text floor, since anything shorter is
+// now refused as unreadable rather than stored.
+const SCHEME_TEXT = [
+  "WEEK 1: Reproductive behaviour in animals. Courtship displays and mate selection.",
+  "WEEK 2: Fertilisation in animals, internal and external.",
+  "WEEK 3: Parental care across species.",
+].join(" ");
+
 jest.mock("../Services/DocumentTextExtractionService", () => ({
-  textFromPdf: jest.fn().mockResolvedValue("Week 1: Photosynthesis. Week 2: Respiration."),
+  textFromPdf: jest.fn(),
   textFromImage: jest.fn(),
 }));
 
@@ -99,7 +107,7 @@ beforeEach(() => {
   // since a mock shaped wrongly is exactly how the firstName/lastName bug
   // survived the first round of these tests.
   db.staff.findUnique.mockResolvedValue({ name: "Ada Obi" });
-  extraction.textFromPdf.mockResolvedValue("Week 1: Photosynthesis.");
+  extraction.textFromPdf.mockResolvedValue(SCHEME_TEXT);
 
   // Runs the callback against a tx object that proxies to the mocked prisma.
   db.$transaction.mockImplementation(async (cb: (tx: unknown) => unknown) => cb(prisma));
@@ -180,6 +188,20 @@ describe("createSchemeOfWork — one active document per class + subject + term"
         data: expect.objectContaining({ uploadedByStaffId: 3, uploadedByAdminId: null }),
       })
     );
+  });
+
+  it("refuses a document that yields too little text to ground anything", async () => {
+    // A scanned PDF with no text layer still returns something — a live upload
+    // produced 16 characters and was stored as "ready", grounding nothing.
+    db.schemeOfWork.findFirst.mockResolvedValue(null);
+    extraction.textFromPdf.mockResolvedValue("Biology SS2");
+
+    await expect(createSchemeOfWork(input())).rejects.toMatchObject({
+      statusCode: 422,
+      code: "SCHEME_OF_WORK_UNREADABLE",
+    });
+
+    expect(db.schemeOfWork.create).not.toHaveBeenCalled();
   });
 
   it("records an admin upload against their admin id, not a staff id", async () => {

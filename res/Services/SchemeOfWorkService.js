@@ -27,6 +27,20 @@ function buildSchemeKey(schoolId, originalname) {
 const isImage = (mimetype) => typeof mimetype === "string" && mimetype.startsWith("image/");
 
 /**
+ * The shortest extraction worth calling a scheme of work.
+ *
+ * A scanned PDF with no text layer still returns something — one live upload
+ * yielded 16 characters — and a bare non-empty check happily marked that
+ * "ready". The document then grounded nothing, and the teacher only found out
+ * when the generated note came back as invention. Roughly a sentence is the
+ * floor for a term's scheme; below that the upload is better refused at source,
+ * where re-scanning is still an easy fix.
+ */
+const MIN_USABLE_TEXT_CHARS = 120;
+
+const isUsableSchemeText = (text) => (text || "").trim().length >= MIN_USABLE_TEXT_CHARS;
+
+/**
  * Reads every uploaded page and joins the text in page order.
  *
  * Credits are only ever involved on the image path. The whole upload's
@@ -201,6 +215,18 @@ async function createSchemeOfWork({
   // doesn't leave an empty row and orphaned R2 objects behind.
   const extraction = await extractTextFromFiles(schoolId, files);
 
+  // Refused here rather than stored as an unusable row. This runs before the
+  // R2 upload, so nothing is kept, and the person who just chose the file is
+  // the one told — which is when re-scanning costs them the least.
+  if (!isUsableSchemeText(extraction.text)) {
+    const error = new AppError(
+      "No readable text could be taken from this document. If it is a scanned PDF it has no text layer — upload clear photos of the pages instead, or a PDF that was exported rather than scanned.",
+      422
+    );
+    error.code = "SCHEME_OF_WORK_UNREADABLE";
+    throw error;
+  }
+
   const uploaded = [];
   for (const [index, file] of files.entries()) {
     const key = buildSchemeKey(schoolId, file.originalname);
@@ -242,7 +268,7 @@ async function createSchemeOfWork({
         extractionMethod: extraction.method,
         creditsCharged: extraction.creditsCharged,
         extractedText: extraction.text,
-        extractedTextStatus: extraction.text.trim() ? "ready" : "failed",
+        extractedTextStatus: isUsableSchemeText(extraction.text) ? "ready" : "failed",
         uploadedByAdminId: uploadedByAdminId ?? null,
         uploadedByStaffId: uploadedByStaffId ?? null,
         files: { create: uploaded },
