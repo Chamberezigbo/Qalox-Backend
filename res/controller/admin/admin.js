@@ -380,6 +380,71 @@ exports.checkHealth = async (req, res, next) => {
 };
 
 // Return the authenticated admin's schoolId and basic school info
+/**
+ * GET /api/admin/setup-status
+ *
+ * Whether this admin's school has finished onboarding, answered server-side in
+ * one request.
+ *
+ * The frontend used to work this out itself by calling /admin/my-school,
+ * /admin/campuses and /admin/classes and treating any non-2xx as "this data
+ * doesn't exist yet". That conflated "no campuses" with "I wasn't allowed to
+ * read the campuses" — and since the campus and class routes sit behind
+ * permission and school-scope middleware that /admin/my-school does not, a
+ * sub-admin without CAMPUSES_MANAGE, a suspended account, or any transient
+ * 500 looked identical to a brand-new school and threw a fully set-up admin
+ * back into the setup wizard.
+ *
+ * Counting here instead means one auth check, one round trip, and a real
+ * answer: a failure surfaces as a failure rather than as "needs onboarding".
+ * Mounted with authenticateAdmin only, deliberately — this reports on setup
+ * state, it does not expose campus or class data.
+ */
+exports.getSetupStatus = async (req, res, next) => {
+  try {
+    const admin = await prisma.admin.findUnique({
+      where: { id: req.user.id },
+      select: { schoolId: true },
+    });
+
+    if (!admin) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+
+    const schoolId = admin.schoolId;
+    if (!schoolId) {
+      return res.status(200).json({
+        success: true,
+        data: { hasSchool: false, hasCampuses: false, hasClasses: false, currentStep: 1, isComplete: false },
+      });
+    }
+
+    const [school, campusCount, classCount] = await Promise.all([
+      prisma.school.findUnique({ where: { id: schoolId }, select: { id: true } }),
+      prisma.campus.count({ where: { schoolId } }),
+      prisma.class.count({ where: { schoolId } }),
+    ]);
+
+    const hasSchool = Boolean(school);
+    const hasCampuses = campusCount > 0;
+    const hasClasses = classCount > 0;
+
+    // Step numbers match the wizard's own: 1 school, 2 campus, 3 classes,
+    // 5 done. Kept as-is so the client's existing switch still applies.
+    let currentStep = 5;
+    if (!hasSchool) currentStep = 1;
+    else if (!hasCampuses) currentStep = 2;
+    else if (!hasClasses) currentStep = 3;
+
+    return res.status(200).json({
+      success: true,
+      data: { hasSchool, hasCampuses, hasClasses, currentStep, isComplete: currentStep === 5 },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getMySchool = async (req, res, next) => {
   try {
     const adminId = req.user.id; // set by authenticateAdmin middleware

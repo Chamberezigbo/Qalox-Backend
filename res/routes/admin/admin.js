@@ -12,6 +12,7 @@ const {
   deleteAdmin,
   checkHealth,
   getMySchool,
+  getSetupStatus,
   getSchoolAssessments,
   getOverview,
 } = require("../../controller/admin/admin");
@@ -175,6 +176,12 @@ router.get("/", checkHealth);
 
 // My school info for any authenticated admin
 router.get("/my-school", auth.authenticateAdmin, getMySchool);
+
+// Deliberately only authenticateAdmin, matching /my-school above. Putting this
+// behind permission or school-scope middleware would let a 403 masquerade as
+// "this school has no campuses" — the exact confusion this endpoint exists to
+// remove. It reports setup state, not campus or class data.
+router.get("/setup-status", auth.authenticateAdmin, getSetupStatus);
 router.patch(
   "/school/branding",
   auth.authenticateSchoolLevelAdmin,
