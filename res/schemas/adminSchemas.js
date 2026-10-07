@@ -55,41 +55,52 @@ exports.studentSchema = Joi.object({
   // phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).optional(),
 });
 
+// Only name and duty are genuinely required. A school often registers a staff
+// member before it has their email, start date, next of kin or salary — and
+// none of those are needed to use the system, since staff sign in with their
+// registration number rather than an email address.
+//
+// Every optional field below carries .allow("", null): the form posts "" for
+// anything left untouched, and Joi's .optional() alone rejects an empty string.
+// Joi.date() and Joi.number() reject "" too, which is why dateEmployed and
+// payroll need it as much as the string fields do.
 exports.staffSchema = Joi.object({
   // Basic info
   name: Joi.string().max(100).required(),
-  email: Joi.string().email().max(255).required(),
-  gender: Joi.string().valid("Male", "Female", "Other").optional(),
-  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).allow("").optional(),
-  address: Joi.string().max(255).allow("").optional(),
+  email: Joi.string().email().max(255).allow("", null).optional(),
+  gender: Joi.string().valid("Male", "Female", "Other").allow("", null).optional(),
+  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).allow("", null).optional(),
+  address: Joi.string().max(255).allow("", null).optional(),
 
   // Job-related info
   duty: Joi.string().max(255).required(),
-  nextOfKin: Joi.string().max(255).allow("").optional(),
-  dateEmployed: Joi.date().iso().optional(),
-  payroll: Joi.number().precision(2).optional(), // decimal salary
+  nextOfKin: Joi.string().max(255).allow("", null).optional(),
+  dateEmployed: Joi.date().iso().allow("", null).optional(),
+  payroll: Joi.number().precision(2).allow("", null).optional(), // decimal salary
 
   // Associations
-  campusId: Joi.number().integer().optional(),
+  campusId: Joi.number().integer().allow(null).optional(),
   // schoolId will come from middleware, so no need to pass here
 });
 
+// Same empty-string treatment as staffSchema — editing a staff member and
+// clearing a field they no longer have must be allowed, not rejected.
 exports.editStaffSchema = Joi.object({
   // Basic info
   name: Joi.string().max(100).optional(),
-  email: Joi.string().email().max(255).optional(),
-  gender: Joi.string().valid("Male", "Female", "Other").optional(),
-  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).allow("").optional(),
-  address: Joi.string().max(255).allow("").optional(),
+  email: Joi.string().email().max(255).allow("", null).optional(),
+  gender: Joi.string().valid("Male", "Female", "Other").allow("", null).optional(),
+  phoneNumber: Joi.string().pattern(/^[0-9+\-\s]{7,20}$/).allow("", null).optional(),
+  address: Joi.string().max(255).allow("", null).optional(),
 
   // Job-related info
   duty: Joi.string().max(255).optional(),
-  nextOfKin: Joi.string().max(255).allow("").optional(),
-  dateEmployed: Joi.date().iso().optional(),
-  payroll: Joi.number().precision(2).optional(), // decimal salary
+  nextOfKin: Joi.string().max(255).allow("", null).optional(),
+  dateEmployed: Joi.date().iso().allow("", null).optional(),
+  payroll: Joi.number().precision(2).allow("", null).optional(), // decimal salary
 
   // Associations
-  campusId: Joi.number().integer().optional(),
+  campusId: Joi.number().integer().allow(null).optional(),
   // schoolId will come from middleware, so no need to pass here
 });
 

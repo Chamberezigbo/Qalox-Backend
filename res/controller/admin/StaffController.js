@@ -38,33 +38,49 @@ exports.createStaff = async (req, res, next) => {
     const normalizedPhoneNumber = phoneNumber?.trim() || null;
     const normalizedAddress = address?.trim() || null;
     const normalizedNextOfKin = nextOfKin?.trim() || null;
+    const normalizedGender = gender?.trim() || null;
 
-    // ✅ Check duplicate email
-    const existingStaff = await prisma.staff.findUnique({
-      where: { email },
-    });
-    if (existingStaff) {
-      return res.status(409).json({
-        success: false,
-        message: "A staff with this email already exists.",
+    // Email especially has to become null rather than "": the column is
+    // unique, and MySQL allows any number of NULLs under a unique index but
+    // treats "" as a real value — so a second staff member saved with a blank
+    // email would collide with the first and fail on P2002.
+    const normalizedEmail = email?.trim() || null;
+
+    // Number("") is 0, so a blank salary would otherwise be stored as 0.00 and
+    // read back as a real figure rather than "not recorded".
+    const normalizedPayroll =
+      payroll === "" || payroll === null || payroll === undefined ? null : Number(payroll);
+
+    // Only when one was actually given. `findUnique({ where: { email: undefined } })`
+    // throws rather than returning null, so an unguarded check here is what
+    // blocked registering any staff member without an email.
+    if (normalizedEmail) {
+      const existingStaff = await prisma.staff.findUnique({
+        where: { email: normalizedEmail },
       });
+      if (existingStaff) {
+        return res.status(409).json({
+          success: false,
+          message: "A staff with this email already exists.",
+        });
+      }
     }
 
     // ✅ Create staff
     const newStaff = await prisma.staff.create({
       data: {
         schoolId,
-        campusId,
+        campusId: Number.isInteger(campusId) ? campusId : null,
         name,
-        email,
-        gender,
+        email: normalizedEmail,
+        gender: normalizedGender,
         phoneNumber: normalizedPhoneNumber,
         address: normalizedAddress,
         duty,
         nextOfKin: normalizedNextOfKin,
         registrationNumber: uniqueId,
         dateEmployed: dateEmployed ? new Date(dateEmployed) : null,
-        payroll,
+        payroll: normalizedPayroll,
       },
     });
 

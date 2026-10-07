@@ -93,7 +93,15 @@ exports.createStudent = async (req, res, next) => {
 
     // An empty string means "left blank" for these optional fields — store
     // null rather than "" so it matches every other "not provided" case.
-    const normalizedOtherNames = otherNames?.trim() || null;
+    //
+    // otherNames is the exception: the column is `String` (NOT NULL), so a null
+    // here is rejected by Prisma. It then re-reports the failure against its
+    // checked input variant, which demands the `academicSession` relation
+    // instead of accepting academicSessionId — producing "Argument
+    // `academicSession` is missing" and pointing at completely the wrong field.
+    // Blank stays "" to match what BulkImportImporter already writes, so the
+    // column holds one representation of "not provided" rather than two.
+    const normalizedOtherNames = otherNames?.trim() || "";
     const normalizedGuardianName = guardianName?.trim() || null;
     const normalizedGuardianNumber = guardianNumber?.trim() || null;
     const normalizedGuardianEmail = guardianEmail?.trim() || null;
