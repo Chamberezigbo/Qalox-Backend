@@ -1,5 +1,6 @@
 // src/services/teacher/TeacherService.ts
 import prisma from "../../util/prisma";
+import { AppError } from "../../util/AppError";
 import { schoolMediaUrl } from "../../controller/public/publicController";
 
 type GetStudentsForGradingInput = {
@@ -12,6 +13,17 @@ type GetStudentsForGradingInput = {
 
 type CAScoreEntry = { studentId: number; caId: number; score: number };
 type ExamScoreEntry = { studentId: number; examId: number; score: number };
+
+/**
+ * Whether a subject's results can be submitted right now, and if not, why.
+ * One answer for both ways of submitting, so the rules cannot drift apart.
+ */
+export type SubmissionReadiness =
+    | { state: "ready" }
+    | { state: "already_submitted" }
+    | { state: "already_published" }
+    | { state: "no_scores"; message: string }
+    | { state: "incomplete"; message: string; groups: string[] };
 
 export class TeacherService {
     async getStudentsForGrading(input: GetStudentsForGradingInput) {
@@ -554,35 +566,41 @@ export class TeacherService {
         subjectId: number;
         termId?: number;
         academicSessionId: number;
+        /** Submit even though scores look missing. Never overrides submitted/published. */
+        force?: boolean;
     }) {
-        const { staffId, schoolId, classId, subjectId, termId, academicSessionId } = input;
+        const { staffId, schoolId, classId, subjectId, termId, academicSessionId, force } = input;
 
         // 1. Verify teacher is assigned to this class + subject
         await this.ensureTeacherCanTouchClass(staffId, classId, subjectId);
 
-        // 2. Block if already submitted
-        const existing = await prisma.resultSubmission.findFirst({
-            where: { classId, subjectId, academicSessionId, staffId }
-        });
+        // 2. The same readiness rules bulk submission uses
+        const readiness = await this.assessSubmissionReadiness({ staffId, classId, subjectId, academicSessionId });
 
-        if (existing) {
+        // Not overridable: submitted work cannot be submitted twice, and
+        // published results are already final.
+        if (readiness.state === "already_submitted") {
             throw new Error("Results already submitted for this class and subject");
         }
-
-        // 3. Block if already published
-        const isPublished = await prisma.publishedResult.findUnique({
-            where: {
-                classId_subjectId_academicSessionId: {
-                    classId, subjectId, academicSessionId
-                }
-            }
-        });
-
-        if (isPublished) {
+        if (readiness.state === "already_published") {
             throw new Error("Results have already been published");
         }
 
-        // 4. Create submission record
+        // Missing scores are refused by default but can be overridden on
+        // purpose: a group may be away, or a subject may have had no
+        // assessments this term. A teacher who confirms is different from one
+        // who did not realise — and an admin can reopen a submission either way.
+        if ((readiness.state === "no_scores" || readiness.state === "incomplete") && !force) {
+            throw Object.assign(new AppError(`${readiness.message}.`, 409), {
+                code: "SUBMISSION_NOT_READY",
+                details: {
+                    reason: readiness.state,
+                    ...(readiness.state === "incomplete" && { groups: readiness.groups })
+                }
+            });
+        }
+
+        // 3. Create submission record
         const submission = await prisma.resultSubmission.create({
             data: { classId, subjectId, academicSessionId, staffId, termId: termId ?? null },
             select: {
@@ -597,6 +615,52 @@ export class TeacherService {
         });
 
         return submission;
+    }
+
+    /**
+     * Everything that decides whether a subject can be submitted: not already
+     * submitted, not already published, some scores entered, and no class group
+     * left entirely unscored. Returns the first thing in the way.
+     */
+    private async assessSubmissionReadiness(input: {
+        staffId: number;
+        classId: number;
+        subjectId: number;
+        academicSessionId: number;
+    }): Promise<SubmissionReadiness> {
+        const { staffId, classId, subjectId, academicSessionId } = input;
+
+        const existing = await prisma.resultSubmission.findFirst({
+            where: { classId, subjectId, academicSessionId, staffId },
+            select: { id: true }
+        });
+        if (existing) return { state: "already_submitted" };
+
+        const published = await prisma.publishedResult.findUnique({
+            where: { classId_subjectId_academicSessionId: { classId, subjectId, academicSessionId } },
+            select: { id: true }
+        });
+        if (published) return { state: "already_published" };
+
+        // Counted across the whole session, to match what a submission is
+        // keyed on (class, subject and session — not term).
+        const [caScores, examScores] = await Promise.all([
+            prisma.cAResult.count({ where: { academicSessionId, ca: { classId, subjectId } } }),
+            prisma.examResult.count({ where: { academicSessionId, exam: { classId, subjectId } } })
+        ]);
+        if (caScores + examScores === 0) {
+            return { state: "no_scores", message: "No CA or exam scores have been entered" };
+        }
+
+        // Scores are entered a group at a time, so "some scores exist" is not
+        // enough: entering Group A and stopping would lock the whole subject
+        // with Group B blank.
+        const groups = await this.groupsWithoutScores(classId, subjectId, academicSessionId);
+        if (groups.length > 0) {
+            return { state: "incomplete", message: `No scores entered yet for ${groups.join(", ")}`, groups };
+        }
+
+        return { state: "ready" };
     }
 
     /**
@@ -717,41 +781,15 @@ export class TeacherService {
                 results.push({ subjectId, subjectName, outcome, ...(message && { message }) });
 
             try {
-                const existing = await prisma.resultSubmission.findFirst({
-                    where: { classId, subjectId, academicSessionId, staffId },
-                    select: { id: true }
+                const readiness = await this.assessSubmissionReadiness({
+                    staffId, classId, subjectId, academicSessionId
                 });
-                if (existing) {
-                    record("already_submitted");
-                    continue;
-                }
 
-                const published = await prisma.publishedResult.findUnique({
-                    where: { classId_subjectId_academicSessionId: { classId, subjectId, academicSessionId } },
-                    select: { id: true }
-                });
-                if (published) {
-                    record("already_published");
-                    continue;
-                }
-
-                // Counted across the whole session, to match what a submission is
-                // keyed on (class, subject and session — not term).
-                const [caScores, examScores] = await Promise.all([
-                    prisma.cAResult.count({ where: { academicSessionId, ca: { classId, subjectId } } }),
-                    prisma.examResult.count({ where: { academicSessionId, exam: { classId, subjectId } } })
-                ]);
-                if (caScores + examScores === 0) {
-                    record("no_scores", "No CA or exam scores have been entered");
-                    continue;
-                }
-
-                // Scores are entered a group at a time, so "some scores exist"
-                // is not enough: entering Group A and stopping would lock the
-                // whole subject with Group B blank.
-                const unscored = await this.groupsWithoutScores(classId, subjectId, academicSessionId);
-                if (unscored.length > 0) {
-                    record("incomplete", `No scores entered yet for ${unscored.join(", ")}`);
+                // Bulk submission only ever skips; it never forces. Locking
+                // several subjects past a warning is the mistake it exists to
+                // prevent, so overriding is a single-subject decision.
+                if (readiness.state !== "ready") {
+                    record(readiness.state, "message" in readiness ? readiness.message : undefined);
                     continue;
                 }
 

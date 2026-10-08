@@ -18,7 +18,7 @@ import { TeacherService } from "../Services/teacher/TeacherService";
 
 const db = prisma as unknown as {
   class: { findFirst: jest.Mock };
-  teacherAssignment: { findMany: jest.Mock };
+  teacherAssignment: { findMany: jest.Mock; findFirst: jest.Mock };
   resultSubmission: { findFirst: jest.Mock; create: jest.Mock };
   publishedResult: { findUnique: jest.Mock };
   cAResult: { count: jest.Mock; findMany: jest.Mock };
@@ -305,5 +305,88 @@ describe("submitAllResults", () => {
       expect(db.student.findMany).not.toHaveBeenCalled();
       expect(db.cAResult.findMany).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("submitResults — one subject, with the same readiness rules", () => {
+  // Single submission used to check none of this, which is how a subject can
+  // end up locked with no scores. It now refuses by default, but a teacher can
+  // override on purpose (a group away, a subject with no assessments).
+  const ONE = { staffId: 6, schoolId: 5, classId: 9, subjectId: 5, academicSessionId: 2, termId: 3 };
+
+  beforeEach(() => {
+    db.teacherAssignment.findFirst.mockResolvedValue({ id: 1 });
+  });
+
+  it("submits a subject whose scores are in", async () => {
+    const result = await service().submitResults(ONE);
+
+    expect(db.resultSubmission.create).toHaveBeenCalledTimes(1);
+    expect(result).toBeDefined();
+  });
+
+  it("refuses a subject with no scores, with a code the screen can act on", async () => {
+    db.cAResult.count.mockResolvedValue(0);
+    db.examResult.count.mockResolvedValue(0);
+
+    await expect(service().submitResults(ONE)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "SUBMISSION_NOT_READY",
+      details: { reason: "no_scores" },
+    });
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses when a group has no scores, naming it", async () => {
+    db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "PINK CLASS" }, { id: 2, name: "yellow arms" }]);
+    db.student.findMany.mockResolvedValue([{ id: 1, classGroupId: 1 }, { id: 3, classGroupId: 2 }]);
+    db.cAResult.findMany.mockResolvedValue([{ studentId: 1 }]);
+
+    await expect(service().submitResults(ONE)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "SUBMISSION_NOT_READY",
+      message: "No scores entered yet for yellow arms.",
+      details: { reason: "incomplete", groups: ["yellow arms"] },
+    });
+  });
+
+  it("submits anyway when the teacher forces it", async () => {
+    db.cAResult.count.mockResolvedValue(0);
+    db.examResult.count.mockResolvedValue(0);
+
+    await service().submitResults({ ...ONE, force: true });
+
+    expect(db.resultSubmission.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("forces past an unscored group too", async () => {
+    db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "PINK CLASS" }, { id: 2, name: "yellow arms" }]);
+    db.student.findMany.mockResolvedValue([{ id: 1, classGroupId: 1 }, { id: 3, classGroupId: 2 }]);
+    db.cAResult.findMany.mockResolvedValue([{ studentId: 1 }]);
+
+    await service().submitResults({ ...ONE, force: true });
+
+    expect(db.resultSubmission.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("never forces past a subject that was already submitted", async () => {
+    db.resultSubmission.findFirst.mockResolvedValue({ id: 99 });
+
+    await expect(service().submitResults({ ...ONE, force: true })).rejects.toThrow(/already submitted/i);
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+  });
+
+  it("never forces past results that are already published", async () => {
+    db.publishedResult.findUnique.mockResolvedValue({ id: 1 });
+
+    await expect(service().submitResults({ ...ONE, force: true })).rejects.toThrow(/already been published/i);
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+  });
+
+  it("still requires the teacher to be assigned to the subject", async () => {
+    db.teacherAssignment.findFirst.mockResolvedValue(null);
+
+    await expect(service().submitResults({ ...ONE, force: true })).rejects.toThrow(/not assigned/i);
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
   });
 });

@@ -130,7 +130,10 @@ export class TeacherController {
                 classId: Number(classId),
                 subjectId: Number(subjectId),
                 academicSessionId: Number(academicSessionId),
-                termId: req.body.termId ? Number(req.body.termId) : undefined
+                termId: req.body.termId ? Number(req.body.termId) : undefined,
+                // Strictly `true`: anything else (a string, a missing field) must
+                // not switch off the missing-scores check by accident.
+                force: req.body.force === true
             });
 
             return res.status(201).json({
