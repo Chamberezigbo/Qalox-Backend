@@ -2,6 +2,7 @@ const prisma = require("../util/prisma");
 const { generateUniqueIdentifier } = require("../Models/generateUniqueIdentifier");
 const { getActivePlanForSchool } = require("../util/getActivePlanForSchool");
 const { syncStudentFeeInvoices } = require("../util/studentFeeSync");
+const { normalizeDuty } = require("../util/staffDuty");
 
 /**
  * Commits reviewed bulk-import rows into real Student / Staff records.
@@ -261,7 +262,7 @@ class BulkImportImporter {
               gender: data.gender || null,
               phoneNumber: data.phone || null,
               address: data.address || null,
-              duty: data.duty || null,
+              duty: normalizeDuty(data.duty),
               nextOfKin: data.nextOfKin || null,
               // Parsed as UTC midnight, not local. `new Date("2023-09-01T00:00:00")`
               // is local midnight, which is stored as the 31st of August for any

@@ -1,3 +1,4 @@
+import { isTeacherDuty } from "../../util/staffDuty";
 import prisma from "../../util/prisma";
 import { TeacherLoginDTO } from "../../dtos/auth/teacher-login.dto";
 import { signTeacherToken } from "../../util/jwt";
@@ -31,7 +32,9 @@ export class TeacherAuthService {
             throw new AppError("Invalid registration number");
         }
 
-        if (teacher.duty !== "Teacher") {
+        // Tolerant of case and stray spaces: "teacher" and "Teacher " are
+        // teachers too, and used to be locked out by an exact match.
+        if (!isTeacherDuty(teacher.duty)) {
             throw new AppError("Access denied");
         }
 

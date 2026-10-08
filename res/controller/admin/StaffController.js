@@ -1,6 +1,7 @@
 const prisma = require('../../util/prisma');
 const { generateUniqueIdentifier } = require("../../Models/generateUniqueIdentifier");
 const { createNotification } = require("../../util/notify");
+const { normalizeDuty } = require("../../util/staffDuty");
 
 /**
  * Register a new staff
@@ -40,6 +41,12 @@ exports.createStaff = async (req, res, next) => {
     const normalizedNextOfKin = nextOfKin?.trim() || null;
     const normalizedGender = gender?.trim() || null;
 
+    // Joi accepts "   " as a string, but a duty of only spaces is no duty at all.
+    const normalizedDuty = normalizeDuty(duty);
+    if (!normalizedDuty) {
+      return res.status(400).json({ success: false, message: "Duty is required" });
+    }
+
     // Email especially has to become null rather than "": the column is
     // unique, and MySQL allows any number of NULLs under a unique index but
     // treats "" as a real value — so a second staff member saved with a blank
@@ -76,7 +83,7 @@ exports.createStaff = async (req, res, next) => {
         gender: normalizedGender,
         phoneNumber: normalizedPhoneNumber,
         address: normalizedAddress,
-        duty,
+        duty: normalizedDuty,
         nextOfKin: normalizedNextOfKin,
         registrationNumber: uniqueId,
         dateEmployed: dateEmployed ? new Date(dateEmployed) : null,
@@ -182,7 +189,7 @@ exports.bulkCreateStaff = async (req, res, next) => {
             gender,
             phoneNumber,
             address,
-            duty,
+            duty: normalizeDuty(duty) ?? duty,
             nextOfKin,
             registrationNumber: uniqueId,
             dateEmployed: dateEmployed ? new Date(dateEmployed) : null,
@@ -249,10 +256,33 @@ exports.updateStaff = async (req, res, next) => {
       if (typeof value[key] === "string") value[key] = value[key].trim() || null;
     }
 
+    // The edit schema now accepts "" for the optional fields (clearing one is
+    // legitimate), but the body used to go to the database as it arrived: a
+    // blank email would be stored as "" and collide under the unique index,
+    // and a blank date or salary is not a valid DateTime or Decimal at all.
+    // Each is turned into null here, the same way createStaff does.
+    const data = { ...value };
+
+    if ("email" in data) data.email = data.email?.trim() || null;
+    if ("gender" in data) data.gender = data.gender?.trim() || null;
+    if ("dateEmployed" in data) {
+      data.dateEmployed = data.dateEmployed ? new Date(data.dateEmployed) : null;
+    }
+    if ("payroll" in data) {
+      data.payroll = data.payroll === "" || data.payroll == null ? null : Number(data.payroll);
+    }
+    if ("duty" in data) {
+      const duty = normalizeDuty(data.duty);
+      if (!duty) {
+        return res.status(400).json({ success: false, message: "Duty cannot be empty" });
+      }
+      data.duty = duty;
+    }
+
     // Update staff
     const updatedStaff = await prisma.staff.update({
       where: { id: Number(staffId) },
-      data: value,
+      data,
     });
 
     res.status(200).json({
