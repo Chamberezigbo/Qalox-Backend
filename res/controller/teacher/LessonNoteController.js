@@ -144,6 +144,10 @@ exports.generateLessonNote = async (req, res, next) => {
         academicTermId: activeTerm.id,
         inputParamsJson: JSON.stringify({ topic, weekRange, duration }),
         status: "queued",
+        // Recorded per job so a later model swap cannot change how history is
+        // read. Without this every row took the schema default, which named
+        // gemini-2.0-flash while production was already running 2.5 Flash.
+        model: GeminiTextService.getModel(),
         estimatedInputTokens,
         estimatedOutputTokens,
         creditsReserved: reserved,

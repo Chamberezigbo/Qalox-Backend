@@ -221,6 +221,7 @@ async function generateLessonNote({ schemeText, className, subjectName, topic, w
 
 module.exports = {
   generateLessonNote,
+  getModel,
   buildContextExcerpt,
   LESSON_NOTE_MAX_OUTPUT_TOKENS,
   MAX_CONTEXT_CHARS,

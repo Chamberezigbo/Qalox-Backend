@@ -164,3 +164,14 @@ describe("buildContextExcerpt — bounding what gets sent to Gemini", () => {
     expect(buildContextExcerpt(scheme, "absent topic").startsWith("START-MARKER")).toBe(true);
   });
 });
+
+describe("GeminiTextService.getModel", () => {
+  it("is exported so generation jobs can record the model that actually ran", () => {
+    // Jobs used to take the schema default, which named gemini-2.0-flash while
+    // production ran gemini-2.5-flash — so the per-row model column was wrong
+    // for every job and could not be trusted to interpret historical costs.
+    const actual = jest.requireActual("../Services/GeminiTextService");
+    expect(typeof actual.getModel).toBe("function");
+    expect(typeof actual.getModel()).toBe("string");
+  });
+});
