@@ -600,6 +600,63 @@ export class TeacherService {
     }
 
     /**
+     * Names of the class's groups in which nobody has a score for this subject.
+     *
+     * A group is a filter on who the teacher sees while entering scores — a
+     * submission and a teaching assignment have no group — so a class with
+     * Group A and Group B can end up with Group A fully scored and Group B
+     * untouched. Only a group with no scores at all counts: a student who was
+     * absent has no score too, and holding a whole subject back over one child
+     * would make bulk submission unusable.
+     *
+     * Students without a group are deliberately not treated as a group of their
+     * own. In a class that uses groups a few are usually just not yet placed,
+     * and flagging them would block the subject for good.
+     */
+    private async groupsWithoutScores(classId: number, subjectId: number, academicSessionId: number): Promise<string[]> {
+        const groups = await prisma.classGroup.findMany({
+            where: { classId },
+            select: { id: true, name: true }
+        });
+        if (groups.length === 0) return [];
+
+        const students = await prisma.student.findMany({
+            where: { classId, classGroupId: { not: null } },
+            select: { id: true, classGroupId: true }
+        });
+
+        const [caRows, examRows] = await Promise.all([
+            prisma.cAResult.findMany({
+                where: { academicSessionId, studentId: { not: null }, ca: { classId, subjectId } },
+                select: { studentId: true },
+                distinct: ["studentId"]
+            }),
+            prisma.examResult.findMany({
+                where: { academicSessionId, studentId: { not: null }, exam: { classId, subjectId } },
+                select: { studentId: true },
+                distinct: ["studentId"]
+            })
+        ]);
+        const scored = new Set<number>([...caRows, ...examRows].map((r) => r.studentId as number));
+
+        const members = new Map<number, { total: number; scored: number }>();
+        for (const student of students) {
+            const bucket = members.get(student.classGroupId as number) ?? { total: 0, scored: 0 };
+            bucket.total += 1;
+            if (scored.has(student.id)) bucket.scored += 1;
+            members.set(student.classGroupId as number, bucket);
+        }
+
+        return groups
+            .filter((group) => {
+                const bucket = members.get(group.id);
+                // An empty group has nobody to score, so it cannot be "missing" scores.
+                return bucket !== undefined && bucket.total > 0 && bucket.scored === 0;
+            })
+            .map((group) => group.name);
+    }
+
+    /**
      * Submits every subject the teacher is assigned in one class, in one go.
      *
      * Submitting is a lock — scores cannot be changed afterwards without admin
@@ -645,7 +702,7 @@ export class TeacherService {
             throw new Error("Forbidden: teacher not assigned to any subject in this class");
         }
 
-        type Outcome = "submitted" | "already_submitted" | "already_published" | "no_scores" | "failed";
+        type Outcome = "submitted" | "already_submitted" | "already_published" | "no_scores" | "incomplete" | "failed";
         const results: Array<{
             subjectId: number;
             subjectName: string;
@@ -686,6 +743,15 @@ export class TeacherService {
                 ]);
                 if (caScores + examScores === 0) {
                     record("no_scores", "No CA or exam scores have been entered");
+                    continue;
+                }
+
+                // Scores are entered a group at a time, so "some scores exist"
+                // is not enough: entering Group A and stopping would lock the
+                // whole subject with Group B blank.
+                const unscored = await this.groupsWithoutScores(classId, subjectId, academicSessionId);
+                if (unscored.length > 0) {
+                    record("incomplete", `No scores entered yet for ${unscored.join(", ")}`);
                     continue;
                 }
 

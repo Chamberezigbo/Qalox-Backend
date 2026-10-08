@@ -7,8 +7,10 @@ jest.mock("../util/prisma", () => ({
   teacherAssignment: { findMany: jest.fn(), findFirst: jest.fn() },
   resultSubmission: { findFirst: jest.fn(), create: jest.fn() },
   publishedResult: { findUnique: jest.fn() },
-  cAResult: { count: jest.fn() },
-  examResult: { count: jest.fn() },
+  cAResult: { count: jest.fn(), findMany: jest.fn() },
+  examResult: { count: jest.fn(), findMany: jest.fn() },
+  classGroup: { findMany: jest.fn() },
+  student: { findMany: jest.fn() },
 }));
 
 import prisma from "../util/prisma";
@@ -19,8 +21,10 @@ const db = prisma as unknown as {
   teacherAssignment: { findMany: jest.Mock };
   resultSubmission: { findFirst: jest.Mock; create: jest.Mock };
   publishedResult: { findUnique: jest.Mock };
-  cAResult: { count: jest.Mock };
-  examResult: { count: jest.Mock };
+  cAResult: { count: jest.Mock; findMany: jest.Mock };
+  examResult: { count: jest.Mock; findMany: jest.Mock };
+  classGroup: { findMany: jest.Mock };
+  student: { findMany: jest.Mock };
 };
 
 const INPUT = { staffId: 6, schoolId: 5, classId: 9, academicSessionId: 2, termId: 3 };
@@ -43,6 +47,11 @@ beforeEach(() => {
   db.cAResult.count.mockResolvedValue(10);
   db.examResult.count.mockResolvedValue(10);
   db.resultSubmission.create.mockResolvedValue({ id: 1 });
+  // Most classes have no groups, which is the case every test above assumes.
+  db.classGroup.findMany.mockResolvedValue([]);
+  db.student.findMany.mockResolvedValue([]);
+  db.cAResult.findMany.mockResolvedValue([]);
+  db.examResult.findMany.mockResolvedValue([]);
 });
 
 const service = () => new TeacherService();
@@ -175,5 +184,126 @@ describe("submitAllResults", () => {
 
     await expect(service().submitAllResults(INPUT)).rejects.toThrow("Class not found");
     expect(db.class.findFirst).toHaveBeenCalledWith({ where: { id: 9, schoolId: 5 }, select: { id: true } });
+  });
+
+  describe("when the class has groups", () => {
+    // A group only filters who the teacher sees while entering scores, so a
+    // class can end up with Group A scored and Group B untouched.
+    const groups = () =>
+      db.classGroup.findMany.mockResolvedValue([
+        { id: 1, name: "PINK CLASS" },
+        { id: 2, name: "yellow arms" },
+      ]);
+
+    /** Students 1-2 in PINK, 3 in yellow, 4-9 not placed in any group. */
+    const students = () =>
+      db.student.findMany.mockResolvedValue([
+        { id: 1, classGroupId: 1 },
+        { id: 2, classGroupId: 1 },
+        { id: 3, classGroupId: 2 },
+      ]);
+
+    const scoredStudents = (...ids: number[]) =>
+      db.cAResult.findMany.mockResolvedValue(ids.map((studentId) => ({ studentId })));
+
+    it("holds a subject back when a whole group has no scores", async () => {
+      groups();
+      students();
+      scoredStudents(1, 2); // PINK CLASS entered, yellow arms not
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(outcomes(result).Mathematics).toBe("incomplete");
+      expect(result.results[0].message).toBe("No scores entered yet for yellow arms");
+      expect(db.resultSubmission.create).not.toHaveBeenCalled();
+    });
+
+    it("counts a held-back subject as skipped, not failed", async () => {
+      groups();
+      students();
+      scoredStudents(1, 2);
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(result.counts).toEqual({ submitted: 0, skipped: 3, failed: 0 });
+    });
+
+    it("names every group that is missing scores", async () => {
+      groups();
+      students();
+      db.cAResult.findMany.mockResolvedValue([{ studentId: 99 }]); // someone elsewhere
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(result.results[0].message).toBe("No scores entered yet for PINK CLASS, yellow arms");
+    });
+
+    it("submits once every group has at least one score", async () => {
+      groups();
+      students();
+      scoredStudents(1, 3);
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(result.counts.submitted).toBe(3);
+    });
+
+    it("does not hold a subject back over one absent student", async () => {
+      // Student 2 has no score, but PINK CLASS is otherwise scored.
+      groups();
+      students();
+      scoredStudents(1, 3);
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(outcomes(result).Mathematics).toBe("submitted");
+    });
+
+    it("counts a score from either the CA or the exam side", async () => {
+      groups();
+      students();
+      db.cAResult.findMany.mockResolvedValue([{ studentId: 1 }]);
+      db.examResult.findMany.mockResolvedValue([{ studentId: 3 }]);
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(outcomes(result).Mathematics).toBe("submitted");
+    });
+
+    it("ignores students who are not in any group", async () => {
+      // Real data: SS 1 has 6 of its 9 students unplaced. Treating them as a
+      // group that needs scores would block bulk submission there for good.
+      groups();
+      students();
+      scoredStudents(1, 3); // the six unplaced students have no scores
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(outcomes(result).Mathematics).toBe("submitted");
+      expect(db.student.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { classId: 9, classGroupId: { not: null } } })
+      );
+    });
+
+    it("ignores a group nobody is in", async () => {
+      db.classGroup.findMany.mockResolvedValue([
+        { id: 1, name: "PINK CLASS" },
+        { id: 2, name: "yellow arms" },
+        { id: 3, name: "empty group" },
+      ]);
+      students();
+      scoredStudents(1, 3);
+
+      const result = await service().submitAllResults(INPUT);
+
+      expect(outcomes(result).Mathematics).toBe("submitted");
+    });
+
+    it("never looks at students or scores when the class has no groups", async () => {
+      await service().submitAllResults(INPUT);
+
+      expect(db.student.findMany).not.toHaveBeenCalled();
+      expect(db.cAResult.findMany).not.toHaveBeenCalled();
+    });
   });
 });
