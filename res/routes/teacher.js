@@ -59,6 +59,8 @@ router.get("/broadsheet", teacherAuthMiddleware, teacherController.getTeacherBro
 
 // Teacher submits results for admin review (locks scores)
 router.post("/results/submit", teacherAuthMiddleware, teacherController.submitResults);
+// Every subject the teacher is assigned in one class, in a single request.
+router.post("/results/submit-all", teacherAuthMiddleware, teacherController.submitAllResults);
 
 router.get("/active-term", teacherAuthMiddleware, teacherController.getActiveTerm);
 

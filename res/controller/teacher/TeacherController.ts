@@ -143,6 +143,42 @@ export class TeacherController {
         }
     };
 
+    submitAllResults = async (req: TeacherRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.staffId || !req.schoolId) return res.status(401).json({ message: "Unauthorized" });
+
+            const { classId, academicSessionId } = req.body;
+
+            if (!classId || !academicSessionId) {
+                throw new Error("classId and academicSessionId are required");
+            }
+
+            const data = await this.service.submitAllResults({
+                staffId: req.staffId,
+                schoolId: req.schoolId,
+                classId: Number(classId),
+                academicSessionId: Number(academicSessionId),
+                termId: req.body.termId ? Number(req.body.termId) : undefined
+            });
+
+            const { submitted, skipped, failed } = data.counts;
+            const message =
+                submitted > 0
+                    ? `Submitted ${submitted} subject${submitted === 1 ? "" : "s"}. Scores are now locked pending admin review.`
+                    : failed > 0
+                        ? "No subjects could be submitted."
+                        : "Nothing new to submit — every subject was already submitted or has no scores yet.";
+
+            return res.status(200).json({
+                success: failed === 0,
+                message: skipped > 0 && submitted > 0 ? `${message} ${skipped} skipped.` : message,
+                data
+            });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     getSubjectCAs = async (req: TeacherRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.staffId || !req.schoolId) {

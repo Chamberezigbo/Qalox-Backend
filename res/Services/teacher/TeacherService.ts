@@ -599,6 +599,122 @@ export class TeacherService {
         return submission;
     }
 
+    /**
+     * Submits every subject the teacher is assigned in one class, in one go.
+     *
+     * Submitting is a lock — scores cannot be changed afterwards without admin
+     * approval — so doing it for several subjects at once is only safe if it
+     * leaves alone what should not be locked:
+     *  - a subject already submitted or already published is skipped, not an
+     *    error, so pressing the button twice or after a partial run is harmless;
+     *  - a subject with no scores entered at all is skipped, because locking an
+     *    empty subject would put a blank result in front of the admin;
+     *  - each subject is handled on its own, so one failure never stops the rest.
+     *
+     * Single submission checks none of the scores-entered rule; it relies on the
+     * teacher having read the warning. That is a risk worth taking for one
+     * subject and not for ten.
+     */
+    async submitAllResults(input: {
+        staffId: number;
+        schoolId: number;
+        classId: number;
+        termId?: number;
+        academicSessionId: number;
+    }) {
+        const { staffId, schoolId, classId, termId, academicSessionId } = input;
+
+        const cls = await prisma.class.findFirst({
+            where: { id: classId, schoolId },
+            select: { id: true }
+        });
+        if (!cls) throw new Error("Class not found");
+
+        const assignments = await prisma.teacherAssignment.findMany({
+            where: { staffId, classId, subjectId: { not: null } },
+            select: { subjectId: true, subject: { select: { name: true } } }
+        });
+
+        // The same subject can be assigned more than once (one row per campus).
+        const subjects = new Map<number, string>();
+        for (const a of assignments) {
+            if (a.subjectId != null) subjects.set(a.subjectId, a.subject?.name ?? `Subject ${a.subjectId}`);
+        }
+
+        if (subjects.size === 0) {
+            throw new Error("Forbidden: teacher not assigned to any subject in this class");
+        }
+
+        type Outcome = "submitted" | "already_submitted" | "already_published" | "no_scores" | "failed";
+        const results: Array<{
+            subjectId: number;
+            subjectName: string;
+            outcome: Outcome;
+            message?: string;
+        }> = [];
+
+        const ordered = [...subjects.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+
+        for (const [subjectId, subjectName] of ordered) {
+            const record = (outcome: Outcome, message?: string) =>
+                results.push({ subjectId, subjectName, outcome, ...(message && { message }) });
+
+            try {
+                const existing = await prisma.resultSubmission.findFirst({
+                    where: { classId, subjectId, academicSessionId, staffId },
+                    select: { id: true }
+                });
+                if (existing) {
+                    record("already_submitted");
+                    continue;
+                }
+
+                const published = await prisma.publishedResult.findUnique({
+                    where: { classId_subjectId_academicSessionId: { classId, subjectId, academicSessionId } },
+                    select: { id: true }
+                });
+                if (published) {
+                    record("already_published");
+                    continue;
+                }
+
+                // Counted across the whole session, to match what a submission is
+                // keyed on (class, subject and session — not term).
+                const [caScores, examScores] = await Promise.all([
+                    prisma.cAResult.count({ where: { academicSessionId, ca: { classId, subjectId } } }),
+                    prisma.examResult.count({ where: { academicSessionId, exam: { classId, subjectId } } })
+                ]);
+                if (caScores + examScores === 0) {
+                    record("no_scores", "No CA or exam scores have been entered");
+                    continue;
+                }
+
+                await prisma.resultSubmission.create({
+                    data: { classId, subjectId, academicSessionId, staffId, termId: termId ?? null }
+                });
+                record("submitted");
+            } catch (error: any) {
+                // Two requests racing past the check above: the unique key on a
+                // submission turns the loser into "already submitted", not a fault.
+                if (error?.code === "P2002") record("already_submitted");
+                else record("failed", error?.message ?? "Could not submit");
+            }
+        }
+
+        const count = (outcome: Outcome) => results.filter((r) => r.outcome === outcome).length;
+
+        return {
+            classId,
+            academicSessionId,
+            results,
+            counts: {
+                submitted: count("submitted"),
+                skipped: results.filter((r) => r.outcome !== "submitted" && r.outcome !== "failed").length,
+                failed: count("failed")
+            }
+        };
+    }
+
     async getSubjectCAs(input: {
         staffId: number;
         schoolId: number;
