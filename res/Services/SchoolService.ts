@@ -1,3 +1,5 @@
+import { collectFileKeys, deleteSchoolData } from "./schoolDeletionPlan";
+
 class SchoolService {
   private prisma: any;
 
@@ -95,8 +97,13 @@ class SchoolService {
   }
 
   /**
-   * Permanently delete school and all related data (cascade delete)
-   * CRITICAL: Must delete in correct order due to foreign keys
+   * Permanently deletes a school and everything that belongs to it.
+   *
+   * What "everything" means is derived from the Prisma schema rather than
+   * listed here — see schoolDeletionPlan.ts for why a hand-kept list could not
+   * be trusted. The database work is one transaction, so a failure part-way
+   * leaves the school exactly as it was. Stored files are removed afterwards,
+   * best effort: an orphaned file is harmless, a half-deleted school is not.
    */
   async deleteSchoolCascade(schoolId: number, reason?: string) {
     const school = await this.prisma.school.findUnique({
@@ -107,179 +114,48 @@ class SchoolService {
       throw new Error("School not found");
     }
 
-    // Use transaction to ensure atomic deletion
-    await this.prisma.$transaction(async (tx) => {
-      // Step 1: Delete all result-related data
-      // Get all classes in this school first
-      const classes = await tx.class.findMany({
-        where: { schoolId },
-        select: { id: true },
-      });
-      const classIds = classes.map((c) => c.id);
+    // Read before anything is deleted — the rows holding these keys are gone
+    // once the transaction commits.
+    const fileKeys = await collectFileKeys(this.prisma, schoolId);
 
-      if (classIds.length > 0) {
-        // Delete PublishedResultRows (child of PublishedResult)
-        await tx.publishedResultRow.deleteMany({
-          where: {
-            publishedResult: {
-              classId: { in: classIds },
-            },
-          },
-        });
+    const deleted = await this.prisma.$transaction(
+      (tx: any) => deleteSchoolData(tx, schoolId),
+      // Prisma's default is 5 seconds, which a delete across this many tables
+      // can exceed on its own.
+      { timeout: 5 * 60 * 1000, maxWait: 10 * 1000 }
+    );
 
-        // Delete PublishedResults
-        await tx.publishedResult.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-
-        // Delete ResultSubmissions
-        await tx.resultSubmission.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-
-        // Delete ExamResults and CAResults (student scores)
-        const students = await tx.student.findMany({
-          where: { schoolId },
-          select: { id: true },
-        });
-        const studentIds = students.map((s) => s.id);
-
-        if (studentIds.length > 0) {
-          await tx.examResult.deleteMany({
-            where: { studentId: { in: studentIds } },
-          });
-
-          await tx.cAResult.deleteMany({
-            where: { studentId: { in: studentIds } },
-          });
-        }
-
-        // Delete Exams and ContinuousAssessments
-        await tx.exam.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-
-        await tx.continuousAssessment.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-      }
-
-      // Step 2: Delete academic structures
-      const sessions = await tx.academicSession.findMany({
-        where: { schoolId },
-        select: { id: true },
-      });
-      const sessionIds = sessions.map((s) => s.id);
-
-      if (sessionIds.length > 0) {
-        await tx.academicTerm.deleteMany({
-          where: { sessionId: { in: sessionIds } },
-        });
-
-        await tx.academicSession.deleteMany({
-          where: { schoolId },
-        });
-      }
-
-      // Step 3: Delete ClassSubjects and CATemplates
-      if (classIds.length > 0) {
-        await tx.classSubject.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-
-        await tx.cATemplate.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-      }
-
-      // School-level templates
-      await tx.cATemplate.deleteMany({
-        where: { schoolId },
-      });
-
-      // Step 4: Delete grading structures
-      const schemes = await tx.gradingScheme.findMany({
-        where: { schoolId },
-        select: { id: true },
-      });
-      const schemeIds = schemes.map((s) => s.id);
-
-      if (schemeIds.length > 0) {
-        await tx.gradingRule.deleteMany({
-          where: { schemeId: { in: schemeIds } },
-        });
-
-        await tx.gradingScheme.deleteMany({
-          where: { schoolId },
-        });
-      }
-
-      // Delete GradingSchemeClasses
-      if (classIds.length > 0) {
-        await tx.gradingSchemeClass.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-      }
-
-      // Delete RemarkScheme
-      await tx.remarkScheme.deleteMany({
-        where: { schoolId },
-      });
-
-      // Step 5: Delete teacher assignments and subjects
-      await tx.teacherAssignment.deleteMany({
-        where: {
-          staff: {
-            schoolId,
-          },
-        },
-      });
-
-      await tx.subject.deleteMany({
-        where: { schoolId },
-      });
-
-      // Step 6: Delete users (students, staff, admins)
-      await tx.student.deleteMany({
-        where: { schoolId },
-      });
-
-      await tx.staff.deleteMany({
-        where: { schoolId },
-      });
-
-      await tx.admin.deleteMany({
-        where: { schoolId },
-      });
-
-      // Step 7: Delete classes and class groups
-      if (classIds.length > 0) {
-        await tx.classGroup.deleteMany({
-          where: { classId: { in: classIds } },
-        });
-
-        await tx.class.deleteMany({
-          where: { schoolId },
-        });
-      }
-
-      // Step 8: Delete campuses
-      await tx.campus.deleteMany({
-        where: { schoolId },
-      });
-
-      // Step 9: Finally, delete the school itself
-      await tx.school.delete({
-        where: { id: schoolId },
-      });
-    });
+    const filesRemoved = await this.removeStoredFiles(fileKeys);
 
     return {
       id: school.id,
       name: school.name,
       deletedAt: new Date(),
       deletionReason: reason || null,
+      deleted,
+      filesRemoved,
     };
+  }
+
+  /** Best-effort removal of a deleted school's files from object storage. */
+  private async removeStoredFiles(keys: string[]): Promise<number> {
+    if (keys.length === 0) return 0;
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const r2Service = require("./R2Service");
+    let removed = 0;
+
+    for (const key of keys) {
+      try {
+        await r2Service.deleteObject(key);
+        removed += 1;
+      } catch (error: any) {
+        // Not worth failing a completed deletion over.
+        console.warn(`[DELETE_SCHOOL] Could not remove stored file ${key}: ${error?.message}`);
+      }
+    }
+
+    return removed;
   }
 }
 
