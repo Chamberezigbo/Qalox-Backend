@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const prisma = require("../../util/prisma");
+const logger = require("../../config/logger");
 const BulkImportWorker = require("../../Services/BulkImportWorker");
 const BulkImportImporter = require("../../Services/BulkImportImporter");
 const DataMappingService = require("../../Services/DataMappingService");
@@ -493,6 +494,13 @@ exports.confirmImport = async (req, res, next) => {
       data: payload,
     });
   } catch (error) {
+    // The error middleware logs the stack but not which import it was, and a
+    // confirm that dies half way is hard to place without that.
+    logger.error("[BULK_IMPORT] Confirm failed", {
+      importId: req.params.importId,
+      schoolId: req.schoolId,
+      error: error.message,
+    });
     next(error);
   }
 };
