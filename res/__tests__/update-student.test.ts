@@ -89,3 +89,5 @@ describe("updateStudent", () => {
     expect(data).not.toHaveProperty("registrationNumber");
   });
 });
+
+export {}; // makes this a module, so its top-level names stay out of the global scope

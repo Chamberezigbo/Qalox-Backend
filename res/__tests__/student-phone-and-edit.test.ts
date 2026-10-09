@@ -69,3 +69,5 @@ describe("buildStudentUpdate", () => {
     expect(buildStudentUpdate({ classId: "abc" }).error).toContain("classId");
   });
 });
+
+export {}; // makes this a module, so its top-level names stay out of the global scope
