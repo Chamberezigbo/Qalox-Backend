@@ -14,6 +14,9 @@ const logger = require("../config/logger");
  * other half of that: call it anywhere a student's classId is set or
  * changes, so a fee structure that predates the student still reaches them.
  *
+ * Limited to fee structures of the school's active session, so a student
+ * who joins a class later is not invoiced for last year's fees.
+ *
  * Never throws — a fee-sync failure should not block the student
  * create/move it rides along with; it is logged and swallowed instead.
  *
@@ -24,8 +27,20 @@ async function syncStudentFeeInvoices(tx, student) {
   if (!student.classId) return;
 
   try {
+    // Only the current session's fees. A class keeps every fee structure it has
+    // ever had, so invoicing all of them billed a student moved in at the start
+    // of a new session for every term of every previous year, as unpaid.
+    //
+    // A school with no active session is left as it was — it cannot be told
+    // apart from one that simply does not use sessions, and would otherwise
+    // stop invoicing late joiners altogether.
+    const activeSession = await tx.academicSession.findFirst({
+      where: { schoolId: student.schoolId, isActive: true },
+      select: { name: true },
+    });
+
     const structures = await tx.feeStructure.findMany({
-      where: { classId: student.classId },
+      where: { classId: student.classId, ...(activeSession && { session: activeSession.name }) },
       select: { id: true, items: { select: { amount: true } } },
     });
     if (structures.length === 0) return;

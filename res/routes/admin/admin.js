@@ -212,7 +212,7 @@ router.put("/student/:id",
   updateStudent
 );
 
-router.patch("/student/change-class", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), changeStudentClass);
+router.patch("/student/change-class", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, changeStudentClass);
 router.get("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), getSingleStudent);
 router.post("/students/bulk-upload", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, bulkCreateStudents);
 

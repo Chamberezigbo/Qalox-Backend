@@ -577,122 +577,150 @@ exports.getSingleStudent = async (req, res, next) => {
   }
 }
 
+/**
+ * PATCH /api/admin/student/change-class
+ * Body: { studentIds: number[], classId, groupId?, campusId? }
+ *
+ * Moves students into one class. Everything is looked up within the admin's
+ * own school: this used to find students, the class and the group by bare id,
+ * so an admin could move another school's students, or move their own into
+ * another school's class, just by knowing the ids.
+ *
+ * The batch is all or nothing. It used to commit student by student and then
+ * report an error for the ones that failed, leaving a half-moved class and no
+ * clear way to know which half.
+ */
 exports.changeStudentClass = async (req, res, next) => {
   try {
-    const { studentIds } = req.body; // Array of student IDs
-    const { classId, groupId, campusId } = req.body;
+    const schoolId = req.schoolId;
+    const { studentIds, classId, groupId, campusId } = req.body;
 
-    // Validate class ID
-    if (!classId) {
+    const targetClassId = parseInt(classId, 10);
+    if (!targetClassId) {
       return res.status(400).json({ success: false, message: "Class ID is required" });
     }
 
-    // Validate student IDs
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
       return res.status(400).json({ success: false, message: "At least one student ID is required" });
     }
 
-    // 1️⃣ Validate class existence
-    const classExist = await prisma.class.findUnique({
-      where: { id: parseInt(classId) },
-      include: { classGroups: true },
-    });
+    const ids = [...new Set(studentIds.map((id) => parseInt(id, 10)))];
+    if (ids.some(Number.isNaN)) {
+      return res.status(400).json({ success: false, message: "Student IDs must be numbers" });
+    }
 
+    // 1️⃣ The class, looked up within this school so another school's class
+    // reads as simply not found.
+    const classExist = await prisma.class.findFirst({
+      where: { id: targetClassId, schoolId },
+      select: { id: true, name: true, campusId: true },
+    });
     if (!classExist) {
       return res.status(404).json({ success: false, message: "Class not found" });
     }
 
-    // ✅ Optional: Validate campus if provided
+    // 2️⃣ Campus. A class belongs to one campus, so a student moved into it
+    // belongs there too — taken from the class unless a campus is named, and
+    // refused if the one named is not the class's own.
+    let targetCampusId = classExist.campusId ?? undefined;
     if (campusId) {
-      const campusExist = await prisma.campus.findUnique({
-        where: { id: parseInt(campusId) },
+      const campusExist = await prisma.campus.findFirst({
+        where: { id: parseInt(campusId, 10), schoolId },
+        select: { id: true },
       });
       if (!campusExist) {
         return res.status(404).json({ success: false, message: "Campus not found" });
       }
-      if (campusExist.schoolId !== classExist.schoolId) {
+      if (classExist.campusId && campusExist.id !== classExist.campusId) {
         return res.status(400).json({
           success: false,
-          message: "This campus does not belong to the same school as the class",
+          message: "This class belongs to a different campus",
         });
       }
+      targetCampusId = campusExist.id;
     }
 
-    // 2️⃣ Validate group if provided
-    let groupData = {};
+    // 3️⃣ Group, which must belong to the class being moved into.
+    let targetGroupId = null;
     if (groupId) {
-      const groupExist = await prisma.classGroup.findUnique({
-        where: { id: parseInt(groupId) },
+      const groupExist = await prisma.classGroup.findFirst({
+        where: { id: parseInt(groupId, 10), classId: classExist.id },
+        select: { id: true },
       });
       if (!groupExist) {
-        return res.status(404).json({ success: false, message: "Class group not found" });
-      }
-      if (groupExist.classId !== classExist.id) {
-        return res.status(400).json({
+        return res.status(404).json({
           success: false,
-          message: "This group does not belong to the specified class",
+          message: "Class group not found in the specified class",
         });
       }
-
-      groupData = { classGroupId: parseInt(groupId) };
+      targetGroupId = groupExist.id;
     }
 
-    // 3️⃣ Update students (class + optional group + optional campus)
-    const updatedStudents = [];
-    const errors = [];
-
-
-    for (const studentId of studentIds) {
-
-      try {
-        const studentExist = await prisma.student.findUnique({
-          where: { id: parseInt(studentId) },
-        });
-
-        if (!studentExist) {
-          errors.push({ studentId, message: `Student with ID ${studentId} not found` });
-          continue;
-        }
-
-        const updatedStudent = await prisma.student.update({
-          where: { id: parseInt(studentId) },
-          data: {
-            classId: parseInt(classId),
-            ...(campusId && { campusId: parseInt(campusId) }),
-            ...groupData,
-          },
-          include: {
-            class: { include: { classGroups: true, campus: true } },
-            campus: true,
-          },
-        });
-
-        // The new class may already have a fee structure this student was
-        // never invoiced against, since they weren't in it when the
-        // structure was created.
-        await syncStudentFeeInvoices(prisma, {
-          id: updatedStudent.id,
-          schoolId: updatedStudent.schoolId,
-          classId: updatedStudent.classId,
-        });
-
-        updatedStudents.push(updatedStudent);
-      } catch (error) {
-        errors.push({ studentId, message: error.message });
-      }
-    }
-
-    if (errors.length > 0) {
+    // 4️⃣ The students, within this school. Any id that is not found here — gone,
+    // or belonging to another school — stops the whole batch before anything
+    // is changed.
+    const students = await prisma.student.findMany({
+      where: { id: { in: ids }, schoolId },
+      select: { id: true, classId: true },
+    });
+    const foundIds = new Set(students.map((student) => student.id));
+    const missing = ids.filter((id) => !foundIds.has(id));
+    if (missing.length > 0) {
       return res.status(400).json({
         success: false,
-        message: "Some students could not be updated",
-        errors,
+        message: "Some students could not be updated. No changes were made.",
+        errors: missing.map((id) => ({ studentId: id, message: `Student with ID ${id} not found` })),
       });
     }
+
+    // 5️⃣ Apply, in one transaction and two statements rather than one per student.
+    //
+    // A group belongs to a class, so a student leaving their class cannot keep
+    // it — it is cleared, or replaced by the group chosen in the new class. This
+    // used to leave the old class's group in place whenever none was given, which
+    // then showed the student under a group that is not in their class.
+    // A student already in the target class keeps their group unless a new one
+    // is chosen: that is how an admin changes only the group.
+    const moving = students.filter((s) => s.classId !== classExist.id).map((s) => s.id);
+    const staying = students.filter((s) => s.classId === classExist.id).map((s) => s.id);
+    const base = { classId: classExist.id, ...(targetCampusId && { campusId: targetCampusId }) };
+
+    await prisma.$transaction(
+      async (tx) => {
+        if (moving.length > 0) {
+          await tx.student.updateMany({
+            where: { id: { in: moving }, schoolId },
+            data: { ...base, classGroupId: targetGroupId },
+          });
+        }
+        if (staying.length > 0) {
+          await tx.student.updateMany({
+            where: { id: { in: staying }, schoolId },
+            data: { ...base, ...(targetGroupId && { classGroupId: targetGroupId }) },
+          });
+        }
+      },
+      { timeout: 30000 }
+    );
+
+    // The new class may already have a fee structure these students were never
+    // invoiced against. After the commit, and per student, because it never
+    // throws and must not be able to undo the move it rides along with.
+    for (const studentId of moving) {
+      await syncStudentFeeInvoices(prisma, { id: studentId, schoolId, classId: classExist.id });
+    }
+
+    const updatedStudents = await prisma.student.findMany({
+      where: { id: { in: ids }, schoolId },
+      include: {
+        class: { include: { classGroups: true, campus: true } },
+        campus: true,
+      },
+    });
 
     res.status(200).json({
       success: true,
-      message: `Students moved to class ${classExist.name}${groupId ? " and added to group" : ""
+      message: `Students moved to class ${classExist.name}${targetGroupId ? " and added to group" : ""
         }${campusId ? " in the selected campus" : ""} successfully`,
       students: updatedStudents,
     });
