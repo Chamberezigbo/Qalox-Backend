@@ -338,13 +338,42 @@ function normalizeGender(raw) {
   return text;
 }
 
+/** Separates two numbers written in one cell: "0801… / 0809…", "0801…, 0809…", "…and…". */
+const PHONE_SEPARATOR = /[\/,;|\n\r]+|\s+(?:and|or|&)\s+/i;
+
 /** Keeps digits and a single leading +; spreadsheets love "0801 234 5678". */
+function normalizeOnePhone(text) {
+  const plus = text.trim().startsWith("+") ? "+" : "";
+  const digits = text.replace(/\D/g, "");
+  return digits ? plus + digits : text.trim();
+}
+
+/**
+ * Cleans a phone cell, keeping every number it holds.
+ *
+ * Schools often put two numbers in one cell ("0801 234 5678 / 0809 876 5432").
+ * Stripping every non-digit from the whole cell glued them into one 22-digit
+ * number, which was saved as the guardian's phone. Numbers are now cleaned one
+ * by one and joined with " / ", so nothing is lost and the review screen can
+ * warn that only the first is stored (see firstPhone).
+ *
+ * A split is only trusted when every piece is long enough to be a number: a
+ * lone "0801,234,5678" written with commas is one number, not three.
+ */
 function normalizePhone(raw) {
   const text = stringifyCell(raw);
   if (!text) return "";
-  const plus = text.trim().startsWith("+") ? "+" : "";
-  const digits = text.replace(/\D/g, "");
-  return digits ? plus + digits : text;
+
+  const parts = text.split(PHONE_SEPARATOR).map((part) => part.trim()).filter(Boolean);
+  const looksLikeSeveral = parts.length > 1 && parts.every((part) => part.replace(/\D/g, "").length >= 7);
+
+  return looksLikeSeveral ? parts.map(normalizeOnePhone).join(" / ") : normalizeOnePhone(text);
+}
+
+/** The single number to store from a cleaned phone cell: the first one. */
+function firstPhone(value) {
+  const text = stringifyCell(value);
+  return text ? text.split(" / ")[0].trim() : "";
 }
 
 /**
@@ -439,6 +468,7 @@ module.exports = {
   normalizeDate,
   normalizeGender,
   normalizePhone,
+  firstPhone,
   splitFullName,
   stringifyCell,
 };

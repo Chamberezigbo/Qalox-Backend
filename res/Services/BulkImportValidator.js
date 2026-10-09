@@ -216,13 +216,24 @@ function checkEmail(data, errors, key = "email") {
 
 function checkPhone(data, warnings, key) {
   if (!data[key]) return;
-  const digits = data[key].replace(/\D/g, "");
+
+  // Two numbers in one cell: only the first is stored, so say so rather than
+  // dropping the second without a word.
+  const numbers = data[key].split(" / ");
+  if (numbers.length > 1) {
+    warnings.push({
+      field: key,
+      message: `This cell has ${numbers.length} numbers (${data[key]}). Only the first, ${numbers[0]}, will be saved — edit the cell to choose another.`,
+    });
+  }
+
   // Deliberately a warning: phone formats vary too much across countries to
   // reject a row over, and a bad number does not stop the record being created.
+  const digits = numbers[0].replace(/\D/g, "");
   if (digits.length < 7 || digits.length > 15) {
     warnings.push({
       field: key,
-      message: `"${data[key]}" does not look like a complete phone number`,
+      message: `"${numbers[0]}" does not look like a complete phone number`,
     });
   }
 }

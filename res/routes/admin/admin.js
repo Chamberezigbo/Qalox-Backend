@@ -21,7 +21,7 @@ const { updateSchoolBranding } = require("../../controller/school/schoolControll
 
 const {
   getStudentDetails, createStudent,
-  updateStudent, changeStudentClass,
+  updateStudent, changeStudentClass, previewStudentDeletion, deleteStudent,
   getSingleStudent, bulkCreateStudents,
 } = require("../../controller/admin/StudentController");
 
@@ -209,8 +209,11 @@ router.put("/student/:id",
   upload.single("passport"),
   auth.authenticateSchoolLevelAdmin,
   auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE),
+  auth.attachSchoolId,
   updateStudent
 );
+router.get("/student/:id/delete-preview", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, previewStudentDeletion);
+router.delete("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, deleteStudent);
 
 router.patch("/student/change-class", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, changeStudentClass);
 router.get("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), getSingleStudent);

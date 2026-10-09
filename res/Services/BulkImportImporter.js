@@ -3,6 +3,7 @@ const { generateUniqueIdentifier } = require("../Models/generateUniqueIdentifier
 const { getActivePlanForSchool } = require("../util/getActivePlanForSchool");
 const { syncStudentFeeInvoices } = require("../util/studentFeeSync");
 const { normalizeDuty } = require("../util/staffDuty");
+const { firstPhone } = require("./DataMappingService");
 
 /**
  * Commits reviewed bulk-import rows into real Student / Staff records.
@@ -242,7 +243,7 @@ class BulkImportImporter {
               dateOfBirth: data.dob || null,
               guardianName: data.guardianName || null,
               guardianEmail: data.guardianEmail || null,
-              guardianNumber: data.parentPhone || null,
+              guardianNumber: firstPhone(data.parentPhone) || null,
               email: data.email || null,
               academicSessionId: session.id,
               registrationNumber,
@@ -305,7 +306,7 @@ class BulkImportImporter {
               name: `${data.firstName} ${data.lastName}`.trim(),
               email: data.email || null,
               gender: data.gender || null,
-              phoneNumber: data.phone || null,
+              phoneNumber: firstPhone(data.phone) || null,
               address: data.address || null,
               duty: normalizeDuty(data.duty),
               nextOfKin: data.nextOfKin || null,

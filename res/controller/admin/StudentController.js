@@ -9,6 +9,14 @@ const { academicSession } = require("../../util/prisma");
 const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
 const { createNotification } = require("../../util/notify");
 const { syncStudentFeeInvoices } = require("../../util/studentFeeSync");
+const { buildStudentUpdate } = require("../../util/studentUpdate");
+const logger = require("../../config/logger");
+const {
+  StudentDeletionBlocked,
+  StudentNotFound,
+  planStudentDeletion,
+  deleteStudent: deleteStudentRecords,
+} = require("../../Services/studentDeletion");
 
 exports.getStudentDetails = async (req, res, next) => {
   try {
@@ -476,11 +484,12 @@ exports.bulkCreateStudents = async (req, res, next) => {
 exports.updateStudent = async (req, res, next) => {
   try {
     const { id } = req.params;
-    // Pull session out separately so it doesn't get passed raw to Prisma
-    const { session, ...data } = req.body;
+    const schoolId = req.schoolId;
+    const { session } = req.body;
 
-    const studentExist = await prisma.student.findUnique({
-      where: { id: parseInt(id) },
+    // Within the admin's own school: another school's student reads as not found.
+    const studentExist = await prisma.student.findFirst({
+      where: { id: parseInt(id), schoolId },
       include: {
         campus: { select: { id: true, name: true } }
       },
@@ -488,6 +497,49 @@ exports.updateStudent = async (req, res, next) => {
 
     if (!studentExist) {
       return res.status(404).json({ message: "Student not found" });
+    }
+
+    // Only known fields, with blanks turned into nulls — see util/studentUpdate.js.
+    const { data, ids, error } = buildStudentUpdate(req.body);
+    if (error) return res.status(400).json({ success: false, message: error });
+
+    // A class, campus or group named in the request has to be this school's, and a
+    // group has to belong to the class the student will be in.
+    let targetClass = null;
+    if (ids.classId) {
+      targetClass = await prisma.class.findFirst({
+        where: { id: ids.classId, schoolId },
+        select: { id: true, campusId: true },
+      });
+      if (!targetClass) return res.status(404).json({ success: false, message: "Class not found" });
+      data.classId = targetClass.id;
+    }
+    if (ids.campusId) {
+      const campus = await prisma.campus.findFirst({ where: { id: ids.campusId, schoolId }, select: { id: true } });
+      if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
+      if (targetClass?.campusId && targetClass.campusId !== campus.id) {
+        return res.status(400).json({ success: false, message: "This class belongs to a different campus" });
+      }
+      data.campusId = campus.id;
+    } else if (targetClass?.campusId && !studentExist.campusId) {
+      // A student with no campus (bulk uploaded without one) takes their class's.
+      data.campusId = targetClass.campusId;
+    }
+
+    const classChanged = !!targetClass && targetClass.id !== studentExist.classId;
+    const finalClassId = targetClass?.id ?? studentExist.classId;
+    if (ids.classGroupId) {
+      const group = await prisma.classGroup.findFirst({
+        where: { id: ids.classGroupId, classId: finalClassId },
+        select: { id: true },
+      });
+      if (!group) {
+        return res.status(404).json({ success: false, message: "Class group not found in this class" });
+      }
+      data.classGroupId = group.id;
+    } else if (classChanged) {
+      // A group belongs to a class; a student who changes class cannot keep the old one.
+      data.classGroupId = null;
     }
 
     // Upload new passport if provided
@@ -512,22 +564,23 @@ exports.updateStudent = async (req, res, next) => {
       resolvedSessionId = resolved.id;
     }
 
-    // Parse any Int fields that come in as strings from the request body
     const updateData = {
       ...data,
-      ...(data.campusId && { campusId: parseInt(data.campusId) }),
-      ...(data.classId && { classId: parseInt(data.classId) }),
-      ...(data.classGroupId && { classGroupId: parseInt(data.classGroupId) }),
       ...(resolvedSessionId && { academicSessionId: resolvedSessionId }),
     };
 
     const updatedStudent = await prisma.student.update({
-      where: { id: parseInt(id) },
+      where: { id: studentExist.id },
       data: updateData,
       include: {
         academicSession: { select: { id: true, name: true, isActive: true } },
       },
     });
+
+    // The new class may have fees this student was never invoiced for.
+    if (classChanged) {
+      await syncStudentFeeInvoices(prisma, { id: studentExist.id, schoolId, classId: finalClassId });
+    }
 
     res.status(200).json({
       success: true,
@@ -725,6 +778,65 @@ exports.changeStudentClass = async (req, res, next) => {
       students: updatedStudents,
     });
   } catch (error) {
+    next(error);
+  }
+};
+
+
+/**
+ * GET /api/admin/student/:id/delete-preview
+ * What deleting a student would remove, or why it is refused.
+ */
+exports.previewStudentDeletion = async (req, res, next) => {
+  try {
+    const plan = await planStudentDeletion(prisma, parseInt(req.params.id, 10), req.schoolId);
+    res.status(200).json({ success: true, data: plan });
+  } catch (error) {
+    if (error instanceof StudentNotFound) return res.status(404).json({ success: false, message: error.message });
+    next(error);
+  }
+};
+
+/**
+ * DELETE /api/admin/student/:id
+ * Body: { confirmDeletion: true }
+ */
+exports.deleteStudent = async (req, res, next) => {
+  try {
+    if (req.body?.confirmDeletion !== true) {
+      return res.status(400).json({
+        success: false,
+        message: "Deletion requires confirmDeletion: true",
+        code: "DELETION_NOT_CONFIRMED",
+      });
+    }
+
+    const studentId = parseInt(req.params.id, 10);
+    const plan = await deleteStudentRecords(prisma, studentId, req.schoolId);
+
+    logger.info("[DELETE_STUDENT] Deleted", {
+      studentId,
+      label: plan.label,
+      willRemove: plan.willRemove,
+      schoolId: req.schoolId,
+      actorId: req.user?.id ?? null,
+    });
+
+    // After the commit: a file cannot be rolled back, and a stray photo is harmless.
+    if (plan.passportKey) {
+      try {
+        await require("../../Services/R2Service").deleteObject(plan.passportKey);
+      } catch (fileError) {
+        logger.warn("[DELETE_STUDENT] Could not remove passport photo", { key: plan.passportKey, error: fileError.message });
+      }
+    }
+
+    res.status(200).json({ success: true, message: "Student deleted", data: plan });
+  } catch (error) {
+    if (error instanceof StudentDeletionBlocked) {
+      return res.status(409).json({ success: false, message: error.message, code: error.code, data: error.plan });
+    }
+    if (error instanceof StudentNotFound) return res.status(404).json({ success: false, message: error.message });
     next(error);
   }
 };
