@@ -234,7 +234,14 @@ exports.getLessonNote = async (req, res, next) => {
     });
 
     if (!note) return res.status(404).json({ success: false, message: "Lesson note not found" });
-    return res.status(200).json({ success: true, data: note });
+
+    // The chat this note was written from, if any: it is what "ask AI to change
+    // this note" talks to.
+    const chat = await prisma.lessonNoteChat.findFirst({
+      where: { lessonNoteId: note.id, staffId: req.staffId },
+      select: { id: true },
+    });
+    return res.status(200).json({ success: true, data: { ...note, chatId: chat?.id ?? null } });
   } catch (err) {
     next(err);
   }
