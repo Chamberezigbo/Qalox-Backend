@@ -21,7 +21,11 @@ export class GradingService {
             }
 
             if (i > 0 && g.min <= sorted[i - 1].max) {
-                throw new Error("Grading ranges must not overlap");
+                const prev = sorted[i - 1];
+                // Name both rows so the admin can find the clash in a long list.
+                throw new Error(
+                    `Grading ranges must not overlap: ${prev.grade} (${prev.min}-${prev.max}) and ${g.grade} (${g.min}-${g.max})`
+                );
             }
         }
     }
