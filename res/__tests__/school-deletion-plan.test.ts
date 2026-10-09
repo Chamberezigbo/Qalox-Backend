@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/client";
 import {
   DETACH_ON_SCHOOL_DELETE,
+  SETTLED_ON_SCHOOL_DELETE,
+  settleCommissions,
   NOT_SCHOOL_DATA,
   buildDeletionOrder,
   delegateName,
@@ -51,10 +53,11 @@ describe("buildDeletionOrder — coverage", () => {
     }
   });
 
-  it("detaches marketer commissions and leads instead of deleting them", () => {
-    // They are the marketer's earnings history, not the school's data.
-    expect([...DETACH_ON_SCHOOL_DELETE].sort()).toEqual(["Commission", "MarketerSchoolLead"]);
-    for (const name of DETACH_ON_SCHOOL_DELETE) {
+  it("detaches marketer leads and settles commissions instead of sweeping them up", () => {
+    // They are the marketer's records, not the school's data.
+    expect([...DETACH_ON_SCHOOL_DELETE]).toEqual(["MarketerSchoolLead"]);
+    expect([...SETTLED_ON_SCHOOL_DELETE]).toEqual(["Commission"]);
+    for (const name of [...DETACH_ON_SCHOOL_DELETE, ...SETTLED_ON_SCHOOL_DELETE]) {
       expect(order).not.toContain(name);
     }
   });
@@ -161,6 +164,7 @@ describe("deleteSchoolData", () => {
         calls.push(`delete:${name}`);
         return {};
       }),
+      findUnique: jest.fn(async () => ({ name: "Test School" })),
       findMany: jest.fn(async () => {
         calls.push(`findMany:${name}`);
         if (name === "student") return options.students ?? [];
@@ -182,7 +186,7 @@ describe("deleteSchoolData", () => {
     expect(removed.School).toBe(1);
   });
 
-  it("detaches marketer commissions before deleting anything", async () => {
+  it("detaches marketer leads before deleting anything", async () => {
     const { tx, calls } = fakeTx();
 
     await deleteSchoolData(tx, 7);
@@ -195,6 +199,16 @@ describe("deleteSchoolData", () => {
       // And never deleted outright.
       expect(calls).not.toContain(`deleteMany:${delegateName(name)}`);
     }
+  });
+
+  it("settles commissions before deleting anything else", async () => {
+    const { tx, calls } = fakeTx();
+
+    await deleteSchoolData(tx, 7);
+
+    // No commission rows in the double, so the settle step only looks.
+    expect(calls.indexOf("findMany:commission")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("findMany:commission")).toBeLessThan(calls.findIndex((c) => c.startsWith("deleteMany:")));
   });
 
   it("issues one delete per model in the planned order", async () => {
@@ -233,5 +247,72 @@ describe("deleteSchoolData", () => {
     await deleteSchoolData(tx, 7);
 
     expect(calls).not.toContain("findMany:parent");
+  });
+});
+
+describe("settleCommissions", () => {
+  function settleTx(rows: any[], marketers: any[]) {
+    const writes: Array<[string, any]> = [];
+    const tx: any = {
+      commission: {
+        findMany: jest.fn(async () => rows),
+        deleteMany: jest.fn(async (a: any) => { writes.push(["commission.deleteMany", a]); return { count: rows.length }; }),
+      },
+      admin: {
+        findMany: jest.fn(async () => marketers),
+        update: jest.fn(async (a: any) => { writes.push(["admin.update", a]); return {}; }),
+      },
+      walletTransaction: { create: jest.fn(async (a: any) => { writes.push(["wallet.create", a]); return {}; }) },
+      notification: { create: jest.fn(async (a: any) => { writes.push(["notification.create", a]); return {}; }) },
+    };
+    return { tx, writes };
+  }
+  const marketer = { id: 1, name: "Ada", email: "ada@x.com", walletBalance: 1000 };
+
+  it("does nothing for a school with no commissions", async () => {
+    const { tx, writes } = settleTx([], []);
+    expect(await settleCommissions(tx, 7, "Sch")).toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  it("only deletes and notifies when everything was already paid", async () => {
+    const { tx, writes } = settleTx(
+      [{ id: 1, marketerId: 1, amount: 400, status: "paid" }, { id: 2, marketerId: 1, amount: 100, status: "paid" }],
+      [marketer]
+    );
+
+    const [result] = await settleCommissions(tx, 7, "Sch");
+
+    expect(result).toMatchObject({ marketerId: 1, count: 2, total: 500, creditedNow: 0, marketerEmail: "ada@x.com" });
+    expect(writes.map((w) => w[0])).toEqual(["notification.create", "commission.deleteMany"]);
+  });
+
+  it("credits unpaid commissions to the wallet before deleting them", async () => {
+    const { tx, writes } = settleTx(
+      [
+        { id: 1, marketerId: 1, amount: 400, status: "paid" },
+        { id: 2, marketerId: 1, amount: 250, status: "pending" },
+        { id: 3, marketerId: 1, amount: 90, status: "rejected" },
+      ],
+      [marketer]
+    );
+
+    const [result] = await settleCommissions(tx, 7, "Sch");
+
+    expect(result).toMatchObject({ count: 3, total: 740, creditedNow: 250 });
+    expect(writes[0][1].data.walletBalance).toEqual({ increment: 250 });
+    expect(writes[1][1].data).toMatchObject({ type: "credit", amount: 250, balanceAfter: 1250 });
+    expect(writes[writes.length - 1][0]).toBe("commission.deleteMany");
+  });
+
+  it("settles each marketer separately", async () => {
+    const { tx } = settleTx(
+      [{ id: 1, marketerId: 1, amount: 10, status: "paid" }, { id: 2, marketerId: 2, amount: 20, status: "paid" }],
+      [marketer, { id: 2, name: "Bo", email: "bo@x.com", walletBalance: 0 }]
+    );
+
+    const result = await settleCommissions(tx, 7, "Sch");
+
+    expect(result.map((r) => [r.marketerId, r.total])).toEqual([[1, 10], [2, 20]]);
   });
 });

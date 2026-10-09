@@ -18,12 +18,18 @@ type Where = Record<string, unknown>;
 type Model = Prisma.DMMF.Model;
 
 /**
- * Marketer commissions and leads reference a school through an optional
- * `schoolId`, but they are the marketer's earnings history, not the school's
- * data. Deleting them would erase what a marketer is owed, so they are
- * detached (schoolId set to null) and kept.
+ * Marketer leads reference a school through an optional `schoolId`, but they are
+ * the marketer's records, not the school's data, so they are detached
+ * (schoolId set to null) and kept.
  */
-export const DETACH_ON_SCHOOL_DELETE = ["Commission", "MarketerSchoolLead"] as const;
+export const DETACH_ON_SCHOOL_DELETE = ["MarketerSchoolLead"] as const;
+
+/**
+ * Commissions are settled, then deleted: see settleCommissions. They cannot be
+ * left pointing at a school that no longer exists, and nothing a marketer is
+ * owed may be lost by deleting it.
+ */
+export const SETTLED_ON_SCHOOL_DELETE = ["Commission"] as const;
 
 /**
  * Platform- and marketer-owned records that must never be swept up by a
@@ -33,6 +39,7 @@ export const DETACH_ON_SCHOOL_DELETE = ["Commission", "MarketerSchoolLead"] as c
  */
 export const NOT_SCHOOL_DATA = [
   ...DETACH_ON_SCHOOL_DELETE,
+  ...SETTLED_ON_SCHOOL_DELETE,
   "WalletTransaction",
   "PayoutRequest",
   "MarketerDocument",
@@ -192,14 +199,119 @@ export async function previewSchoolDeletion(client: any, schoolId: number): Prom
   return counts;
 }
 
+/** What one marketer earned from a school, as settled when that school was deleted. */
+export interface CommissionSettlement {
+  marketerId: number;
+  marketerName: string;
+  marketerEmail: string;
+  schoolName: string;
+  /** Commission rows removed. */
+  count: number;
+  /** Total of those rows, in naira. */
+  total: number;
+  /** The part of the total that was still unpaid and has now been credited to the wallet. */
+  creditedNow: number;
+}
+
+/**
+ * Settles a school's commissions with the marketers who earned them, then
+ * deletes them.
+ *
+ * A commission is a claim on the marketer's wallet. Payments credit the wallet
+ * at the moment the commission is written (status "paid"), so those rows are
+ * only a record of money already received, and the wallet's own transaction
+ * history keeps that record. A row still "pending" has not reached the wallet;
+ * it is credited now, with a wallet transaction saying why, so deleting the row
+ * cannot cost the marketer anything. Rejected rows were never owed and are
+ * simply removed.
+ */
+export async function settleCommissions(tx: any, schoolId: number, schoolName: string): Promise<CommissionSettlement[]> {
+  const rows: Array<{ id: number; marketerId: number; amount: number; status: string }> =
+    await tx.commission.findMany({
+      where: { schoolId },
+      select: { id: true, marketerId: true, amount: true, status: true },
+    });
+  if (rows.length === 0) return [];
+
+  const marketerIds = [...new Set(rows.map((r) => r.marketerId))];
+  const marketers: Array<{ id: number; name: string; email: string; walletBalance: number | null }> =
+    await tx.admin.findMany({
+      where: { id: { in: marketerIds } },
+      select: { id: true, name: true, email: true, walletBalance: true },
+    });
+
+  const settlements: CommissionSettlement[] = [];
+
+  for (const marketer of marketers) {
+    const mine = rows.filter((r) => r.marketerId === marketer.id);
+    const total = mine.reduce((sum, r) => sum + r.amount, 0);
+    const creditedNow = mine.filter((r) => r.status === "pending").reduce((sum, r) => sum + r.amount, 0);
+
+    if (creditedNow > 0) {
+      const balanceAfter = (marketer.walletBalance ?? 0) + creditedNow;
+      await tx.admin.update({
+        where: { id: marketer.id },
+        data: { walletBalance: { increment: creditedNow }, totalEarned: { increment: creditedNow } },
+      });
+      await tx.walletTransaction.create({
+        data: {
+          marketerId: marketer.id,
+          type: "credit",
+          amount: creditedNow,
+          description: `Unpaid commission settled — ${schoolName} was deleted`.slice(0, 255),
+          balanceAfter,
+        },
+      });
+    }
+
+    await tx.notification.create({
+      data: {
+        marketerId: marketer.id,
+        title: "A school you referred was deleted",
+        message:
+          `${schoolName} was deleted from Qalox. Your commissions from it (${formatNaira(total)} across ${mine.length} record(s)) ` +
+          `are settled${creditedNow > 0 ? `, and ${formatNaira(creditedNow)} that was still unpaid has been added to your wallet` : ""}. ` +
+          `Nothing you earned has been lost; your wallet history keeps the record.`,
+        type: "info",
+        link: "/commissions",
+        relatedType: "commission",
+      },
+    });
+
+    settlements.push({
+      marketerId: marketer.id,
+      marketerName: marketer.name,
+      marketerEmail: marketer.email,
+      schoolName,
+      count: mine.length,
+      total,
+      creditedNow,
+    });
+  }
+
+  await tx.commission.deleteMany({ where: { schoolId } });
+  return settlements;
+}
+
+export const formatNaira = (amount: number): string =>
+  `₦${amount.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 /**
  * Deletes everything belonging to a school, then the school. Runs against a
  * transaction client, so a failure part-way leaves nothing deleted.
  *
  * @returns how many rows were removed from each model
  */
-export async function deleteSchoolData(tx: any, schoolId: number): Promise<Record<string, number>> {
+export async function deleteSchoolData(
+  tx: any,
+  schoolId: number,
+  settlements: CommissionSettlement[] = []
+): Promise<Record<string, number>> {
   const removed: Record<string, number> = {};
+
+  // Before anything else, while the school's name is still readable.
+  const school: { name: string } | null = await tx.school.findUnique({ where: { id: schoolId }, select: { name: true } });
+  settlements.push(...(await settleCommissions(tx, schoolId, school?.name ?? "A school")));
 
   // Parents have no link to a school — a parent belongs to its children — so
   // they are remembered now and revisited once the students are gone.
@@ -211,7 +323,7 @@ export async function deleteSchoolData(tx: any, schoolId: number): Promise<Recor
     ...new Set(studentRows.map((s) => s.parentId).filter((id): id is number => typeof id === "number")),
   ];
 
-  // Marketer earnings outlive the school they came from.
+  // Marketer lead records outlive the school they came from.
   for (const modelName of DETACH_ON_SCHOOL_DELETE) {
     await tx[delegateName(modelName)].updateMany({ where: { schoolId }, data: { schoolId: null } });
   }
