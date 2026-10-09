@@ -364,6 +364,47 @@ export class AssessmentService {
         });
     }
 
+    /**
+     * The term a result computation should use when the caller named none.
+     *
+     * Every result query used to filter by term only when one was passed and
+     * otherwise summed all of the session's terms. That was invisible while a
+     * school had a single term, but from Second Term on it would add First Term
+     * scores into a Second Term broadsheet, snapshot or report card. So a term
+     * is always resolved: the one asked for (checked against this school and
+     * session), else the session's active term, else its latest one.
+     *
+     * A session with no terms at all resolves to undefined and stays
+     * unfiltered, which is what results recorded before terms existed need.
+     */
+    private async resolveTermForSession(
+        schoolId: number,
+        academicSessionId: number,
+        termId?: number | null
+    ): Promise<number | undefined> {
+        if (termId) {
+            const term = await prisma.academicTerm.findFirst({
+                where: { id: termId, schoolId, sessionId: academicSessionId },
+                select: { id: true }
+            });
+            if (!term) throw new Error("Term not found for this session");
+            return term.id;
+        }
+
+        const active = await prisma.academicTerm.findFirst({
+            where: { schoolId, sessionId: academicSessionId, isActive: true },
+            select: { id: true }
+        });
+        if (active) return active.id;
+
+        const latest = await prisma.academicTerm.findFirst({
+            where: { schoolId, sessionId: academicSessionId },
+            orderBy: { id: "desc" },
+            select: { id: true }
+        });
+        return latest?.id;
+    }
+
     async computeBroadsheet(input: {
         classId: number;
         schoolId: number;
@@ -372,7 +413,10 @@ export class AssessmentService {
         classGroupId?: number;
         termId?: number;
     }) {
-        const { classId, schoolId, academicSessionId, subjectIds, classGroupId, termId } = input;
+        const { classId, schoolId, academicSessionId, subjectIds, classGroupId } = input;
+
+        // Resolved, never left open: an open term sums every term's scores.
+        const termId = await this.resolveTermForSession(schoolId, academicSessionId, input.termId);
 
         // 1. Get students in this class for this session
         const students = await prisma.student.findMany({
@@ -591,7 +635,7 @@ export class AssessmentService {
         adminId: number;
         termId?: number;
     }) {
-        const { classId, subjectId, academicSessionId, schoolId, termId, adminId } = input;
+        const { classId, subjectId, academicSessionId, schoolId, adminId } = input;
 
         // 1. Verify class and subject belong to this school
         const classRecord = await prisma.class.findFirst({
@@ -606,32 +650,30 @@ export class AssessmentService {
         });
         if (!subject) throw new Error("Subject not found or does not belong to your school");
 
-        // 2. Get the current active term for this academic session
-        let resolvedTermId = termId;
+        // 2. The term being published. A publication freezes one term's results,
+        // so it is always for a known term — never "whatever the session holds".
+        const resolvedTermId = await this.resolveTermForSession(schoolId, academicSessionId, input.termId);
         if (!resolvedTermId) {
-            const activeTerm = await prisma.academicTerm.findFirst({
-                where: { sessionId: academicSessionId, isActive: true },
-                select: { id: true }
-            });
-            if (activeTerm) {
-                resolvedTermId = activeTerm.id;
-            }
+            throw new Error("This session has no term yet. Create and activate a term before publishing.");
         }
 
-        // 3. Block re-publication — results already published for this class/subject/session
-        const alreadyPublished = await prisma.publishedResult.findUnique({
-            where: { classId_subjectId_academicSessionId: { classId, subjectId, academicSessionId } }
+        // 3. Block re-publication — but per term: publishing Second Term must not be
+        // refused because First Term was published.
+        const alreadyPublished = await prisma.publishedResult.findFirst({
+            where: { classId, subjectId, academicSessionId, termId: resolvedTermId }
         });
         if (alreadyPublished) {
-            throw new Error("Results for this class and subject have already been published");
+            throw new Error("Results for this class, subject and term have already been published");
         }
 
-        // 4. Compute live results using existing broadsheet logic
+        // 4. Compute live results using existing broadsheet logic. The term is
+        // passed so the snapshot holds this term's scores, not a sum of all of them.
         const computed = await this.computeBroadsheet({
             classId,
             schoolId,
             academicSessionId,
-            subjectIds: [subjectId]
+            subjectIds: [subjectId],
+            termId: resolvedTermId
         });
 
         // 5. Save snapshot in a transaction
@@ -643,7 +685,7 @@ export class AssessmentService {
                     classId,
                     subjectId,
                     academicSessionId,
-                    termId: resolvedTermId ?? null,
+                    termId: resolvedTermId,
                     publishedByAdminId: adminId
                 }
             });
@@ -684,6 +726,7 @@ export class AssessmentService {
                     classId,
                     subjectId,
                     academicSessionId,
+                    termId: resolvedTermId,
                     status: "PENDING"
                 }
             });
@@ -719,6 +762,7 @@ export class AssessmentService {
                 classId,
                 subjectId,
                 academicSessionId,
+                termId: resolvedTermId,
                 publishedAt: publication.publishedAt,
                 totalStudents: computed.rows.length
             };
@@ -963,7 +1007,7 @@ export class AssessmentService {
         page: number;
         pageSize: number;
     }) {
-        const { studentId, classId, schoolId, academicSessionId, termId, page, pageSize } = input;
+        const { studentId, classId, schoolId, academicSessionId, page, pageSize } = input;
 
         // Get active/latest session if not provided
         let sessionId = academicSessionId;
@@ -985,6 +1029,8 @@ export class AssessmentService {
                 sessionId = activeSession.id;
             }
         }
+
+        const termId = await this.resolveTermForSession(schoolId, sessionId, input.termId);
 
         // Build filter for students
         const studentFilter: any = { schoolId, academicSessionId: sessionId };
@@ -1237,7 +1283,8 @@ export class AssessmentService {
                     classId,
                     subjectId,
                     staffId,
-                    academicSessionId: sessionId
+                    academicSessionId: sessionId,
+                    ...(resolvedTermId ? { termId: resolvedTermId } : {})
                 },
                 select: { submittedAt: true },
                 orderBy: { submittedAt: "desc" }
@@ -1430,7 +1477,7 @@ export class AssessmentService {
         academicSessionId?: number;
         termId?: number;
     }) {
-        const { studentId, schoolId, academicSessionId, termId } = input;
+        const { studentId, schoolId, academicSessionId } = input;
 
         // Resolve academic session
         let sessionId = academicSessionId;
@@ -1451,6 +1498,10 @@ export class AssessmentService {
                 sessionId = activeSession.id;
             }
         }
+
+        // A report card is for one term. With none named it used to add up every
+        // term in the session, which Second Term would have made wrong.
+        const termId = await this.resolveTermForSession(schoolId, sessionId, input.termId);
 
         // Fetch student details
         const student = await prisma.student.findUnique({
@@ -1642,7 +1693,7 @@ export class AssessmentService {
 
         const currentTermIndex = termId
             ? allTerms.findIndex(t => t.id === termId)
-            : allTerms.findIndex(t => t.id === sessionId); // fallback if termId not resolved yet
+            : -1; // a session with no terms has no "next term" to point at (this used to compare a term id with a session id)
 
         const currentTerm = termId ? allTerms.find(t => t.id === termId) : null;
         const nextTerm = currentTermIndex >= 0 && currentTermIndex < allTerms.length - 1

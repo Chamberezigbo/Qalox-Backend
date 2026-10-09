@@ -602,7 +602,9 @@ model CAResult {
   academicSession AcademicSession      @relation(fields: [academicSessionId], references: [id])
   term            AcademicTerm?        @relation(fields: [termId], references: [id]) // ← add this
 
-  @@unique([studentId, caId, academicSessionId])
+  // Per term as well as per session: a student has one score per CA per TERM.
+  // Keyed by session alone, Second Term scores collided with First Term's.
+  @@unique([studentId, caId, academicSessionId, termId])
   @@map("ca_results")
 }
 
@@ -712,7 +714,8 @@ model ExamResult {
   academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
   term            AcademicTerm?   @relation(fields: [termId], references: [id]) // ← add this
 
-  @@unique([studentId, examId, academicSessionId])
+  // Per term as well as per session — see CAResult.
+  @@unique([studentId, examId, academicSessionId, termId])
   @@map("exam_results")
 }
 
@@ -815,7 +818,9 @@ model PublishedResult {
   admin           Admin           @relation(fields: [publishedByAdminId], references: [id])
   rows            PublishedResultRow[]
 
-  @@unique([classId, subjectId, academicSessionId])
+  // One publication per class, subject and TERM. Keyed by session alone, publishing
+  // Second Term would have been refused because First Term was already published.
+  @@unique([classId, subjectId, academicSessionId, termId])
   @@map("published_results")
 }
 
@@ -858,7 +863,8 @@ model ResultSubmission {
   term            AcademicTerm?   @relation(fields: [termId], references: [id]) // ← add this
   staff           Staff           @relation(fields: [staffId], references: [id])
 
-  @@unique([classId, subjectId, academicSessionId, staffId])
+  // Per term: each term's scores are submitted, and locked, on their own.
+  @@unique([classId, subjectId, academicSessionId, termId, staffId])
   @@map("result_submissions")
 }
 

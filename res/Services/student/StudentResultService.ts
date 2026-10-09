@@ -12,7 +12,7 @@ export class StudentResultService {
         });
     }
 
-    async getResults(studentId: number, schoolId: number, academicSessionId?: number, termId?: number) {
+    async getResults(studentId: number, schoolId: number, academicSessionId?: number, requestedTermId?: number) {
         // Get student info
         const student = await prisma.student.findUnique({
             where: { id: studentId },
@@ -40,6 +40,20 @@ export class StudentResultService {
             } else {
                 sessionId = activeSession.id;
             }
+        }
+
+        // One term at a time. With none named this used to merge every term in the
+        // session — fine with a single term, but from Second Term each subject
+        // would appear twice with both terms' scores added together. Default to
+        // the term published most recently, so a student sees their latest results.
+        let termId = requestedTermId;
+        if (!termId) {
+            const latest = await prisma.publishedResult.findFirst({
+                where: { classId: student.classId, academicSessionId: sessionId, termId: { not: null } },
+                orderBy: { publishedAt: "desc" },
+                select: { termId: true }
+            });
+            termId = latest?.termId ?? undefined;
         }
 
         // Get published results for this student's class and session

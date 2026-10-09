@@ -344,7 +344,8 @@ export class TeacherController {
                 staffId: req.staffId,
                 schoolId: req.schoolId,
                 classId,
-                classGroupId
+                classGroupId,
+                termId: req.query.termId ? Number(req.query.termId) : undefined
             });
 
             return res.json({ success: true, data });
@@ -371,7 +372,8 @@ export class TeacherController {
                 staffId: req.staffId,
                 schoolId: req.schoolId,
                 classId,
-                classGroupId
+                classGroupId,
+                termId: req.query.termId ? Number(req.query.termId) : undefined
             });
 
             return res.json({ success: true, data });

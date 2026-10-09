@@ -130,6 +130,48 @@ export class TeacherService {
         if (!assignment) throw new Error("Forbidden: teacher not assigned to this class/subject");
     }
 
+    /**
+     * The term a score, submission or publication belongs to.
+     *
+     * Results are per term, but callers were allowed to leave the term out and
+     * every lookup ignored it anyway, so Second Term scores found the First Term
+     * row for the same student and CA and overwrote it. A term is now always
+     * resolved: the one given (checked to belong to this school and session), or
+     * else the session's active term.
+     */
+    private async resolveTermId(schoolId: number, academicSessionId: number, termId?: number | null): Promise<number> {
+        if (termId) {
+            const term = await prisma.academicTerm.findFirst({
+                where: { id: termId, schoolId, sessionId: academicSessionId },
+                select: { id: true }
+            });
+            if (!term) throw new Error("Term not found for this session");
+            return term.id;
+        }
+
+        const active = await prisma.academicTerm.findFirst({
+            where: { schoolId, sessionId: academicSessionId, isActive: true },
+            select: { id: true }
+        });
+        if (!active) throw new Error("No active term for this session. Activate a term first.");
+        return active.id;
+    }
+
+    /**
+     * The term a "view scores" screen should show when the caller names no
+     * session: the one asked for, or else the school's active term. These
+     * screens used to list every score for the class across all sessions and
+     * terms, which only looked right while a school had a single term.
+     */
+    private async resolveViewTermId(schoolId: number, termId?: number | null): Promise<number> {
+        const term = await prisma.academicTerm.findFirst({
+            where: termId ? { id: termId, schoolId } : { schoolId, isActive: true },
+            select: { id: true }
+        });
+        if (!term) throw new Error(termId ? "Term not found" : "No active term. Activate a term first.");
+        return term.id;
+    }
+
     async upsertCAScores(input: {
         staffId: number;
         schoolId: number;
@@ -139,6 +181,8 @@ export class TeacherService {
     }) {
         const { staffId, schoolId, academicSessionId, termId, entries } = input;
         if (!Array.isArray(entries) || entries.length === 0) throw new Error("entries is required");
+
+        const effectiveTermId = await this.resolveTermId(schoolId, academicSessionId, termId);
 
         const done = await prisma.$transaction(async (tx) => {
             let count = 0;
@@ -158,6 +202,7 @@ export class TeacherService {
                             classId: ca.classId,
                             subjectId: ca.subjectId,
                             academicSessionId,
+                            termId: effectiveTermId,
                             status: "PENDING"
                         },
                         select: { id: true }
@@ -168,13 +213,12 @@ export class TeacherService {
                     }
 
                     // Check publication lock
-                    const isPublished = await tx.publishedResult.findUnique({
+                    const isPublished = await tx.publishedResult.findFirst({
                         where: {
-                            classId_subjectId_academicSessionId: {
-                                classId: ca.classId,
-                                subjectId: ca.subjectId,
-                                academicSessionId
-                            }
+                            classId: ca.classId,
+                            subjectId: ca.subjectId,
+                            academicSessionId,
+                            termId: effectiveTermId
                         },
                         select: { id: true }
                     });
@@ -191,8 +235,10 @@ export class TeacherService {
                     throw new Error(`Score must be between 0 and ${ca.maxScore} for CA ${e.caId}`);
                 }
 
+                // Keyed by term as well: without it a Second Term score finds the
+                // First Term row for the same student and CA and overwrites it.
                 const existing = await tx.cAResult.findFirst({
-                    where: { studentId: e.studentId, caId: e.caId, academicSessionId },
+                    where: { studentId: e.studentId, caId: e.caId, academicSessionId, termId: effectiveTermId },
                     select: { id: true }
                 });
 
@@ -203,7 +249,7 @@ export class TeacherService {
                     });
                 } else {
                     await tx.cAResult.create({
-                        data: { studentId: e.studentId, caId: e.caId, academicSessionId, score: e.score, termId: termId ?? null }
+                        data: { studentId: e.studentId, caId: e.caId, academicSessionId, score: e.score, termId: effectiveTermId }
                     });
                 }
 
@@ -226,6 +272,8 @@ export class TeacherService {
         const { staffId, schoolId, academicSessionId, termId, entries } = input;
         if (!Array.isArray(entries) || entries.length === 0) throw new Error("entries is required");
 
+        const effectiveTermId = await this.resolveTermId(schoolId, academicSessionId, termId);
+
         const done = await prisma.$transaction(async (tx) => {
             let count = 0;
 
@@ -244,6 +292,7 @@ export class TeacherService {
                             classId: exam.classId,
                             subjectId: exam.subjectId,
                             academicSessionId,
+                            termId: effectiveTermId,
                             status: "PENDING"
                         },
                         select: { id: true }
@@ -253,13 +302,12 @@ export class TeacherService {
                         throw new Error("Results have been submitted for review. Scores are locked.");
                     }
 
-                    const isPublished = await tx.publishedResult.findUnique({
+                    const isPublished = await tx.publishedResult.findFirst({
                         where: {
-                            classId_subjectId_academicSessionId: {
-                                classId: exam.classId,
-                                subjectId: exam.subjectId,
-                                academicSessionId
-                            }
+                            classId: exam.classId,
+                            subjectId: exam.subjectId,
+                            academicSessionId,
+                            termId: effectiveTermId
                         },
                         select: { id: true }
                     });
@@ -277,7 +325,7 @@ export class TeacherService {
                 }
 
                 const existing = await tx.examResult.findFirst({
-                    where: { studentId: e.studentId, examId: e.examId, academicSessionId },
+                    where: { studentId: e.studentId, examId: e.examId, academicSessionId, termId: effectiveTermId },
                     select: { id: true }
                 });
 
@@ -288,7 +336,7 @@ export class TeacherService {
                     });
                 } else {
                     await tx.examResult.create({
-                        data: { studentId: e.studentId, examId: e.examId, academicSessionId, score: e.score, termId: termId ?? null }
+                        data: { studentId: e.studentId, examId: e.examId, academicSessionId, score: e.score, termId: effectiveTermId }
                     });
                 }
 
@@ -574,8 +622,13 @@ export class TeacherService {
         // 1. Verify teacher is assigned to this class + subject
         await this.ensureTeacherCanTouchClass(staffId, classId, subjectId);
 
+        // A submission locks one term's scores, so it is always for a known term.
+        const effectiveTermId = await this.resolveTermId(schoolId, academicSessionId, termId);
+
         // 2. The same readiness rules bulk submission uses
-        const readiness = await this.assessSubmissionReadiness({ staffId, classId, subjectId, academicSessionId });
+        const readiness = await this.assessSubmissionReadiness({
+            staffId, classId, subjectId, academicSessionId, termId: effectiveTermId
+        });
 
         // Not overridable: submitted work cannot be submitted twice, and
         // published results are already final.
@@ -602,7 +655,7 @@ export class TeacherService {
 
         // 3. Create submission record
         const submission = await prisma.resultSubmission.create({
-            data: { classId, subjectId, academicSessionId, staffId, termId: termId ?? null },
+            data: { classId, subjectId, academicSessionId, staffId, termId: effectiveTermId },
             select: {
                 id: true,
                 classId: true,
@@ -627,26 +680,27 @@ export class TeacherService {
         classId: number;
         subjectId: number;
         academicSessionId: number;
+        termId: number;
     }): Promise<SubmissionReadiness> {
-        const { staffId, classId, subjectId, academicSessionId } = input;
+        const { staffId, classId, subjectId, academicSessionId, termId } = input;
 
         const existing = await prisma.resultSubmission.findFirst({
-            where: { classId, subjectId, academicSessionId, staffId },
+            where: { classId, subjectId, academicSessionId, termId, staffId },
             select: { id: true }
         });
         if (existing) return { state: "already_submitted" };
 
-        const published = await prisma.publishedResult.findUnique({
-            where: { classId_subjectId_academicSessionId: { classId, subjectId, academicSessionId } },
+        const published = await prisma.publishedResult.findFirst({
+            where: { classId, subjectId, academicSessionId, termId },
             select: { id: true }
         });
         if (published) return { state: "already_published" };
 
-        // Counted across the whole session, to match what a submission is
-        // keyed on (class, subject and session — not term).
+        // Scores are per term, so only this term's count: First Term scores must
+        // not make an untouched Second Term look ready to submit.
         const [caScores, examScores] = await Promise.all([
-            prisma.cAResult.count({ where: { academicSessionId, ca: { classId, subjectId } } }),
-            prisma.examResult.count({ where: { academicSessionId, exam: { classId, subjectId } } })
+            prisma.cAResult.count({ where: { academicSessionId, termId, ca: { classId, subjectId } } }),
+            prisma.examResult.count({ where: { academicSessionId, termId, exam: { classId, subjectId } } })
         ]);
         if (caScores + examScores === 0) {
             return { state: "no_scores", message: "No CA or exam scores have been entered" };
@@ -655,7 +709,7 @@ export class TeacherService {
         // Scores are entered a group at a time, so "some scores exist" is not
         // enough: entering Group A and stopping would lock the whole subject
         // with Group B blank.
-        const groups = await this.groupsWithoutScores(classId, subjectId, academicSessionId);
+        const groups = await this.groupsWithoutScores(classId, subjectId, academicSessionId, termId);
         if (groups.length > 0) {
             return { state: "incomplete", message: `No scores entered yet for ${groups.join(", ")}`, groups };
         }
@@ -677,7 +731,12 @@ export class TeacherService {
      * own. In a class that uses groups a few are usually just not yet placed,
      * and flagging them would block the subject for good.
      */
-    private async groupsWithoutScores(classId: number, subjectId: number, academicSessionId: number): Promise<string[]> {
+    private async groupsWithoutScores(
+        classId: number,
+        subjectId: number,
+        academicSessionId: number,
+        termId: number
+    ): Promise<string[]> {
         const groups = await prisma.classGroup.findMany({
             where: { classId },
             select: { id: true, name: true }
@@ -691,12 +750,12 @@ export class TeacherService {
 
         const [caRows, examRows] = await Promise.all([
             prisma.cAResult.findMany({
-                where: { academicSessionId, studentId: { not: null }, ca: { classId, subjectId } },
+                where: { academicSessionId, termId, studentId: { not: null }, ca: { classId, subjectId } },
                 select: { studentId: true },
                 distinct: ["studentId"]
             }),
             prisma.examResult.findMany({
-                where: { academicSessionId, studentId: { not: null }, exam: { classId, subjectId } },
+                where: { academicSessionId, termId, studentId: { not: null }, exam: { classId, subjectId } },
                 select: { studentId: true },
                 distinct: ["studentId"]
             })
@@ -751,6 +810,10 @@ export class TeacherService {
         });
         if (!cls) throw new Error("Class not found");
 
+        // Resolved once for the whole batch: every subject is submitted for the
+        // same term.
+        const effectiveTermId = await this.resolveTermId(schoolId, academicSessionId, termId);
+
         const assignments = await prisma.teacherAssignment.findMany({
             where: { staffId, classId, subjectId: { not: null } },
             select: { subjectId: true, subject: { select: { name: true } } }
@@ -782,7 +845,7 @@ export class TeacherService {
 
             try {
                 const readiness = await this.assessSubmissionReadiness({
-                    staffId, classId, subjectId, academicSessionId
+                    staffId, classId, subjectId, academicSessionId, termId: effectiveTermId
                 });
 
                 // Bulk submission only ever skips; it never forces. Locking
@@ -794,7 +857,7 @@ export class TeacherService {
                 }
 
                 await prisma.resultSubmission.create({
-                    data: { classId, subjectId, academicSessionId, staffId, termId: termId ?? null }
+                    data: { classId, subjectId, academicSessionId, staffId, termId: effectiveTermId }
                 });
                 record("submitted");
             } catch (error: any) {
@@ -978,8 +1041,9 @@ export class TeacherService {
         schoolId: number;
         classId?: number;
         classGroupId?: number;
+        termId?: number;
     }) {
-        const { staffId, schoolId, classId, classGroupId } = input;
+        const { staffId, schoolId, classId, classGroupId, termId } = input;
 
         // Determine which class(es) to query
         let resolvedClassId: number;
@@ -1022,9 +1086,14 @@ export class TeacherService {
             orderBy: { name: "asc" }
         });
 
+        // Only the term being viewed: results of other terms (and sessions) share
+        // the same CA definitions and would otherwise be listed alongside.
+        const viewTermId = await this.resolveViewTermId(schoolId, termId);
+
         // Fetch CA results with students only (filter null students at DB level)
         const caResults = await prisma.cAResult.findMany({
             where: {
+                termId: viewTermId,
                 ca: { classId: resolvedClassId }
             },
             include: {
@@ -1065,8 +1134,9 @@ export class TeacherService {
         schoolId: number;
         classId?: number;
         classGroupId?: number;
+        termId?: number;
     }) {
-        const { staffId, schoolId, classId, classGroupId } = input;
+        const { staffId, schoolId, classId, classGroupId, termId } = input;
 
         let resolvedClassId: number;
 
@@ -1089,6 +1159,9 @@ export class TeacherService {
             select: { id: true }
         });
         if (!cls) throw new Error("Class not found in this school");
+
+        const viewTermId = await this.resolveViewTermId(schoolId, termId);
+
         // Fetch exams for this class
         const exams = await prisma.exam.findMany({
             where: {
@@ -1098,6 +1171,7 @@ export class TeacherService {
                 class: { select: { id: true, name: true } },
                 subject: { select: { id: true, name: true } },
                 examResults: {
+                    where: { termId: viewTermId },
                     select: {
                         score: true,
                         student: {

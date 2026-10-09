@@ -6,7 +6,8 @@ jest.mock("../util/prisma", () => ({
   class: { findFirst: jest.fn() },
   teacherAssignment: { findMany: jest.fn(), findFirst: jest.fn() },
   resultSubmission: { findFirst: jest.fn(), create: jest.fn() },
-  publishedResult: { findUnique: jest.fn() },
+  publishedResult: { findFirst: jest.fn() },
+  academicTerm: { findFirst: jest.fn() },
   cAResult: { count: jest.fn(), findMany: jest.fn() },
   examResult: { count: jest.fn(), findMany: jest.fn() },
   classGroup: { findMany: jest.fn() },
@@ -20,7 +21,8 @@ const db = prisma as unknown as {
   class: { findFirst: jest.Mock };
   teacherAssignment: { findMany: jest.Mock; findFirst: jest.Mock };
   resultSubmission: { findFirst: jest.Mock; create: jest.Mock };
-  publishedResult: { findUnique: jest.Mock };
+  publishedResult: { findFirst: jest.Mock };
+  academicTerm: { findFirst: jest.Mock };
   cAResult: { count: jest.Mock; findMany: jest.Mock };
   examResult: { count: jest.Mock; findMany: jest.Mock };
   classGroup: { findMany: jest.Mock };
@@ -43,7 +45,9 @@ beforeEach(() => {
   db.class.findFirst.mockResolvedValue({ id: 9 });
   assigned();
   db.resultSubmission.findFirst.mockResolvedValue(null);
-  db.publishedResult.findUnique.mockResolvedValue(null);
+  db.publishedResult.findFirst.mockResolvedValue(null);
+  // Every submission is for a known term; the one INPUT names exists.
+  db.academicTerm.findFirst.mockResolvedValue({ id: 3 });
   db.cAResult.count.mockResolvedValue(10);
   db.examResult.count.mockResolvedValue(10);
   db.resultSubmission.create.mockResolvedValue({ id: 1 });
@@ -99,8 +103,8 @@ describe("submitAllResults", () => {
   });
 
   it("skips a subject whose results were already published", async () => {
-    db.publishedResult.findUnique.mockImplementation(async ({ where }: any) =>
-      where.classId_subjectId_academicSessionId.subjectId === 6 ? { id: 1 } : null
+    db.publishedResult.findFirst.mockImplementation(async ({ where }: any) =>
+      where.subjectId === 6 ? { id: 1 } : null
     );
 
     const result = await service().submitAllResults(INPUT);
@@ -377,7 +381,7 @@ describe("submitResults — one subject, with the same readiness rules", () => {
   });
 
   it("never forces past results that are already published", async () => {
-    db.publishedResult.findUnique.mockResolvedValue({ id: 1 });
+    db.publishedResult.findFirst.mockResolvedValue({ id: 1 });
 
     await expect(service().submitResults({ ...ONE, force: true })).rejects.toThrow(/already been published/i);
     expect(db.resultSubmission.create).not.toHaveBeenCalled();
