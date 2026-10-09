@@ -56,6 +56,58 @@ function findByName(list, name) {
   return list.find((item) => item.name.trim().toLowerCase() === target) || null;
 }
 
+/** Every item with this name, for names that can legitimately repeat. */
+function findAllByName(list, name) {
+  const target = String(name || "").trim().toLowerCase();
+  if (!target) return [];
+  return list.filter((item) => item.name.trim().toLowerCase() === target);
+}
+
+/**
+ * Works out the class — and so the campus — a student row belongs to.
+ *
+ * A school's classes are created once per campus, so a two-campus school has two
+ * rows called "SS 1". Taking the first one with that name put students in
+ * whichever campus's class happened to come first, whatever the row said. And
+ * with no campus on the row the student was saved with none at all, which is
+ * what crashed the student view after an import.
+ *
+ * A campus on the row picks the class inside it. With none, a name that exists
+ * once is unambiguous and the student takes that class's campus; a name that
+ * exists in several campuses is refused, because guessing would put children in
+ * the wrong campus.
+ */
+function resolveClassAndCampus(classes, campuses, data) {
+  let campus = null;
+  if (data.campusName) {
+    campus = findByName(campuses, data.campusName);
+    if (!campus) {
+      throw new Error(`There is no campus called "${data.campusName}" in your school`);
+    }
+  }
+
+  const sameName = findAllByName(classes, data.className);
+  if (sameName.length === 0) {
+    throw new Error(`There is no class called "${data.className}" in your school`);
+  }
+
+  const candidates = campus
+    ? sameName.filter((c) => c.campusId === campus.id || c.campusId == null)
+    : sameName;
+
+  if (candidates.length === 0) {
+    throw new Error(`There is no class called "${data.className}" in campus "${campus.name}"`);
+  }
+  if (candidates.length > 1) {
+    throw new Error(
+      `"${data.className}" exists in more than one campus — add the campus to this row so the student goes to the right one`
+    );
+  }
+
+  const classRecord = candidates[0];
+  return { classRecord, campusId: campus ? campus.id : classRecord.campusId ?? null };
+}
+
 class BulkImportImporter {
   /**
    * @param {Object} params
@@ -150,7 +202,12 @@ class BulkImportImporter {
     const [classes, campuses] = await Promise.all([
       prisma.class.findMany({
         where: { schoolId },
-        select: { id: true, name: true, classGroups: { select: { id: true, name: true } } },
+        select: {
+          id: true,
+          name: true,
+          campusId: true,
+          classGroups: { select: { id: true, name: true } },
+        },
       }),
       prisma.campus.findMany({ where: { schoolId }, select: { id: true, name: true } }),
     ]);
@@ -160,19 +217,7 @@ class BulkImportImporter {
     for (const record of records) {
       const data = record.data;
       try {
-        const classRecord = findByName(classes, data.className);
-        if (!classRecord) {
-          throw new Error(`There is no class called "${data.className}" in your school`);
-        }
-
-        let campusId = null;
-        if (data.campusName) {
-          const campus = findByName(campuses, data.campusName);
-          if (!campus) {
-            throw new Error(`There is no campus called "${data.campusName}" in your school`);
-          }
-          campusId = campus.id;
-        }
+        const { classRecord, campusId } = resolveClassAndCampus(classes, campuses, data);
 
         let classGroupId = null;
         if (data.groupName) {
@@ -313,3 +358,4 @@ function readableReason(error) {
 module.exports = BulkImportImporter;
 module.exports.readableReason = readableReason;
 module.exports.isUniqueViolationOn = isUniqueViolationOn;
+module.exports.resolveClassAndCampus = resolveClassAndCampus;
