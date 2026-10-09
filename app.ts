@@ -28,6 +28,7 @@ const { cleanupStaleBulkImports } = require("./res/jobs/bulkImportCleanup");
 const { cleanupOldLoginEvents } = require("./res/jobs/auditLogCleanup");
 const { cleanupOldNotifications } = require("./res/jobs/notificationCleanup");
 const { cleanupDeadAuthArtifacts } = require("./res/jobs/tokenCleanup");
+const { failStrandedAiJobs } = require("./res/jobs/aiJobRecovery");
 
 const app = express();
 
@@ -157,6 +158,14 @@ async function startServer() {
           logger.error(`[${label}] Run failed`, { error: err.message });
         });
       }
+    });
+
+    // Every five minutes: frees credits and unblocks teachers whose AI
+    // generation was interrupted by a restart. A cheap indexed query.
+    cron.schedule("*/5 * * * *", () => {
+      failStrandedAiJobs().catch((err) => {
+        logger.error("[AI_JOB_RECOVERY] Run failed", { error: err.message });
+      });
     });
   } catch (error) {
     console.error("Failed to connect to database:", error);

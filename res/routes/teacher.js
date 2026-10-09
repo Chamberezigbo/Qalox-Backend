@@ -22,6 +22,7 @@ const attendanceController = new AttendanceController();
 const teacherAnalyticsController = new TeacherAnalyticsController();
 const assignmentController = new AssignmentController();
 const lessonNoteController = require("../controller/teacher/LessonNoteController");
+const lessonNoteChatController = require("../controller/teacher/LessonNoteChatController");
 const teacherSchemeOfWorkController = require("../controller/teacher/SchemeOfWorkController");
 const examTimetableController = new ExamTimetableController();
 
@@ -90,6 +91,14 @@ router.post("/scheme-of-work", teacherAuthMiddleware, uploadSchemeOfWork.array("
 router.get("/scheme-of-work", teacherAuthMiddleware, teacherSchemeOfWorkController.listSchemesOfWork);
 router.get("/scheme-of-work/:id", teacherAuthMiddleware, teacherSchemeOfWorkController.getSchemeOfWork);
 router.delete("/scheme-of-work/:id", teacherAuthMiddleware, teacherSchemeOfWorkController.deleteSchemeOfWork);
+
+// Chat about how a note should be written, then generate and refine it. Registered
+// before /lesson-notes/:id so "chats" is never read as a note id.
+router.post("/lesson-notes/chats", teacherAuthMiddleware, lessonNoteChatController.startChat);
+router.get("/lesson-notes/chats/:id", teacherAuthMiddleware, lessonNoteChatController.getChat);
+router.post("/lesson-notes/chats/:id/messages", teacherAuthMiddleware, lessonNoteChatController.sendMessage);
+router.post("/lesson-notes/chats/:id/generate", teacherAuthMiddleware, lessonNoteChatController.generateFromChat);
+router.post("/lesson-notes/chats/:id/refine", teacherAuthMiddleware, lessonNoteChatController.refineNote);
 
 router.post("/lesson-notes/generate", teacherAuthMiddleware, lessonNoteController.generateLessonNote);
 router.get("/lesson-notes/generate/:jobId", teacherAuthMiddleware, lessonNoteController.getGenerationStatus);

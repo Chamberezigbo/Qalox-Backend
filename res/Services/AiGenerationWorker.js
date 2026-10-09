@@ -37,6 +37,15 @@ async function setProgress(jobId, progress, stage) {
   }
 }
 
+/** The chat a job belongs to, read defensively: this runs while handling another failure. */
+function safeChatId(inputParamsJson) {
+  try {
+    return JSON.parse(inputParamsJson || "{}").chatId || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * @param {{ jobId: string }} input
  */
@@ -69,9 +78,21 @@ async function processJob({ jobId }) {
       ? `${job.class.name} — ${job.class.customName}`
       : job.class?.name || "";
 
+    // A note planned in a chat carries the conversation as its brief.
+    let teacherBrief = "";
+    if (params.chatId) {
+      const messages = await prisma.lessonNoteChatMessage.findMany({
+        where: { chatId: params.chatId },
+        orderBy: { id: "asc" },
+        select: { role: true, kind: true, content: true },
+      });
+      teacherBrief = GeminiTextService.buildTeacherBrief(messages);
+    }
+
     await setProgress(jobId, 35, STAGES.DRAFTING);
 
     const { parsed, usage } = await GeminiTextService.generateLessonNote({
+      teacherBrief,
       schemeText: job.schemeOfWork.extractedText,
       className,
       subjectName: job.subject?.name || "",
@@ -103,6 +124,12 @@ async function processJob({ jobId }) {
     });
 
     const { charged } = await AiCreditService.trueUpCredits(job.schoolId, job.creditsReserved, usage);
+
+    if (params.chatId) {
+      await prisma.lessonNoteChat
+        .update({ where: { id: params.chatId }, data: { status: "generated", lessonNoteId: lessonNote.id } })
+        .catch((e) => logger.warn("[AI_WORKER] Could not mark chat generated", { jobId, error: e.message }));
+    }
 
     await prisma.aiGenerationJob.update({
       where: { id: jobId },
@@ -136,6 +163,14 @@ async function processJob({ jobId }) {
         error: refundError.message,
       })
     );
+
+    // A chat whose generation failed goes back to being open, so the teacher can try again.
+    const failedChatId = safeChatId(job.inputParamsJson);
+    if (failedChatId) {
+      await prisma.lessonNoteChat
+        .update({ where: { id: failedChatId }, data: { status: "open" } })
+        .catch((e) => logger.warn("[AI_WORKER] Could not reopen chat", { jobId, error: e.message }));
+    }
 
     await prisma.aiGenerationJob
       .update({

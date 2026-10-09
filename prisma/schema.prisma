@@ -217,6 +217,7 @@ model School {
   schemeOfWork        SchemeOfWork[]
   lessonNotes         LessonNote[]
   aiGenerationJobs    AiGenerationJob[]
+  lessonNoteChats LessonNoteChat[]
   tests               Test[]
 
   @@index([billingPlanId])
@@ -318,6 +319,7 @@ model Class {
   schemeOfWork        SchemeOfWork[]
   lessonNotes         LessonNote[]
   aiGenerationJobs    AiGenerationJob[]
+  lessonNoteChats LessonNoteChat[]
   tests               Test[]
 
   // Optionally, add a unique constraint for name, school, and campus
@@ -360,6 +362,7 @@ model Staff {
   postedAssignments Assignment[]
   lessonNotes       LessonNote[]
   aiGenerationJobs  AiGenerationJob[]
+  lessonNoteChats LessonNoteChat[]
   createdTests      Test[]
   schemeOfWork      SchemeOfWork[]
 
@@ -465,6 +468,7 @@ model Subject {
   schemeOfWork      SchemeOfWork[]
   lessonNotes       LessonNote[]
   aiGenerationJobs  AiGenerationJob[]
+  lessonNoteChats LessonNoteChat[]
   tests             Test[]
 
   @@map("subjects")
@@ -888,6 +892,7 @@ model AcademicTerm {
   schemeOfWork      SchemeOfWork[]
   lessonNotes       LessonNote[]
   aiGenerationJobs  AiGenerationJob[]
+  lessonNoteChats LessonNoteChat[]
   tests             Test[]
 
   @@unique([schoolId, sessionId, name])
@@ -1627,6 +1632,7 @@ model SchemeOfWork {
   lessonNotes      LessonNote[]
   tests            Test[]
   aiGenerationJobs AiGenerationJob[]
+  lessonNoteChats LessonNoteChat[]
 
   @@index([schoolId, classId, subjectId, academicTermId])
   @@index([schoolId])
@@ -1713,6 +1719,63 @@ model AiGenerationJob {
   @@index([staffId])
   @@index([status])
   @@map("ai_generation_jobs")
+}
+
+// A teacher's conversation with the AI about how they want one lesson note to
+// be written. The chat is the brief: its transcript is handed to the generator,
+// so the note reflects what the teacher said rather than a generic template.
+// Credits are charged per turn (see LessonNoteChatController), not per chat.
+model LessonNoteChat {
+  id             Int     @id @default(autoincrement())
+  schoolId       Int
+  staffId        Int
+  classId        Int
+  subjectId      Int
+  academicTermId Int
+  schemeOfWorkId Int
+  topic          String? @db.VarChar(255)
+  weekRange      String? @db.VarChar(100)
+  duration       String? @db.VarChar(50)
+
+  status       String @default("open") @db.VarChar(16) // open | generating | generated
+  lessonNoteId Int? // the note this chat produced
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school       School       @relation(fields: [schoolId], references: [id])
+  staff        Staff        @relation(fields: [staffId], references: [id])
+  class        Class        @relation(fields: [classId], references: [id])
+  subject      Subject      @relation(fields: [subjectId], references: [id])
+  academicTerm AcademicTerm @relation(fields: [academicTermId], references: [id])
+  schemeOfWork SchemeOfWork @relation(fields: [schemeOfWorkId], references: [id])
+  messages     LessonNoteChatMessage[]
+
+  @@index([schoolId])
+  @@index([staffId])
+  @@map("lesson_note_chats")
+}
+
+model LessonNoteChatMessage {
+  id     Int @id @default(autoincrement())
+  chatId Int
+
+  role    String @db.VarChar(8) // user | model
+  // start: the hidden opening message that makes the AI ask its first question
+  // chat: an ordinary turn   refine: an instruction to change the finished note
+  kind    String @default("chat") @db.VarChar(16)
+  content String @db.Text
+
+  inputTokens    Int?
+  outputTokens   Int?
+  creditsCharged Int?
+
+  createdAt DateTime @default(now())
+
+  chat LessonNoteChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId])
+  @@map("lesson_note_chat_messages")
 }
 
 model LessonNote {
