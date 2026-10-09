@@ -1248,8 +1248,9 @@ exports.suspendSchoolAdmin = async (req, res, next) => {
  * POST /api/admins/:id/reset
  * Reset a school admin's password (generates a new temporary password)
  *
- * NOTE: No email/SMS delivery is configured yet — the temporary password
- * is returned directly in the response so it can be relayed manually.
+ * The temporary password is returned so Super Admin can pass it on by hand, and
+ * is also emailed to the admin. The email is best effort: the password is already
+ * changed by then, and the response says whether it went out.
  */
 exports.resetSchoolAdminPassword = async (req, res, next) => {
   try {
@@ -1268,7 +1269,9 @@ exports.resetSchoolAdminPassword = async (req, res, next) => {
 
     const admin = await prisma.admin.findUnique({ where: { id: adminId } });
 
-    if (!admin || admin.role !== "school_admin") {
+    // Both head-admin roles, as the list shows: most live school admins hold the
+    // legacy `super_admin` role, which this used to reject as "not found".
+    if (!admin || !HEAD_ADMIN_ROLES.includes(admin.role)) {
       logger.warn("[SUPER_ADMIN_RESET_PASSWORD] School admin not found", { adminId });
       return res.status(404).json({
         success: false,
@@ -1288,13 +1291,33 @@ exports.resetSchoolAdminPassword = async (req, res, next) => {
 
     logger.info("[SUPER_ADMIN_RESET_PASSWORD] Password reset successfully", { adminId });
 
+    let emailed = false;
+    try {
+      const { sendEmail } = require("../../Services/EmailService");
+      await sendEmail({
+        to: admin.email,
+        subject: "Your Qalox password was reset",
+        html:
+          `<p>Hello ${String(admin.name).replace(/[<>&"]/g, "")},</p>` +
+          `<p>A Qalox administrator reset your password. Your temporary password is:</p>` +
+          `<p style="font-size:18px;font-family:monospace"><strong>${tempPassword}</strong></p>` +
+          `<p>Sign in with it, then change it in your profile settings.</p>`,
+      });
+      emailed = true;
+    } catch (emailError) {
+      logger.warn("[SUPER_ADMIN_RESET_PASSWORD] Could not email temporary password", { adminId, error: emailError.message });
+    }
+
     res.status(200).json({
       success: true,
-      message: "Password reset successfully. Temporary password returned below — no email delivery is configured yet.",
+      message: emailed
+        ? "Password reset. The temporary password was emailed to the admin."
+        : "Password reset, but the email could not be sent. Give the admin the temporary password below.",
       data: {
         id: admin.id,
         email: admin.email,
         temporaryPassword: tempPassword,
+        emailed,
       },
     });
   } catch (err) {
