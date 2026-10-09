@@ -13,6 +13,7 @@ const twoFactorController = require("../controller/public/twoFactorController");
 const validate = require("../middleware/validator");
 const prisma = require("../util/prisma");
 const publicController = require("../controller/public/publicController");
+const deletionController = require("../controller/superadmin/DeletionController");
 const {
   suspendSchoolSchema,
   deleteSchoolSchema,
@@ -407,6 +408,24 @@ router.get(
   serviceAuth,
   requirePlatformSuperAdmin,
   publicController.getPendingMarketerDocuments
+);
+
+/**
+ * GET /api/public/marketers/:id/delete-preview
+ * DELETE /api/public/marketers/:id
+ * What deleting a marketer would remove or refuse, and the delete itself.
+ */
+router.get(
+  "/marketers/:id/delete-preview",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  deletionController.previewMarketerDeletion
+);
+router.delete(
+  "/marketers/:id",
+  serviceAuth,
+  requirePlatformSuperAdmin,
+  deletionController.deleteMarketerAccount
 );
 
 /**

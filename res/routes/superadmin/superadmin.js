@@ -19,6 +19,12 @@ const {
   updateLandingPageLeadStatus,
 } = require("../../controller/superadmin/SuperAdminController");
 const {
+  previewTokenDeletion,
+  deleteTokenPermanently,
+  previewAdminDeletion,
+  deleteSchoolAdmin,
+} = require("../../controller/superadmin/DeletionController");
+const {
   initializePayment,
   getBillingStats,
   getSubscriptions,
@@ -153,6 +159,16 @@ router.patch("/admins/:id/suspend", authenticateSuperAdminJWT, suspendSchoolAdmi
 
 // Reset a school admin's password - Requires super_admin JWT
 router.post("/admins/:id/reset", authenticateSuperAdminJWT, resetSchoolAdminPassword);
+
+// ============================================
+// PERMANENT DELETES (tokens, school admins)
+// ============================================
+// The existing DELETE /tokens/:id above only revokes, and the Super Admin portal
+// relies on that, so permanent deletion has its own path.
+router.get("/tokens/:id/delete-preview", authenticateSuperAdminJWT, previewTokenDeletion);
+router.delete("/tokens/:id/permanent", authenticateSuperAdminJWT, deleteTokenPermanently);
+router.get("/admins/:id/delete-preview", authenticateSuperAdminJWT, previewAdminDeletion);
+router.delete("/admins/:id", authenticateSuperAdminJWT, deleteSchoolAdmin);
 
 // ============================================
 // PHASE 4 - MARKETER PLATFORM STATS
