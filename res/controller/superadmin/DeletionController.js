@@ -1,5 +1,4 @@
-const fs = require("fs");
-const path = require("path");
+const { deleteKycFile } = require("../../util/kycStorage");
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const {
@@ -22,7 +21,6 @@ const {
  * audit line and shapes the response.
  */
 
-const KYC_DIR = path.join(__dirname, "..", "..", "uploads-private", "kyc");
 
 /** Who is doing this, for the log. After a delete the row is gone, so the log line is the only record. */
 const actorOf = (req) => ({
@@ -114,13 +112,7 @@ const marketers = handlersFor({
   remove: async (req, id) => {
     const { plan, documentFiles } = await deleteMarketer(prisma, id);
     // After the commit: a file cannot be rolled back, and a stray one is harmless.
-    for (const file of documentFiles) {
-      try {
-        await fs.promises.unlink(path.join(KYC_DIR, path.basename(file)));
-      } catch (error) {
-        logger.warn("[DELETE_MARKETER] Could not remove stored document", { file, error: error.message });
-      }
-    }
+    for (const file of documentFiles) await deleteKycFile(file);
     return { plan };
   },
 });

@@ -10,6 +10,7 @@ const logger = require("../../config/logger");
 const { logLoginEvent } = require("../../util/logLoginEvent");
 const emailService = require("../../Services/EmailService");
 const twoFactorService = require("../../Services/TwoFactorService");
+const { saveKycFile, readKycFile, deleteKycFile } = require("../../util/kycStorage");
 const twoFactorTempToken = require("../../util/twoFactorTempToken");
 const processImage = require("../../config/compress");
 const flutterwave = require("../../Services/FlutterwaveService");
@@ -144,7 +145,7 @@ const TX_OPTIONS = { timeout: 20000 };
 
 // processImage() writes here and stores "/uploads/<folder>/<file>" in the DB.
 // Resolved from this module so it matches the write location in both the
-// ts-node and the compiled run. Same shape as KYC_DIR further down this file.
+// ts-node and the compiled run. Resolved the same way as the paths in util/kycStorage.js.
 const SCHOOL_UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
 
 /**
@@ -4657,8 +4658,6 @@ exports.getMarketerEarnings = async (req, res, next) => {
 // KYC documents deliberately live OUTSIDE res/uploads, which app.ts serves
 // statically at /api/uploads. Anything under that folder is readable by anyone
 // who can guess the filename — unacceptable for government ID documents.
-const KYC_DIR = path.join(__dirname, "..", "..", "uploads-private", "kyc");
-
 const KYC_DOCUMENT_TYPES = ["nin", "passport", "drivers", "voters"];
 
 const KYC_EXTENSIONS = {
@@ -4728,8 +4727,9 @@ exports.uploadVerificationDocument = async (req, res, next) => {
     const ext = KYC_EXTENSIONS[req.file.mimetype] || ".bin";
     const filename = `kyc_${crypto.randomBytes(24).toString("hex")}${ext}`;
 
-    await fsp.mkdir(KYC_DIR, { recursive: true });
-    await fsp.writeFile(path.join(KYC_DIR, filename), req.file.buffer);
+    // R2, not the server's disk: the disk is wiped on every deploy. If the
+    // upload fails the request fails, rather than saving a row with no file.
+    const storedPath = await saveKycFile({ buffer: req.file.buffer, filename, contentType: req.file.mimetype });
 
     // Re-uploading replaces the previous document OF THE SAME TYPE. Marketers
     // may now hold several documents at once (an ID card and a utility bill,
@@ -4745,7 +4745,7 @@ exports.uploadVerificationDocument = async (req, res, next) => {
         data: {
           marketerId,
           type: normalisedType,
-          path: filename,
+          path: storedPath,
           status: "pending",
         },
       }),
@@ -4756,7 +4756,7 @@ exports.uploadVerificationDocument = async (req, res, next) => {
       prisma.admin.update({
         where: { id: marketerId },
         data: {
-          verificationDocumentPath: filename,
+          verificationDocumentPath: storedPath,
           verificationDocumentType: documentType,
           verificationStatus: "pending",
           verificationSubmittedAt: new Date(),
@@ -4769,7 +4769,7 @@ exports.uploadVerificationDocument = async (req, res, next) => {
     // Unlink only after the transaction committed. Deleting the file first
     // would leave a committed row pointing at nothing if the write rolled back.
     if (superseded) {
-      await fsp.unlink(path.join(KYC_DIR, path.basename(superseded.path))).catch(() => {});
+      await deleteKycFile(superseded.path);
     }
 
     logger.info(`[KYC_UPLOAD] Document stored`, { marketerId, documentType: normalisedType, documentId: document.id });
@@ -4819,10 +4819,10 @@ exports.getVerificationDocument = async (req, res, next) => {
     }
 
     // basename() guards against a stored value ever containing traversal
-    // segments — the path must resolve inside KYC_DIR and nowhere else.
-    const filePath = path.join(KYC_DIR, path.basename(marketer.verificationDocumentPath));
+    // segments — kycStorage resolves it inside its own folder and nowhere else.
+    const file = await readKycFile(marketer.verificationDocumentPath);
 
-    if (!fs.existsSync(filePath)) {
+    if (!file) {
       logger.error(`[KYC_FETCH] Record exists but file is missing`, { marketerId });
       return res.status(404).json({
         success: false,
@@ -4832,7 +4832,7 @@ exports.getVerificationDocument = async (req, res, next) => {
     }
 
     logger.info(`[KYC_FETCH] Document served`, { marketerId, by: req.user?.id });
-    return res.sendFile(filePath);
+    return res.type(file.contentType).send(file.buffer);
   } catch (err) {
     next(err);
   }
@@ -5151,10 +5151,10 @@ exports.getMarketerDocumentFile = async (req, res, next) => {
     }
 
     // basename() guards against a stored value ever containing traversal
-    // segments — the path must resolve inside KYC_DIR and nowhere else.
-    const filePath = path.join(KYC_DIR, path.basename(document.path));
+    // segments — kycStorage resolves it inside its own folder and nowhere else.
+    const file = await readKycFile(document.path);
 
-    if (!fs.existsSync(filePath)) {
+    if (!file) {
       logger.error(`[KYC_DOC_FETCH] Record exists but file is missing`, { marketerId, documentId });
       return res.status(404).json({
         success: false,
@@ -5165,7 +5165,7 @@ exports.getMarketerDocumentFile = async (req, res, next) => {
     }
 
     logger.info(`[KYC_DOC_FETCH] Document served`, { marketerId, documentId, by: req.user?.id });
-    return res.sendFile(filePath);
+    return res.type(file.contentType).send(file.buffer);
   } catch (err) {
     next(err);
   }
