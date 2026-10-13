@@ -26,6 +26,12 @@ export interface DeletionPlan {
   warnings: string[];
   /** Rows that go with it, by kind. */
   willRemove: Record<string, number>;
+  /**
+   * Naira a marketer still holds that deleting them forfeits. Not a blocker by
+   * itself: the caller has to acknowledge it (writeOffBalance), so money is never
+   * discarded by accident but a test account is not stuck for ever.
+   */
+  writeOffAmount?: number;
 }
 
 /** Thrown when a plan has blockers. Carries the plan so the response can show why. */
@@ -195,9 +201,10 @@ export async function planMarketerDeletion(client: any, marketerId: number): Pro
   const warnings: string[] = [];
 
   const balance = marketer.walletBalance ?? 0;
-  if (balance > WALLET_EPSILON) {
-    blockers.push(
-      `${marketer.name} still has ${naira(balance)} in their wallet. Pay it out (or write it off) before deleting.`
+  const writeOffAmount = balance > WALLET_EPSILON ? balance : 0;
+  if (writeOffAmount > 0) {
+    warnings.push(
+      `${marketer.name} still has ${naira(writeOffAmount)} in their wallet. Deleting writes it off: no payout is made. Pay it out first if it is owed.`
     );
   }
 
@@ -236,7 +243,15 @@ export async function planMarketerDeletion(client: any, marketerId: number): Pro
   };
   for (const [name, count] of Object.entries(counts)) if (count > 0) willRemove[name] = count;
 
-  return { target: "marketer", id: marketerId, label: marketer.email, blockers, warnings, willRemove };
+  return {
+    target: "marketer",
+    id: marketerId,
+    label: marketer.email,
+    blockers,
+    warnings,
+    willRemove,
+    ...(writeOffAmount > 0 ? { writeOffAmount } : {}),
+  };
 }
 
 /**
@@ -247,12 +262,25 @@ export async function planMarketerDeletion(client: any, marketerId: number): Pro
  */
 export async function deleteMarketer(
   prisma: any,
-  marketerId: number
+  marketerId: number,
+  options: { writeOffBalance?: boolean } = {}
 ): Promise<{ plan: DeletionPlan; documentFiles: string[] }> {
   return prisma.$transaction(
     async (tx: any) => {
       const plan = await planMarketerDeletion(tx, marketerId);
       if (plan.blockers.length > 0) throw new DeletionBlocked(plan);
+
+      // Money in the wallet is only forfeited when the caller said so, in this
+      // request. Re-checked here, inside the transaction, so a balance that grew
+      // since the preview is not written off on the strength of an older answer.
+      if ((plan.writeOffAmount ?? 0) > 0 && options.writeOffBalance !== true) {
+        throw new DeletionBlocked({
+          ...plan,
+          blockers: [
+            `${plan.label} still has ${naira(plan.writeOffAmount!)} in their wallet. Confirm that it is written off, or pay it out before deleting.`,
+          ],
+        });
+      }
 
       const admin = await tx.admin.findUnique({ where: { id: marketerId }, select: { verificationDocumentPath: true } });
       const documents: Array<{ path: string }> = await tx.marketerDocument.findMany({

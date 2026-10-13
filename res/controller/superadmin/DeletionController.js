@@ -110,7 +110,18 @@ const marketers = handlersFor({
   name: "Marketer",
   plan: (req, id) => planMarketerDeletion(prisma, id),
   remove: async (req, id) => {
-    const { plan, documentFiles } = await deleteMarketer(prisma, id);
+    const { plan, documentFiles } = await deleteMarketer(prisma, id, {
+      writeOffBalance: req.body?.writeOffBalance === true,
+    });
+    if (plan.writeOffAmount) {
+      // Money is being discarded: this line is the only record of who agreed to it.
+      logger.warn("[DELETE_MARKETER] Wallet balance written off", {
+        marketerId: id,
+        label: plan.label,
+        amount: plan.writeOffAmount,
+        ...actorOf(req),
+      });
+    }
     // After the commit: a file cannot be rolled back, and a stray one is harmless.
     for (const file of documentFiles) await deleteKycFile(file);
     return { plan };

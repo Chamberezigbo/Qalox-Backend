@@ -99,9 +99,12 @@ describe("planMarketerDeletion", () => {
     expect((await planMarketerDeletion(client, 9)).blockers).toEqual([]);
   });
 
-  it("refuses while there is money in the wallet, naming the amount", async () => {
+  it("reports money in the wallet as an amount to write off, with a warning, not as a hard block", async () => {
     const { client } = fakeClient({ admin: [marketer({ walletBalance: 2500 })] });
-    expect((await planMarketerDeletion(client, 9)).blockers[0]).toContain("2,500.00");
+    const plan = await planMarketerDeletion(client, 9);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.writeOffAmount).toBe(2500);
+    expect(plan.warnings.join()).toContain("2,500.00");
   });
 
   it("ignores rounding noise in the wallet", async () => {
@@ -143,9 +146,26 @@ describe("deleteMarketer", () => {
     expect(calls[calls.length - 1]).toBe('delete:admin:{"id":9}');
   });
 
-  it("deletes nothing while the wallet holds money", async () => {
+  it("deletes nothing while the wallet holds money and the write-off was not confirmed", async () => {
     const { client, calls } = fakeClient({ admin: [marketer({ walletBalance: 10 })] });
     await expect(deleteMarketer(client, 9)).rejects.toBeInstanceOf(DeletionBlocked);
+    await expect(deleteMarketer(client, 9, { writeOffBalance: false })).rejects.toBeInstanceOf(DeletionBlocked);
+    expect(calls).toEqual([]);
+  });
+
+  it("deletes a marketer with money in the wallet once the write-off is confirmed", async () => {
+    const { client, calls } = fakeClient({ admin: [marketer({ walletBalance: 2000 })] });
+    const { plan } = await deleteMarketer(client, 9, { writeOffBalance: true });
+    expect(plan.writeOffAmount).toBe(2000);
+    expect(calls[calls.length - 1]).toBe('delete:admin:{"id":9}');
+  });
+
+  it("still refuses a pending payout even when the write-off is confirmed", async () => {
+    const { client, calls } = fakeClient({
+      admin: [marketer({ walletBalance: 2000 })],
+      payoutRequest: [{ marketerId: 9, status: "pending" }],
+    });
+    await expect(deleteMarketer(client, 9, { writeOffBalance: true })).rejects.toBeInstanceOf(DeletionBlocked);
     expect(calls).toEqual([]);
   });
 });
