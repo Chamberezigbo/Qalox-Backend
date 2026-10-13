@@ -104,7 +104,7 @@ async function reserveCredits(schoolId, credits) {
 
     if (credits > remaining) {
       throw new AppError(
-        `Not enough AI credits left this term — this needs ${credits} and ${Math.max(0, remaining)} remain. Credits reset when the next term starts.`,
+        `Not enough AI credits left this term — this needs ${credits} and ${Math.max(0, remaining)} remain. Credits reset when the next term starts, or your school admin can buy more from the Billing page.`,
         400
       );
     }
