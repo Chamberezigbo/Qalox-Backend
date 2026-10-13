@@ -265,6 +265,106 @@ function finishNote({ parsed, usage }, topic) {
   };
 }
 
+/** Rough output cost of one multiple-choice question, in tokens: text, four options, explanation. */
+const TOKENS_PER_QUESTION = 170;
+const EXAM_OVERHEAD_TOKENS = 400;
+const EXAM_MAX_OUTPUT_TOKENS_CAP = 8192;
+
+/**
+ * Output ceiling for generating `count` questions. Also what the credit
+ * reservation is calculated against, so the two cannot drift.
+ */
+const examOutputCeiling = (count) =>
+  Math.min(EXAM_MAX_OUTPUT_TOKENS_CAP, EXAM_OVERHEAD_TOKENS + TOKENS_PER_QUESTION * Math.max(1, count));
+
+const EXAM_QUESTIONS_SCHEMA = {
+  type: "object",
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          options: { type: "array", items: { type: "string" } },
+          correctIndex: { type: "integer" },
+          explanation: { type: "string" },
+        },
+        required: ["text", "options", "correctIndex", "explanation"],
+      },
+    },
+  },
+  required: ["questions"],
+};
+
+const DIFFICULTY_GUIDE = {
+  easy: "mostly recall: definitions, names, simple facts",
+  medium: "a mix of recall and understanding: explain, identify, compare",
+  hard: "mostly application and reasoning: work something out, choose the best explanation",
+};
+
+const buildExamPrompt = ({ className, subjectName, topic, weekRange, count, difficulty }) => `You are helping a Nigerian secondary school teacher write a multiple-choice test, grounded in their school's own scheme of work.
+
+Test details:
+- Class: ${className}
+- Subject: ${subjectName}
+${topic ? `- Topic: ${topic}` : ""}
+${weekRange ? `- Week(s): ${weekRange}` : ""}
+- Number of questions: ${count}
+- Difficulty: ${difficulty} (${DIFFICULTY_GUIDE[difficulty] || DIFFICULTY_GUIDE.medium})
+
+Write exactly ${count} questions from the scheme of work below. Rules:
+- Ask only about what the scheme of work actually covers. Do not introduce facts, figures or topics it does not contain.
+- Each question has exactly 4 options and exactly one correct answer. correctIndex is the 0-based position of the correct option.
+- Make the wrong options plausible, but clearly wrong to a student who learned the topic. Never use "all of the above" or "none of the above".
+- Vary which position holds the correct answer; do not always put it first.
+- Keep questions clear and short, in plain language suited to the class. Use Nigerian examples where an example helps.
+- Do not repeat a question or test the same fact twice.
+- explanation is one short sentence saying why the answer is correct.
+
+Return only the requested JSON.`;
+
+/**
+ * Generates multiple-choice questions for a test.
+ *
+ * @param {object} input
+ * @param {string} input.schemeText
+ * @param {number} input.count how many questions
+ * @param {"easy"|"medium"|"hard"} [input.difficulty]
+ * @returns {Promise<{ questions: unknown, usage: { inputTokens: number, outputTokens: number } }>}
+ */
+async function generateExamQuestions({ schemeText, className, subjectName, topic, weekRange, count, difficulty = "medium" }) {
+  const excerpt = buildContextExcerpt(schemeText, topic);
+  if (!excerpt) {
+    throw new Error("This scheme of work has no readable text, so questions cannot be written from it.");
+  }
+
+  const json = await callGemini({
+    contents: [
+      {
+        parts: [
+          { text: buildExamPrompt({ className, subjectName, topic, weekRange, count, difficulty }) },
+          { text: `\n\nSCHEME OF WORK:\n${excerpt}` },
+        ],
+      },
+    ],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: EXAM_QUESTIONS_SCHEMA,
+      maxOutputTokens: examOutputCeiling(count),
+      thinkingConfig: { thinkingBudget: 0 },
+    },
+  });
+
+  const { parsed, usage } = readStructured(json, {
+    cutOff: "The questions were cut off before they finished. Try fewer questions at a time.",
+    declined: "Gemini declined to write questions for this. Try rewording the topic.",
+    empty: "Gemini returned no questions",
+  });
+
+  return { questions: parsed.questions, usage };
+}
+
 /**
  * Output ceiling for one chat turn. A reply is a few sentences; keeping the
  * ceiling low is also what keeps the credit reservation for a turn small.
@@ -386,6 +486,8 @@ module.exports = {
   generateLessonNote,
   chatTurn,
   refineNote,
+  generateExamQuestions,
+  examOutputCeiling,
   buildTeacherBrief,
   buildLessonNotePrompt,
   CHAT_MAX_OUTPUT_TOKENS,

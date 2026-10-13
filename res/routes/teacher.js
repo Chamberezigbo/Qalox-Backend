@@ -23,6 +23,7 @@ const teacherAnalyticsController = new TeacherAnalyticsController();
 const assignmentController = new AssignmentController();
 const lessonNoteController = require("../controller/teacher/LessonNoteController");
 const lessonNoteChatController = require("../controller/teacher/LessonNoteChatController");
+const testController = require("../controller/teacher/TestController");
 const teacherSchemeOfWorkController = require("../controller/teacher/SchemeOfWorkController");
 const examTimetableController = new ExamTimetableController();
 
@@ -99,6 +100,18 @@ router.get("/lesson-notes/chats/:id", teacherAuthMiddleware, lessonNoteChatContr
 router.post("/lesson-notes/chats/:id/messages", teacherAuthMiddleware, lessonNoteChatController.sendMessage);
 router.post("/lesson-notes/chats/:id/generate", teacherAuthMiddleware, lessonNoteChatController.generateFromChat);
 router.post("/lesson-notes/chats/:id/refine", teacherAuthMiddleware, lessonNoteChatController.refineNote);
+
+// Multiple-choice tests: generate, review, edit, publish.
+router.post("/tests/generate", teacherAuthMiddleware, testController.generate);
+router.get("/tests", teacherAuthMiddleware, testController.list);
+router.get("/tests/:id", teacherAuthMiddleware, testController.get);
+router.patch("/tests/:id", teacherAuthMiddleware, testController.update);
+router.delete("/tests/:id", teacherAuthMiddleware, testController.remove);
+router.post("/tests/:id/questions", teacherAuthMiddleware, testController.addQuestion);
+router.patch("/tests/:id/questions/:questionId", teacherAuthMiddleware, testController.updateQuestion);
+router.delete("/tests/:id/questions/:questionId", teacherAuthMiddleware, testController.deleteQuestion);
+router.post("/tests/:id/publish", teacherAuthMiddleware, testController.publish);
+router.post("/tests/:id/close", teacherAuthMiddleware, testController.close);
 
 router.post("/lesson-notes/generate", teacherAuthMiddleware, lessonNoteController.generateLessonNote);
 router.get("/lesson-notes/generate/:jobId", teacherAuthMiddleware, lessonNoteController.getGenerationStatus);

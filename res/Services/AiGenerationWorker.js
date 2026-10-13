@@ -2,6 +2,7 @@ const prisma = require("../util/prisma");
 const logger = require("../config/logger");
 const GeminiTextService = require("./GeminiTextService");
 const AiCreditService = require("./AiCreditService");
+const { normalizeGeneratedQuestions } = require("../util/testQuestions");
 
 /**
  * Runs AI generation jobs in the background, so a request that takes 10-30
@@ -20,6 +21,7 @@ const STAGES = {
   READING: "Reading scheme of work",
   DRAFTING: "Drafting lesson note",
   FORMATTING: "Formatting",
+  WRITING_QUESTIONS: "Writing questions",
 };
 
 /**
@@ -35,6 +37,104 @@ async function setProgress(jobId, progress, stage) {
   } catch (error) {
     logger.warn("[AI_WORKER] Failed to write progress", { jobId, error: error.message });
   }
+}
+
+/** A sensible default length for a test of this many questions, in whole 5-minute steps. */
+const defaultDurationMinutes = (count) => Math.max(10, Math.ceil((count * 1.5) / 5) * 5);
+
+/**
+ * Generates multiple-choice questions and saves them as a DRAFT test.
+ *
+ * Like a lesson note, nothing is published: the teacher reviews and edits the
+ * questions first. Anything the model returned that cannot be marked fairly is
+ * dropped (see normalizeGeneratedQuestions), and the job fails, refunding the
+ * credits, if nothing usable is left.
+ *
+ * Throws on failure so processJob's one catch settles the credits.
+ */
+async function processExamQuestionsJob(job, params, className) {
+  const count = Math.min(50, Math.max(1, parseInt(params.count, 10) || 10));
+  const difficulty = ["easy", "medium", "hard"].includes(params.difficulty) ? params.difficulty : "medium";
+
+  await setProgress(job.id, 35, STAGES.WRITING_QUESTIONS);
+
+  const { questions: raw, usage } = await GeminiTextService.generateExamQuestions({
+    schemeText: job.schemeOfWork.extractedText,
+    className,
+    subjectName: job.subject?.name || "",
+    topic: params.topic,
+    weekRange: params.weekRange,
+    count,
+    difficulty,
+  });
+
+  await setProgress(job.id, 80, STAGES.FORMATTING);
+
+  const questions = normalizeGeneratedQuestions(raw);
+  if (questions.length === 0) {
+    throw new Error("The AI did not return any usable questions. Please try again.");
+  }
+
+  const subjectName = job.subject?.name || "Test";
+  const test = await prisma.$transaction(
+    async (tx) => {
+      const created = await tx.test.create({
+        data: {
+          schoolId: job.schoolId,
+          classId: job.classId,
+          subjectId: job.subjectId,
+          academicTermId: job.academicTermId,
+          createdByStaffId: job.staffId,
+          schemeOfWorkId: job.schemeOfWorkId,
+          generationJobId: job.id,
+          title: params.topic ? `${subjectName}: ${params.topic}` : `${subjectName} test`,
+          durationMinutes: defaultDurationMinutes(questions.length),
+          status: "draft",
+        },
+      });
+
+      for (let i = 0; i < questions.length; i++) {
+        const q = questions[i];
+        await tx.question.create({
+          data: {
+            testId: created.id,
+            type: "multiple_choice",
+            text: q.text,
+            explanation: q.explanation,
+            order: i + 1,
+            options: { create: q.options.map((o, index) => ({ text: o.text, isCorrect: o.isCorrect, order: index + 1 })) },
+          },
+        });
+      }
+      return created;
+    },
+    { timeout: 30000 }
+  );
+
+  const { charged } = await AiCreditService.trueUpCredits(job.schoolId, job.creditsReserved, usage);
+
+  await prisma.aiGenerationJob.update({
+    where: { id: job.id },
+    data: {
+      status: "done",
+      progress: 100,
+      stage: "Done",
+      actualInputTokens: usage.inputTokens,
+      actualOutputTokens: usage.outputTokens,
+      creditsCharged: charged,
+      resultTestId: test.id,
+      completedAt: new Date(),
+    },
+  });
+
+  logger.info("[AI_WORKER] Test questions generated", {
+    jobId: job.id,
+    testId: test.id,
+    requested: count,
+    kept: questions.length,
+    reserved: job.creditsReserved,
+    charged,
+  });
 }
 
 /** The chat a job belongs to, read defensively: this runs while handling another failure. */
@@ -77,6 +177,11 @@ async function processJob({ jobId }) {
     const className = job.class?.customName
       ? `${job.class.name} — ${job.class.customName}`
       : job.class?.name || "";
+
+    if (job.jobType === "exam_questions") {
+      await processExamQuestionsJob(job, params, className);
+      return;
+    }
 
     // A note planned in a chat carries the conversation as its brief.
     let teacherBrief = "";

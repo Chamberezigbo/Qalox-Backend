@@ -187,6 +187,7 @@ exports.getGenerationStatus = async (req, res, next) => {
         errorMessage: true,
         creditsCharged: true,
         resultLessonNoteId: true,
+        resultTestId: true,
       },
     });
 
