@@ -2,6 +2,8 @@ import prisma from "../../util/prisma";
 import { signStudentToken } from "../../util/jwt";
 import { AppError } from "../../util/AppError";
 import { logLoginEvent } from "../../util/logLoginEvent";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { isSchoolSuspended, SCHOOL_SUSPENDED_MESSAGE } = require("../../util/schoolSuspension");
 
 export class StudentAuthService {
 
@@ -20,6 +22,10 @@ export class StudentAuthService {
         // student is answered exactly like an unknown number.
         if (!student || student.status !== "active") {
             throw new AppError("Invalid registration number");
+        }
+
+        if (await isSchoolSuspended(student.schoolId)) {
+            throw new AppError(SCHOOL_SUSPENDED_MESSAGE, 403);
         }
 
         // schoolId comes FROM the database, never from the client

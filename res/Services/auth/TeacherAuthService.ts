@@ -4,6 +4,8 @@ import { TeacherLoginDTO } from "../../dtos/auth/teacher-login.dto";
 import { signTeacherToken } from "../../util/jwt";
 import { AppError } from "../../util/AppError";
 import { logLoginEvent } from "../../util/logLoginEvent";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { isSchoolSuspended, SCHOOL_SUSPENDED_MESSAGE } = require("../../util/schoolSuspension");
 
 // isActive field on Staff
 
@@ -36,6 +38,10 @@ export class TeacherAuthService {
         // teachers too, and used to be locked out by an exact match.
         if (!isTeacherDuty(teacher.duty)) {
             throw new AppError("Access denied");
+        }
+
+        if (await isSchoolSuspended(teacher.schoolId)) {
+            throw new AppError(SCHOOL_SUSPENDED_MESSAGE, 403);
         }
 
         // 🔐 schoolId comes FROM DB, not client

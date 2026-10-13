@@ -2,6 +2,11 @@ const jwt = require("jsonwebtoken");
 const prisma = require("../util/prisma");
 const { AppError } = require("../util/AppError");
 const { getSchoolLockStatus } = require("../util/getSchoolLockStatus");
+const {
+  isSchoolSuspended,
+  SCHOOL_SUSPENDED_MESSAGE,
+  ACCOUNT_SUSPENDED_MESSAGE,
+} = require("../util/schoolSuspension");
 
 // Environment variables for JWT
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -44,10 +49,16 @@ const authenticateAdmin = async (req, res, next) => {
     // Ensure the admin exists and is still active in DB
     const admin = await prisma.admin.findUnique({
       where: { id: decoded.id },
-      select: { id: true, role: true, schoolId: true }
+      select: { id: true, role: true, schoolId: true, isSuspended: true }
     });
     if (!admin) {
       return next(new AppError("Unauthorized: Admin not found", 401));
+    }
+    if (admin.isSuspended) {
+      return next(new AppError(`Unauthorized: ${ACCOUNT_SUSPENDED_MESSAGE}`, 401));
+    }
+    if (admin.schoolId && (await isSchoolSuspended(admin.schoolId))) {
+      return next(new AppError(SCHOOL_SUSPENDED_MESSAGE, 403));
     }
     req.user = admin; // Attach full admin basics
     if (!admin.schoolId) return next();
@@ -62,7 +73,7 @@ const authenticateAdmin = async (req, res, next) => {
 // the platform-wide "platform_super_admin" used by the Super Admin Portal).
 // "school_admin" is accepted with full parity so it's a fully functional
 // head-admin role going forward, not just a dormant enum value.
-const authenticateSuperAdmin = (req, res, next) => {
+const authenticateSuperAdmin = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
     return next(new AppError("Unauthorized: Missing token", 401));
@@ -74,6 +85,25 @@ const authenticateSuperAdmin = (req, res, next) => {
     if (!["super_admin", "school_admin"].includes(decoded.role)) {
       return next(new AppError("Unauthorized: Only school head admins can access this route", 401));
     }
+
+    // This used to trust the token alone, so a suspended or deleted head admin
+    // kept full access to sub-admin management, grading and the rest until the
+    // token expired a day later. The account is read now, like the other guards.
+    const admin = await prisma.admin.findUnique({
+      where: { id: decoded.id },
+      select: { id: true, role: true, schoolId: true, isSuspended: true },
+    });
+    if (!admin) {
+      return next(new AppError("Unauthorized: Admin not found", 401));
+    }
+    if (admin.isSuspended) {
+      return next(new AppError(`Unauthorized: ${ACCOUNT_SUSPENDED_MESSAGE}`, 401));
+    }
+    if (admin.schoolId && (await isSchoolSuspended(admin.schoolId))) {
+      return next(new AppError(SCHOOL_SUSPENDED_MESSAGE, 403));
+    }
+
+    // Same shape as before: the token's claims, so existing handlers see no change.
     req.user = decoded;
     next();
   } catch (error) {
@@ -109,6 +139,9 @@ const authenticateSchoolLevelAdmin = async (req, res, next) => {
 
     if (admin.isSuspended) {
       return next(new AppError("Unauthorized: Account is suspended", 401));
+    }
+    if (admin.schoolId && (await isSchoolSuspended(admin.schoolId))) {
+      return next(new AppError(SCHOOL_SUSPENDED_MESSAGE, 403));
     }
 
     req.user = admin;

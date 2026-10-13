@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 const { getSchoolLockStatus } = require("../util/getSchoolLockStatus");
+const { isSchoolSuspended, SCHOOL_SUSPENDED_MESSAGE } = require("../util/schoolSuspension");
 
 export interface TeacherRequest extends Request {
     staffId?: number;
@@ -42,6 +43,15 @@ export const teacherAuthMiddleware = async (
 
         req.staffId = Number(decoded.staffId);
         req.schoolId = Number(decoded.schoolId);
+
+        // A suspended school is closed to everyone in it, reads included.
+        if (await isSchoolSuspended(req.schoolId)) {
+            return res.status(403).json({
+                success: false,
+                message: SCHOOL_SUSPENDED_MESSAGE,
+                code: "SCHOOL_SUSPENDED",
+            });
+        }
 
         // Only the school admin can pay/redeem a coupon to unlock the school,
         // so unlike the admin auth middleware, teachers have no allowlisted

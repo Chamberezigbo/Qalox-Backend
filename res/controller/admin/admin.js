@@ -138,6 +138,12 @@ exports.createAdmin = async (req, res, next) => {
   }
 };
 
+const {
+  isSchoolSuspended,
+  SCHOOL_SUSPENDED_MESSAGE,
+  ACCOUNT_SUSPENDED_MESSAGE,
+} = require("../../util/schoolSuspension");
+
 exports.loginAdmin = async (req, res, next) => {
   const { email, password } = req.body;
 
@@ -150,6 +156,16 @@ exports.loginAdmin = async (req, res, next) => {
     const isPasswordValid = await bcrypt.compare(password, admin.password);
     if (!isPasswordValid)
       return res.status(401).json({ message: "Invalid password" });
+
+    // Suspension is enforced at sign-in too, not only on later requests, so a
+    // suspended admin or school gets a clear message instead of a session that
+    // then fails on every screen.
+    if (admin.isSuspended) {
+      return res.status(403).json({ message: ACCOUNT_SUSPENDED_MESSAGE, code: "ACCOUNT_SUSPENDED" });
+    }
+    if (admin.schoolId && (await isSchoolSuspended(admin.schoolId))) {
+      return res.status(403).json({ message: SCHOOL_SUSPENDED_MESSAGE, code: "SCHOOL_SUSPENDED" });
+    }
 
     const firstLogin = !admin.hasLoggedIn;
 

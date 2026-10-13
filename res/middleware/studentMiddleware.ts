@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+const { isSchoolSuspended, SCHOOL_SUSPENDED_MESSAGE } = require("../util/schoolSuspension");
 
 // Extend Express's Request type so TypeScript knows about our custom fields
 export interface StudentRequest extends Request {
@@ -9,7 +10,7 @@ export interface StudentRequest extends Request {
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
-export const studentAuthMiddleware = (
+export const studentAuthMiddleware = async (
     req: StudentRequest,
     res: Response,
     next: NextFunction
@@ -44,6 +45,15 @@ export const studentAuthMiddleware = (
         // Attach to request so protected route handlers can use them
         req.studentId = Number(decoded.studentId);
         req.schoolId = Number(decoded.schoolId);
+
+        // A suspended school is closed to everyone in it.
+        if (await isSchoolSuspended(req.schoolId)) {
+            return res.status(403).json({
+                success: false,
+                message: SCHOOL_SUSPENDED_MESSAGE,
+                code: "SCHOOL_SUSPENDED",
+            });
+        }
 
         next();
     } catch (err) {

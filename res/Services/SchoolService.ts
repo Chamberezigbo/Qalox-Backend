@@ -68,6 +68,10 @@ class SchoolService {
       },
     });
 
+    // Take effect on this server at once rather than after the cache expires.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require("../util/schoolSuspension").clearSchoolSuspensionCache(schoolId);
+
     return updated;
   }
 
@@ -92,6 +96,9 @@ class SchoolService {
         updatedAt: new Date(),
       },
     });
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require("../util/schoolSuspension").clearSchoolSuspensionCache(schoolId);
 
     return updated;
   }
