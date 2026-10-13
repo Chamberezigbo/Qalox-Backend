@@ -19,6 +19,7 @@ const {
 
 const { updateSchoolBranding } = require("../../controller/school/schoolController");
 const classLadderController = require("../../controller/admin/ClassLadderController");
+const promotionController = require("../../controller/admin/PromotionController");
 
 const {
   getStudentDetails, createStudent,
@@ -215,6 +216,13 @@ router.put("/student/:id",
   updateStudent
 );
 router.get("/student/:id/delete-preview", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, previewStudentDeletion);
+// Promotion: head admins only. It moves many students at once.
+router.get("/promotion/policy", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.getPolicy);
+router.put("/promotion/policy", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.savePolicy);
+router.get("/promotion/preview", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.preview);
+router.post("/promotion/apply", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.apply);
+router.get("/promotion/runs", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.listRuns);
+router.post("/promotion/runs/:id/undo", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.undo);
 router.get("/class-ladder", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classLadderController.getClassLadder);
 router.put("/class-ladder", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classLadderController.saveClassLadder);
 router.patch("/student/:id/withdraw", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, withdrawStudent);

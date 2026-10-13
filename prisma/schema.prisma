@@ -218,6 +218,8 @@ model School {
   lessonNotes         LessonNote[]
   aiGenerationJobs    AiGenerationJob[]
   lessonNoteChats LessonNoteChat[]
+  promotionPolicy PromotionPolicy?
+  promotionRuns   PromotionRun[]
   tests               Test[]
 
   @@index([billingPlanId])
@@ -1736,6 +1738,76 @@ model AiGenerationJob {
   @@index([staffId])
   @@index([status])
   @@map("ai_generation_jobs")
+}
+
+/// How a school decides who moves up at the end of a session. One row per school;
+/// a school with no row uses the defaults in res/Services/PromotionService.
+model PromotionPolicy {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int      @unique
+  // all_terms: the average of each term's average. last_term: the final term only.
+  basis       String   @default("all_terms") @db.VarChar(16)
+  // Marks below the pass mark that still earn "promoted on trial". Null turns
+  // the trial outcome off, so a student is either promoted or repeats.
+  trialMargin Float?   @default(5)
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@map("promotion_policies")
+}
+
+/// One promotion of one class from one session to the next. Kept so the whole run
+/// can be undone and so there is a record of who moved whom, and when.
+model PromotionRun {
+  id              Int       @id @default(autoincrement())
+  schoolId        Int
+  classId         Int // the class being promoted, as it was
+  fromSessionId   Int
+  toSessionId     Int
+  createdByAdminId Int?
+  studentCount    Int
+  createdAt       DateTime  @default(now())
+  undoneAt        DateTime?
+
+  school School               @relation(fields: [schoolId], references: [id])
+  items  PromotionRunItem[]
+
+  @@index([schoolId])
+  @@map("promotion_runs")
+}
+
+/// One student's outcome within a run, with where they were BEFORE it, which is
+/// everything undo needs to put them back.
+model PromotionRunItem {
+  id        Int    @id @default(autoincrement())
+  runId     Int
+  studentId Int
+  // promoted | trial | repeat | graduated
+  outcome   String @db.VarChar(16)
+  average   Float?
+  // Why the admin chose something other than the suggestion.
+  overrideReason String? @db.VarChar(255)
+
+  fromClassId   Int
+  fromGroupId   Int?
+  fromCampusId  Int?
+  fromSessionId Int
+  fromStatus    String @default("active") @db.VarChar(16)
+
+  toClassId  Int?
+  toGroupId  Int?
+  toCampusId Int?
+
+  // JSON array of the StudentFee ids this promotion created for the student, so
+  // undo removes exactly those and nothing else.
+  createdFeeIdsJson String? @db.Text
+
+  run PromotionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([studentId])
+  @@map("promotion_run_items")
 }
 
 /// Which class (and group and campus) a student was in during one session.

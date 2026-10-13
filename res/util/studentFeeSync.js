@@ -22,8 +22,11 @@ const logger = require("../config/logger");
  *
  * @param {Object} tx a Prisma client or transaction client
  * @param {{ id: Number, schoolId: Number, classId: Number|null }} student
+ * @param {{ sessionName?: string }} [options] invoice this session's structures
+ *   instead of the active session's. Promotion moves students into the NEXT
+ *   session, which may not be active yet, and must bill that session's fees.
  */
-async function syncStudentFeeInvoices(tx, student) {
+async function syncStudentFeeInvoices(tx, student, options = {}) {
   if (!student.classId) return;
 
   try {
@@ -34,10 +37,12 @@ async function syncStudentFeeInvoices(tx, student) {
     // A school with no active session is left as it was — it cannot be told
     // apart from one that simply does not use sessions, and would otherwise
     // stop invoicing late joiners altogether.
-    const activeSession = await tx.academicSession.findFirst({
-      where: { schoolId: student.schoolId, isActive: true },
-      select: { name: true },
-    });
+    const activeSession = options.sessionName
+      ? { name: options.sessionName }
+      : await tx.academicSession.findFirst({
+          where: { schoolId: student.schoolId, isActive: true },
+          select: { name: true },
+        });
 
     const structures = await tx.feeStructure.findMany({
       where: { classId: student.classId, ...(activeSession && { session: activeSession.name }) },
