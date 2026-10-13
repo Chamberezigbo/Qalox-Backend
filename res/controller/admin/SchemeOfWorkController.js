@@ -94,6 +94,46 @@ exports.listSchemesOfWork = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/admin/scheme-of-work/terms
+ * The school's terms, for choosing which one a scheme is for.
+ *
+ * The full terms route (/admin/terms) is head-admin only, so a sub-admin who is
+ * allowed to upload schemes could not see what to choose. This is read-only and
+ * returns just what a picker needs. Current session first, then the others.
+ */
+exports.listTermsForSchemes = async (req, res, next) => {
+  try {
+    const terms = await prisma.academicTerm.findMany({
+      where: { schoolId: req.schoolId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        createdAt: true,
+        session: { select: { id: true, name: true, isActive: true } },
+      },
+      orderBy: [{ createdAt: "desc" }],
+    });
+
+    const shaped = terms
+      .map((t) => ({
+        id: t.id,
+        name: t.name,
+        isActive: t.isActive,
+        sessionId: t.session.id,
+        sessionName: t.session.name,
+        sessionIsActive: t.session.isActive,
+      }))
+      // Active term, then the rest of the active session, then older sessions.
+      .sort((a, b) => Number(b.isActive) - Number(a.isActive) || Number(b.sessionIsActive) - Number(a.sessionIsActive));
+
+    return res.status(200).json({ success: true, data: shaped });
+  } catch (err) {
+    next(err);
+  }
+};
+
 /** GET /api/admin/scheme-of-work/:id */
 exports.getSchemeOfWork = async (req, res, next) => {
   try {

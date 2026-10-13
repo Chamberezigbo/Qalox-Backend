@@ -40,6 +40,7 @@ const {
   uploadSchemeOfWork: uploadSchemeOfWorkDocument,
   listSchemesOfWork,
   getSchemeOfWork,
+  listTermsForSchemes,
   deleteSchemeOfWork,
   getAiCredits,
 } = require("../../controller/admin/SchemeOfWorkController");
@@ -303,6 +304,7 @@ router.patch("/class-group/update/:groupId", auth.authenticateSchoolLevelAdmin, 
 // Accepts one PDF or up to 10 page photos per upload (see uploadSchemeOfWork).
 router.post("/scheme-of-work", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SCHEME_OF_WORK_MANAGE), auth.attachSchoolId, uploadSchemeOfWork.array("files"), uploadSchemeOfWorkDocument);
 router.get("/scheme-of-work", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.SCHEME_OF_WORK_MANAGE, PERMISSIONS.CLASSES_MANAGE]), auth.attachSchoolId, listSchemesOfWork);
+router.get("/scheme-of-work/terms", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.SCHEME_OF_WORK_MANAGE, PERMISSIONS.CLASSES_MANAGE]), auth.attachSchoolId, listTermsForSchemes);
 router.get("/scheme-of-work/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.SCHEME_OF_WORK_MANAGE, PERMISSIONS.CLASSES_MANAGE]), auth.attachSchoolId, getSchemeOfWork);
 router.delete("/scheme-of-work/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SCHEME_OF_WORK_MANAGE), auth.attachSchoolId, deleteSchemeOfWork);
 
