@@ -32,6 +32,9 @@ const {
   createBillingPlan,
   updateBillingPlan,
   startTrial,
+  getCreditPacks,
+  createCreditPack,
+  updateCreditPack,
 } = require("../../controller/superadmin/BillingController");
 const {
   createCoupon,
@@ -190,6 +193,10 @@ router.patch("/billing/subscriptions/:id", authenticateSuperAdminJWT, updateSubs
 router.post("/billing/plans", authenticateSuperAdminJWT, createBillingPlan);
 router.patch("/billing/plans/:id", authenticateSuperAdminJWT, updateBillingPlan);
 router.post("/billing/schools/:schoolId/start-trial", authenticateSuperAdminJWT, startTrial);
+// AI credit packs
+router.get("/billing/credit-packs", authenticateSuperAdminJWT, getCreditPacks);
+router.post("/billing/credit-packs", authenticateSuperAdminJWT, createCreditPack);
+router.patch("/billing/credit-packs/:id", authenticateSuperAdminJWT, updateCreditPack);
 router.post("/billing/coupons", authenticateSuperAdminJWT, createCoupon);
 router.get("/billing/coupons", authenticateSuperAdminJWT, getCoupons);
 router.patch("/billing/coupons/:id/deactivate", authenticateSuperAdminJWT, deactivateCoupon);

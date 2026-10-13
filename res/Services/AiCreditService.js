@@ -76,15 +76,19 @@ const creditsForTokens = ({ inputTokens = 0, outputTokens = 0 }) => {
  * @returns {Promise<{ reserved: number, remainingAfter: number }>}
  */
 async function reserveCredits(schoolId, credits) {
-  const allowance = await getAiCreditsAllowanceForSchool(schoolId);
+  const planAllowance = await getAiCreditsAllowanceForSchool(schoolId);
 
   return prisma.$transaction(async (tx) => {
     const school = await tx.school.findUnique({
       where: { id: schoolId },
-      select: { aiCreditsUsedThisTerm: true },
+      select: { aiCreditsUsedThisTerm: true, aiCreditsPurchased: true },
     });
 
     const used = school?.aiCreditsUsedThisTerm ?? 0;
+    // The plan's allowance plus credits the school has bought. Read inside the
+    // transaction with the counter, so a purchase landing at the same moment is
+    // either wholly counted or not at all.
+    const allowance = planAllowance + (school?.aiCreditsPurchased ?? 0);
     const remaining = allowance - used;
 
     // Every paid plan now carries an AI allowance, so reaching this means the

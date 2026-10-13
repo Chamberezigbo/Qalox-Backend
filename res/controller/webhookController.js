@@ -1,6 +1,8 @@
 const prisma = require("../util/prisma");
 const logger = require("../config/logger");
 const flutterwave = require("../Services/FlutterwaveService");
+const { createNotification } = require("../util/notify");
+const { claimPayment } = require("../util/claimPayment");
 
 const addBillingCycle = (from, billingCycle) => {
   const d = new Date(from);
@@ -8,6 +10,69 @@ const addBillingCycle = (from, billingCycle) => {
   else d.setMonth(d.getMonth() + 1);
   return d;
 };
+
+/**
+ * Fulfils a paid AI credit pack. Called only after the signature, the event and
+ * Flutterwave's own verification have all passed.
+ *
+ * The payment is claimed and the credits added in one transaction, and the claim
+ * only succeeds while the payment is not yet "success". So a webhook delivered
+ * twice, or two at once, grants the credits exactly once.
+ */
+async function handleCreditPackPayment({ payment, reference, transactionId, res }) {
+  const credits = Number(payment.creditsGranted);
+  if (!Number.isInteger(credits) || credits <= 0) {
+    logger.error("[FLW_WEBHOOK] Credit pack payment has no credits to grant", { reference, creditsGranted: payment.creditsGranted });
+    return res.status(200).json({ success: true, message: "Nothing to grant" });
+  }
+
+  const granted = await prisma.$transaction(
+    async (tx) => {
+      const claimed = await claimPayment(tx, payment.id, {
+        status: "success",
+        paidAt: new Date(),
+        flwChargeId: String(transactionId),
+      });
+      if (!claimed) return false;
+
+      await tx.school.update({
+        where: { id: payment.schoolId },
+        data: { aiCreditsPurchased: { increment: credits } },
+      });
+      return true;
+    },
+    { timeout: 20000 }
+  );
+
+  if (!granted) {
+    logger.info("[FLW_WEBHOOK] Credit pack already granted — ignoring duplicate", { reference });
+    return res.status(200).json({ success: true, message: "Already processed" });
+  }
+
+  // Tell the school's head admins. After the grant, and never able to undo it.
+  try {
+    const admins = await prisma.admin.findMany({
+      where: { schoolId: payment.schoolId, role: { in: ["school_admin", "super_admin"] } },
+      select: { id: true },
+    });
+    for (const admin of admins) {
+      await createNotification({
+        recipientType: "admin",
+        recipientId: admin.id,
+        schoolId: payment.schoolId,
+        title: "AI credits added",
+        message: `${credits.toLocaleString("en-NG")} AI credits have been added to your school.`,
+        type: "success",
+        link: "/admin/billing",
+      });
+    }
+  } catch (error) {
+    logger.error("[FLW_WEBHOOK] Credit pack notification failed (credits unaffected)", { reference, error: error.message });
+  }
+
+  logger.info("[FLW_WEBHOOK] Credit pack granted", { reference, schoolId: payment.schoolId, credits });
+  return res.status(200).json({ success: true, message: "Webhook processed" });
+}
 
 /**
  * POST /api/webhooks/flutterwave
@@ -72,6 +137,19 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
       return res.status(200).json({ success: true, message: "Verification failed, not processed" });
     }
 
+    // Everything is priced in naira. A charge in another currency whose number
+    // happens to be large enough must not unlock anything.
+    if (verified.currency && verified.currency !== "NGN") {
+      logger.warn("[FLW_WEBHOOK] Unexpected currency — refusing to credit", { reference, currency: verified.currency });
+      return res.status(200).json({ success: true, message: "Currency mismatch, not processed" });
+    }
+
+    // A credit pack adds AI credits and nothing else: no subscription change, no
+    // marketer commission and no effect on first-vs-renewal.
+    if (payment.purpose === "credit_pack") {
+      return handleCreditPackPayment({ payment, reference, transactionId: event.data.id, res });
+    }
+
     const school = await prisma.school.findUnique({ where: { id: payment.schoolId } });
     const subscription = payment.subscriptionId
       ? await prisma.schoolSubscription.findUnique({ where: { id: payment.subscriptionId } })
@@ -79,7 +157,7 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
 
     // First-vs-renewal: any OTHER successful payment for this school already exist?
     const priorSuccessCount = await prisma.schoolPayment.count({
-      where: { schoolId: payment.schoolId, status: "success", id: { not: payment.id } },
+      where: { schoolId: payment.schoolId, status: "success", purpose: "subscription", id: { not: payment.id } },
     });
     const isFirstPayment = priorSuccessCount === 0;
 
@@ -111,22 +189,19 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
     }
 
     const now = paidAt;
-    const writes = [
-      prisma.schoolPayment.update({
-        where: { id: payment.id },
-        data: { status: "success", isFirstPayment, paidAt, flwChargeId: String(event.data.id) },
-      }),
-    ];
+    // Each operation runs against the transaction client, after the payment has
+    // been claimed (see below).
+    const ops = [];
 
     if (subscription) {
-      writes.push(
-        prisma.schoolSubscription.update({
+      ops.push((tx) =>
+        tx.schoolSubscription.update({
           where: { id: subscription.id },
           data: { status: "active", nextBillingDate },
         })
       );
-      writes.push(
-        prisma.school.update({
+      ops.push((tx) =>
+        tx.school.update({
           where: { id: payment.schoolId },
           data: { billingPlanId: subscription.billingPlanId },
         })
@@ -134,8 +209,8 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
     }
 
     if (marketer) {
-      writes.push(
-        prisma.commission.create({
+      ops.push((tx) =>
+        tx.commission.create({
           data: {
             marketerId: marketer.id,
             schoolId: payment.schoolId,
@@ -149,8 +224,8 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
           },
         })
       );
-      writes.push(
-        prisma.marketerSchoolLead.update({
+      ops.push((tx) =>
+        tx.marketerSchoolLead.update({
           where: { id: marketerLead.id },
           data: {
             totalRevenue: { increment: payment.amount },
@@ -158,8 +233,8 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
           },
         })
       );
-      writes.push(
-        prisma.admin.update({
+      ops.push((tx) =>
+        tx.admin.update({
           where: { id: marketer.id },
           data: {
             walletBalance: { increment: commissionAmount },
@@ -168,8 +243,8 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
           },
         })
       );
-      writes.push(
-        prisma.walletTransaction.create({
+      ops.push((tx) =>
+        tx.walletTransaction.create({
           data: {
             marketerId: marketer.id,
             type: "credit",
@@ -181,7 +256,30 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
       );
     }
 
-    await prisma.$transaction(writes, { timeout: 20000 });
+    // The payment is claimed and everything it unlocks is written in ONE
+    // transaction. The claim only succeeds for a payment that is not already
+    // "success", so two deliveries of the same webhook arriving together cannot
+    // both pass: the loser claims nothing, writes nothing and pays no commission.
+    const processed = await prisma.$transaction(
+      async (tx) => {
+        const claimed = await claimPayment(tx, payment.id, {
+          status: "success",
+          isFirstPayment,
+          paidAt,
+          flwChargeId: String(event.data.id),
+        });
+        if (!claimed) return false;
+
+        for (const op of ops) await op(tx);
+        return true;
+      },
+      { timeout: 20000 }
+    );
+
+    if (!processed) {
+      logger.info("[FLW_WEBHOOK] Payment was processed by a concurrent delivery — ignoring", { reference });
+      return res.status(200).json({ success: true, message: "Already processed" });
+    }
 
     // Tell the marketer they've been paid. Deliberately OUTSIDE the transaction
     // above and swallowed on failure: the money is already credited at this

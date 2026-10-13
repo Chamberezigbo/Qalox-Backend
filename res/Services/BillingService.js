@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const prisma = require("../util/prisma");
 const logger = require("../config/logger");
 const flutterwave = require("./FlutterwaveService");
+const { getActivePlanForSchool } = require("../util/getActivePlanForSchool");
 
 // Flutterwave's v3 API throws a misleading "decrypt" error on non-ASCII
 // characters (confirmed live — an em-dash alone was enough to trigger it).
@@ -113,6 +114,90 @@ async function initializePaymentForSchool({ schoolId, billingPlanId, billingCycl
 }
 
 /**
+ * Starts a purchase of an AI credit pack.
+ *
+ * Deliberately NOT built on initializePaymentForSchool: that flips the school's
+ * subscription to "past_due" the moment payment is started, which would lock a
+ * school that is paying for extra credits. A pack never touches the
+ * subscription; it only creates a pending payment, and the webhook adds the
+ * credits once Flutterwave confirms the money.
+ *
+ * @returns {Promise<{success: boolean, code?: string, message?: string, data?: object}>}
+ */
+async function initializeCreditPackPayment({ schoolId, packId }) {
+  if (!Number.isInteger(schoolId) || !Number.isInteger(packId)) {
+    return { success: false, code: "INVALID_REQUEST", message: "packId is required" };
+  }
+
+  const school = await prisma.school.findUnique({
+    where: { id: schoolId },
+    include: { admins: { take: 1, select: { name: true, email: true, phone: true } } },
+  });
+  if (!school) return { success: false, code: "SCHOOL_NOT_FOUND", message: "School not found" };
+
+  const pack = await prisma.aiCreditPack.findUnique({ where: { id: packId } });
+  if (!pack || !pack.isActive) {
+    return { success: false, code: "PACK_NOT_FOUND", message: "That credit pack is not available" };
+  }
+  if (!(pack.price > 0) || !Number.isInteger(pack.credits) || pack.credits <= 0) {
+    return { success: false, code: "INVALID_PACK", message: "That credit pack is not set up correctly" };
+  }
+
+  // Credits sit on top of a plan, so a school with no active plan chooses one first.
+  const plan = await getActivePlanForSchool(schoolId);
+  if (!plan) {
+    return {
+      success: false,
+      code: "NO_ACTIVE_PLAN",
+      message: "Choose a plan before buying AI credits.",
+    };
+  }
+
+  const email = school.email || school.admins[0]?.email;
+  if (!email) {
+    return {
+      success: false,
+      code: "MISSING_SCHOOL_EMAIL",
+      message: "School has no email on file — required to initiate a Flutterwave charge",
+    };
+  }
+
+  const reference = `qalox-${schoolId}-${crypto.randomUUID().slice(0, 8)}`;
+  const redirectUrl = `${(process.env.SCHOOL_PORTAL_URL || "").replace(/\/+$/, "")}/admin/billing?pack=1`;
+  const charge = await flutterwave.createStandardCheckout({
+    amount: pack.price,
+    email,
+    fullname: toAscii(school.admins[0]?.name || school.name),
+    phoneNumber: school.phoneNumber || school.admins[0]?.phone || undefined,
+    reference,
+    redirectUrl,
+    title: "Qalox AI credits",
+    description: toAscii(`${pack.credits} AI credits - ${school.name}`),
+  });
+
+  await prisma.schoolPayment.create({
+    data: {
+      schoolId,
+      subscriptionId: null,
+      amount: pack.price,
+      flwReference: reference,
+      status: "pending",
+      purpose: "credit_pack",
+      creditPackId: pack.id,
+      // Snapshotted: editing the pack later must not change what this payment delivers.
+      creditsGranted: pack.credits,
+    },
+  });
+
+  logger.info("[BILLING] Credit pack payment initialized", { schoolId, packId, credits: pack.credits, reference });
+
+  return {
+    success: true,
+    data: { reference, amount: pack.price, currency: "NGN", credits: pack.credits, checkoutUrl: charge.checkoutUrl },
+  };
+}
+
+/**
  * Grants a school a free trial on a plan for durationDays — no payment
  * involved. Shared by the Super Admin direct-grant flow (startTrial) and
  * coupon redemption; trialGrantedByAdminId is left null for coupon-sourced
@@ -152,4 +237,4 @@ async function grantTrial({ schoolId, billingPlanId, durationDays, trialGrantedB
   return subscription;
 }
 
-module.exports = { initializePaymentForSchool, grantTrial };
+module.exports = { initializePaymentForSchool, initializeCreditPackPayment, grantTrial };

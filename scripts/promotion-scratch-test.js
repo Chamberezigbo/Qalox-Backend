@@ -196,6 +196,30 @@ async function main() {
   assert.strictEqual(empty.students.length, 0);
   log("a second run finds nobody left to move and is refused");
 
+  console.log("Two applies at once");
+  const jss2 = await prisma.class.create({
+    data: { schoolId: w.schoolId, campusId: w.campus.id, name: "JSS 2", promotesToClassId: w.jss3.id },
+  });
+  const twoStudents = [];
+  for (const name of ["Race1", "Race2"]) {
+    const st = await prisma.student.create({
+      data: {
+        schoolId: w.schoolId, campusId: w.campus.id, classId: jss2.id, name, surname: "T", otherNames: "",
+        academicSessionId: w.sessionA.id, registrationNumber: `SCR-${name}-${Date.now()}`,
+      },
+    });
+    twoStudents.push(st);
+  }
+  const raceInput = {
+    schoolId: w.schoolId, adminId: w.admin.id, classId: jss2.id, fromSessionId: w.sessionA.id, toSessionId: w.sessionB.id,
+    decisions: twoStudents.map((st) => ({ studentId: st.id, outcome: "promoted" })),
+  };
+  const raced = await Promise.allSettled([PromotionService.applyPromotion(raceInput), PromotionService.applyPromotion(raceInput)]);
+  assert.strictEqual(raced.filter((r) => r.status === "fulfilled").length, 1, "exactly one of two simultaneous applies succeeds");
+  assert.strictEqual(raced.filter((r) => r.status === "rejected").length, 1);
+  assert.strictEqual(await prisma.promotionRun.count({ where: { classId: jss2.id } }), 1, "only one run is recorded");
+  log("two simultaneous applies of the same class move the students once and record one run");
+
   console.log("Graduation");
   const grad = await PromotionService.previewClass({ schoolId: w.schoolId, classId: w.ss3.id, fromSessionId: w.sessionA.id });
   assert.strictEqual(grad.isFinalClass, true);

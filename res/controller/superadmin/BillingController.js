@@ -56,9 +56,12 @@ exports.getBillingStats = async (req, res, next) => {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    const [cancelledThisMonth, totalRevenueAgg, activeCount, trialCount] = await Promise.all([
+    const [cancelledThisMonth, totalRevenueAgg, creditPackRevenueAgg, activeCount, trialCount] = await Promise.all([
       prisma.schoolSubscription.count({ where: { status: "cancelled", updatedAt: { gte: startOfMonth } } }),
-      prisma.schoolPayment.aggregate({ where: { status: "success" }, _sum: { amount: true } }),
+      // Plan revenue only. Credit packs are reported separately so each figure
+      // still means one thing and the two add up to what was actually received.
+      prisma.schoolPayment.aggregate({ where: { status: "success", purpose: "subscription" }, _sum: { amount: true } }),
+      prisma.schoolPayment.aggregate({ where: { status: "success", purpose: "credit_pack" }, _sum: { amount: true } }),
       prisma.schoolSubscription.count({ where: { status: "active" } }),
       prisma.schoolSubscription.count({ where: { status: "trial" } }),
     ]);
@@ -73,7 +76,7 @@ exports.getBillingStats = async (req, res, next) => {
       end.setMonth(end.getMonth() + 1);
 
       const agg = await prisma.schoolPayment.aggregate({
-        where: { status: "success", paidAt: { gte: start, lt: end } },
+        where: { status: "success", purpose: "subscription", paidAt: { gte: start, lt: end } },
         _sum: { amount: true },
       });
       monthlyRevenue.push({ month: start.toLocaleString("en-US", { month: "short" }), amount: agg._sum.amount || 0 });
@@ -88,6 +91,7 @@ exports.getBillingStats = async (req, res, next) => {
         trialSubscriptions: trialCount,
         cancelledThisMonth,
         totalRevenue: totalRevenueAgg._sum.amount || 0,
+        creditPackRevenue: creditPackRevenueAgg._sum.amount || 0,
         revenueByPlan: [...revenueByPlanMap.values()].map((r) => ({ ...r, amount: Math.round(r.amount) })),
         monthlyRevenue,
       },
@@ -294,6 +298,92 @@ exports.startTrial = async (req, res, next) => {
     });
   } catch (err) {
     logger.error("[BILLING] Failed to start trial", { error: err.message });
+    next(err);
+  }
+};
+
+
+// ---------------------------------------------------------------------------
+// AI credit packs (what schools can buy on top of their plan)
+// ---------------------------------------------------------------------------
+
+/** Validates a pack body; returns `{ error }` or the cleaned fields. */
+function parsePack(body, { partial }) {
+  const out = {};
+
+  if (!partial || body.name !== undefined) {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name || name.length > 100) return { error: "The name must be 1 to 100 characters" };
+    out.name = name;
+  }
+  if (!partial || body.credits !== undefined) {
+    const credits = Number(body.credits);
+    if (!Number.isInteger(credits) || credits < 1 || credits > 1_000_000) {
+      return { error: "Credits must be a whole number between 1 and 1,000,000" };
+    }
+    out.credits = credits;
+  }
+  if (!partial || body.price !== undefined) {
+    const price = Number(body.price);
+    if (!Number.isFinite(price) || price <= 0 || price > 100_000_000) return { error: "The price must be more than zero" };
+    out.price = price;
+  }
+  if (body.isActive !== undefined) {
+    if (typeof body.isActive !== "boolean") return { error: "isActive must be true or false" };
+    out.isActive = body.isActive;
+  }
+  if (body.sortOrder !== undefined) {
+    const order = Number(body.sortOrder);
+    if (!Number.isInteger(order)) return { error: "sortOrder must be a whole number" };
+    out.sortOrder = order;
+  }
+  return { fields: out };
+}
+
+/** GET /api/billing/credit-packs — all packs, including inactive ones. */
+exports.getCreditPacks = async (req, res, next) => {
+  try {
+    const packs = await prisma.aiCreditPack.findMany({ orderBy: [{ sortOrder: "asc" }, { credits: "asc" }] });
+    res.json({ success: true, data: packs });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** POST /api/billing/credit-packs */
+exports.createCreditPack = async (req, res, next) => {
+  try {
+    const { error, fields } = parsePack(req.body ?? {}, { partial: false });
+    if (error) return res.status(400).json({ success: false, message: error, code: "INVALID_REQUEST" });
+
+    const pack = await prisma.aiCreditPack.create({ data: fields });
+    logger.info("[BILLING] Credit pack created", { packId: pack.id, adminId: req.admin?.id });
+    res.status(201).json({ success: true, data: pack });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /api/billing/credit-packs/:id
+ * Changing a pack's credits or price affects only FUTURE purchases: a payment
+ * already started keeps the credits it was sold with.
+ */
+exports.updateCreditPack = async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, message: "Invalid pack id" });
+
+    const { error, fields } = parsePack(req.body ?? {}, { partial: true });
+    if (error) return res.status(400).json({ success: false, message: error, code: "INVALID_REQUEST" });
+
+    const existing = await prisma.aiCreditPack.findUnique({ where: { id }, select: { id: true } });
+    if (!existing) return res.status(404).json({ success: false, message: "Pack not found" });
+
+    const pack = await prisma.aiCreditPack.update({ where: { id }, data: fields });
+    logger.info("[BILLING] Credit pack updated", { packId: id, adminId: req.admin?.id });
+    res.json({ success: true, data: pack });
+  } catch (err) {
     next(err);
   }
 };

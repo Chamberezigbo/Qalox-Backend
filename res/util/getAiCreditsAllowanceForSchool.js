@@ -39,18 +39,24 @@ async function getAiCreditsAllowanceForSchool(schoolId) {
  * @returns {Promise<{ allowance: number, used: number, remaining: number, included: boolean }>}
  */
 async function getAiCreditsStatusForSchool(schoolId) {
-  const [allowance, school] = await Promise.all([
+  const [base, school] = await Promise.all([
     getAiCreditsAllowanceForSchool(schoolId),
     prisma.school.findUnique({
       where: { id: schoolId },
-      select: { aiCreditsUsedThisTerm: true },
+      select: { aiCreditsUsedThisTerm: true, aiCreditsPurchased: true },
     }),
   ]);
 
   const used = school?.aiCreditsUsedThisTerm ?? 0;
+  const purchased = school?.aiCreditsPurchased ?? 0;
+  // What the school can spend this term: the plan's allowance plus anything it has bought.
+  const allowance = base + purchased;
 
   return {
     allowance,
+    // The plan's own part, and the bought part, so the UI can show both.
+    planAllowance: base,
+    purchased,
     used,
     remaining: Math.max(0, allowance - used),
     included: allowance > 0,

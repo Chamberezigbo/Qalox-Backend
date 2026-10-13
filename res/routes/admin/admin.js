@@ -77,6 +77,9 @@ const {
   getMyBillingStatus,
   selectPlan,
   redeemCoupon,
+  getCreditPacks,
+  buyCredits,
+  getPaymentStatus,
 } = require("../../controller/admin/AdminBillingController");
 
 const {
@@ -295,6 +298,11 @@ router.get("/billing/plans", auth.authenticateSchoolLevelAdmin, getAvailablePlan
 router.get("/billing/status", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, getMyBillingStatus);
 router.post("/billing/select-plan", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, selectPlan);
 router.post("/billing/redeem-coupon", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId, redeemCoupon);
+// AI credit packs: buying more credits mid-term. Head admins only, since it spends
+// the school's money. Under /billing, so it stays reachable while the school is locked.
+router.get("/billing/credit-packs", auth.authenticateSuperAdmin, auth.attachSchoolId, getCreditPacks);
+router.post("/billing/buy-credits", auth.authenticateSuperAdmin, auth.attachSchoolId, buyCredits);
+router.get("/billing/payments/:reference", auth.authenticateSuperAdmin, auth.attachSchoolId, getPaymentStatus);
 
 // Analytics routes — sub-admins need PERMISSIONS.ANALYTICS_VIEW; head admins always pass
 router.get("/analytics/campuses", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.ANALYTICS_VIEW), auth.attachSchoolId, getCampusAnalytics);

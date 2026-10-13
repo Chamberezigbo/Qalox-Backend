@@ -174,3 +174,33 @@ describe("refundCredits — failure path", () => {
     });
   });
 });
+
+describe("reserveCredits with purchased credits", () => {
+  // The plan allows 10 credits; the school has also bought some.
+  const setup = (used: number, purchased: number) => {
+    mockPlan.mockResolvedValue({ aiCreditsPerTerm: 10 });
+    mockPrisma.school.findUnique.mockResolvedValue({
+      aiCreditsUsedThisTerm: used,
+      aiCreditsPurchased: purchased,
+    });
+    mockPrisma.school.update.mockResolvedValue({});
+  };
+
+  it("lets a school spend past its plan's allowance using what it bought", async () => {
+    setup(10, 100);
+    const result = await reserveCredits(7, 30);
+    expect(result.reserved).toBe(30);
+    expect(result.remainingAfter).toBe(70);
+  });
+
+  it("refuses once both the allowance and the purchase are used up", async () => {
+    setup(110, 0);
+    await expect(reserveCredits(7, 5)).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("still names the subscription when a school has neither a plan nor purchased credits", async () => {
+    mockPlan.mockResolvedValue(null);
+    mockPrisma.school.findUnique.mockResolvedValue({ aiCreditsUsedThisTerm: 0, aiCreditsPurchased: 0 });
+    await expect(reserveCredits(7, 1)).rejects.toMatchObject({ statusCode: 403 });
+  });
+});

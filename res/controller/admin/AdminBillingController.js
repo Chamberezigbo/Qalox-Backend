@@ -4,6 +4,7 @@ const { parsePlanFeatures } = require("../../util/planFeatures");
 const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
 const { getSchoolLockStatus } = require("../../util/getSchoolLockStatus");
 const billingService = require("../../Services/BillingService");
+const { getAiCreditsStatusForSchool } = require("../../util/getAiCreditsAllowanceForSchool");
 
 /**
  * GET /api/admin/billing/plans
@@ -144,6 +145,79 @@ exports.redeemCoupon = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "This school has already redeemed a coupon", code: "ALREADY_REDEEMED" });
     }
     logger.error("[ADMIN_BILLING] Failed to redeem coupon", { error: err.message });
+    next(err);
+  }
+};
+
+
+/**
+ * GET /api/admin/billing/credit-packs
+ * The packs a school can buy, with its current credit position.
+ */
+exports.getCreditPacks = async (req, res, next) => {
+  try {
+    const [packs, credits] = await Promise.all([
+      prisma.aiCreditPack.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { credits: "asc" }],
+        select: { id: true, name: true, credits: true, price: true },
+      }),
+      getAiCreditsStatusForSchool(req.schoolId),
+    ]);
+
+    res.status(200).json({ success: true, data: { packs, credits } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/admin/billing/buy-credits
+ * Body: { packId }. Returns a Flutterwave checkout link; credits arrive when the
+ * webhook confirms the payment, not when this returns.
+ */
+exports.buyCredits = async (req, res, next) => {
+  try {
+    const schoolId = req.schoolId;
+    const packId = Number(req.body?.packId);
+
+    const result = await billingService.initializeCreditPackPayment({ schoolId, packId });
+
+    if (!result.success) {
+      const statusByCode = {
+        INVALID_REQUEST: 400,
+        SCHOOL_NOT_FOUND: 404,
+        PACK_NOT_FOUND: 404,
+        INVALID_PACK: 400,
+        NO_ACTIVE_PLAN: 409,
+        MISSING_SCHOOL_EMAIL: 400,
+      };
+      return res.status(statusByCode[result.code] || 400).json(result);
+    }
+
+    logger.info("[ADMIN_BILLING] Credit pack payment initialized", { schoolId, packId });
+    res.status(201).json({ success: true, message: "Payment initialized", data: result.data });
+  } catch (err) {
+    logger.error("[ADMIN_BILLING] Failed to initialize credit pack payment", { error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/admin/billing/payments/:reference
+ * Where a payment stands, for the page to poll after the admin returns from
+ * Flutterwave. Only the school's own payments are visible.
+ */
+exports.getPaymentStatus = async (req, res, next) => {
+  try {
+    const payment = await prisma.schoolPayment.findFirst({
+      where: { flwReference: String(req.params.reference), schoolId: req.schoolId },
+      select: { status: true, purpose: true, creditsGranted: true, amount: true, paidAt: true },
+    });
+    if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
+
+    res.status(200).json({ success: true, data: payment });
+  } catch (err) {
     next(err);
   }
 };

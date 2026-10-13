@@ -1,4 +1,6 @@
 const prisma = require("../util/prisma");
+const { getAiCreditsAllowanceForSchool } = require("../util/getAiCreditsAllowanceForSchool");
+const { purchasedAfterReset } = require("../util/aiCreditsCarryOver");
 
 
 export class AcademicTermService {
@@ -39,6 +41,22 @@ export class AcademicTermService {
 
         if (!term) throw new Error("Term not found");
 
+        // Credits the school bought carry over; the plan's allowance does not. Only
+        // usage above the plan's own allowance came out of purchased credits, so
+        // that is what is taken off before the counter goes back to zero.
+        const [school, planAllowance] = await Promise.all([
+            prisma.school.findUnique({
+                where: { id: schoolId },
+                select: { aiCreditsUsedThisTerm: true, aiCreditsPurchased: true }
+            }),
+            getAiCreditsAllowanceForSchool(schoolId),
+        ]);
+        const carriedOver = purchasedAfterReset({
+            used: school?.aiCreditsUsedThisTerm ?? 0,
+            baseAllowance: planAllowance,
+            purchased: school?.aiCreditsPurchased ?? 0,
+        });
+
         // Deactivate all terms for this school, then activate the selected one
         // Also activate the parent session and deactivate all other sessions
         await prisma.$transaction([
@@ -66,7 +84,7 @@ export class AcademicTermService {
             // generation credits) for the new term
             prisma.school.update({
                 where: { id: schoolId },
-                data: { smsUsedThisTerm: 0, aiCreditsUsedThisTerm: 0 }
+                data: { smsUsedThisTerm: 0, aiCreditsUsedThisTerm: 0, aiCreditsPurchased: carriedOver }
             }),
         ]);
 

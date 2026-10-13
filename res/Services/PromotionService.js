@@ -195,6 +195,13 @@ async function applyPromotion({ schoolId, adminId, classId, fromSessionId, toSes
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // Lock this class's students FIRST. Two applies of the same class (a double
+      // click, two admins) would otherwise both read them as still in the closing
+      // session and both move them, recording two runs. A locking read makes the
+      // second wait for the first to commit, and everything read after it is
+      // then current, so the second finds nobody left and is refused.
+      await tx.$queryRaw`SELECT id FROM students WHERE schoolId = ${schoolId} AND classId = ${classId} AND academicSessionId = ${fromSessionId} AND status = 'active' FOR UPDATE`;
+
       const { cls, students } = await loadClassContext(tx, { schoolId, classId, fromSessionId });
 
       const toSession = await tx.academicSession.findFirst({

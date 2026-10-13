@@ -185,6 +185,10 @@ model School {
   // down) once the real Gemini token usage is known — see AiCreditService.
   aiCreditsOverride     Int?
   aiCreditsUsedThisTerm Int  @default(0)
+  // Credits bought in packs and not yet spent. Added to the term's allowance and,
+  // unlike the allowance, carried over when the term resets (see
+  // util/aiCreditsCarryOver.js).
+  aiCreditsPurchased    Int  @default(0)
 
   // Current active billing plan (denormalized convenience alongside
   // SchoolSubscription, which holds the full billing-cycle history).
@@ -1057,6 +1061,21 @@ model SchoolSubscription {
   @@map("school_subscriptions")
 }
 
+/// A pack of AI credits a school can buy on top of its plan's allowance.
+/// Managed by Super Admin; schools see only the active ones.
+model AiCreditPack {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(100)
+  credits   Int
+  price     Float // NGN
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("ai_credit_packs")
+}
+
 model SchoolPayment {
   id             Int       @id @default(autoincrement())
   schoolId       Int
@@ -1066,6 +1085,13 @@ model SchoolPayment {
   flwChargeId    String?   @db.VarChar(100) // Flutterwave's charge id (chg_...), for reconciliation
   status         String    @default("pending") @db.VarChar(20) // pending, success, failed
   isFirstPayment Boolean   @default(false)
+  // subscription | credit_pack. A credit pack never touches the subscription,
+  // earns no commission and does not count towards isFirstPayment.
+  purpose        String    @default("subscription") @db.VarChar(20)
+  creditPackId   Int?
+  // The credits this payment delivers, snapshotted at purchase so a later edit to
+  // the pack cannot change what a paid purchase gives.
+  creditsGranted Int?
   paidAt         DateTime?
   createdAt      DateTime  @default(now())
 
