@@ -295,12 +295,20 @@ model Class {
   name        String
   customName  String?
   department  String?      @db.VarChar(100) // e.g. Sciences, Arts, Commercial, Social Sciences — optional, admin-set
+  // The class students move up to. Null means this is the final class: those
+  // students graduate. A plain id rather than a relation, because it only ever
+  // points at another class of the same school and campus (checked on save).
+  promotesToClassId Int?
+  // Score a student needs to pass at the end of the session. Null falls back to
+  // the default for the class's stage (40 for JSS, 50 for SS) — see util/classLadder.
+  passMark          Float?
   staffId     Int? // Optional, in case a class is created without a teacher assigned
   createdAt   DateTime     @default(now())
   school      School       @relation(fields: [schoolId], references: [id])
   campus      Campus?      @relation(fields: [campusId], references: [id])
   staff       Staff?       @relation(fields: [staffId], references: [id])
   classGroups ClassGroup[] // One-to-many relation with ClassGroup
+  enrollments StudentEnrollment[]
   students    Student[] // One-to-many relation with Student
 
   assignments TeacherAssignment[] // Teachers teaching in this class
@@ -390,7 +398,7 @@ model Student {
   classGroupId      Int? // ✅ optional since not all students must have a group
   parentId          Int? // linked once a parent account claims this child via /api/parent/link-child
 
-  // active | withdrawn. A withdrawn student keeps every record (results, fees,
+  // active | withdrawn | graduated. A withdrawn student keeps every record (results, fees,
   // payments) but drops out of class lists, score entry, attendance and login.
   // This is how a real student leaves; deleting is for mistakes and test rows.
   status          String    @default("active") @db.VarChar(16)
@@ -415,6 +423,7 @@ model Student {
   attendance  Attendance[]
   parentAlerts ParentAlert[]
   testAttempts StudentTestAttempt[]
+  enrollments  StudentEnrollment[]
 
   // ✅ NEW: Unique constraint for registration number per school
   @@unique([schoolId, registrationNumber])
@@ -808,6 +817,7 @@ model AcademicSession {
   resultSubmissions ResultSubmission[]
   terms             AcademicTerm[]
   examSchedules     ExamSchedule[]
+  enrollments       StudentEnrollment[]
 
   @@unique([schoolId, name])
   @@map("academic_sessions")
@@ -1726,6 +1736,34 @@ model AiGenerationJob {
   @@index([staffId])
   @@index([status])
   @@map("ai_generation_jobs")
+}
+
+/// Which class (and group and campus) a student was in during one session.
+///
+/// Student.classId is where they are NOW, and it moves when they are promoted.
+/// Anything that must describe the past (a report card, a result list for last
+/// session) reads this instead, so promoting a student never rewrites what class
+/// their old results belong to. One row per student per session, kept up to date
+/// by every path that creates a student or changes their class.
+model StudentEnrollment {
+  id                Int      @id @default(autoincrement())
+  schoolId          Int
+  studentId         Int
+  academicSessionId Int
+  classId           Int
+  classGroupId      Int?
+  campusId          Int?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  student         Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
+  class           Class           @relation(fields: [classId], references: [id])
+
+  @@unique([studentId, academicSessionId])
+  @@index([schoolId])
+  @@index([classId, academicSessionId])
+  @@map("student_enrollments")
 }
 
 // A teacher's conversation with the AI about how they want one lesson note to

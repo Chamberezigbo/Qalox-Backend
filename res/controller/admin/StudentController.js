@@ -10,6 +10,7 @@ const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
 const { createNotification } = require("../../util/notify");
 const { syncStudentFeeInvoices } = require("../../util/studentFeeSync");
 const { buildStudentUpdate } = require("../../util/studentUpdate");
+const { recordEnrollment, syncEnrollments } = require("../../util/studentEnrollment");
 const logger = require("../../config/logger");
 const {
   StudentDeletionBlocked,
@@ -30,7 +31,10 @@ exports.getStudentDetails = async (req, res, next) => {
 
     // Withdrawn students are hidden unless asked for: they are still on record,
     // but are not part of any class's day-to-day list.
-    const filter = { schoolId: req.schoolId, status: req.query.status === "withdrawn" ? "withdrawn" : "active" };
+    const filter = {
+      schoolId: req.schoolId,
+      status: ["withdrawn", "graduated"].includes(req.query.status) ? req.query.status : "active",
+    };
 
     if (campusId) filter.campusId = parseInt(campusId);
     // Matches either name field — a search for "Daniel" should surface a
@@ -294,6 +298,16 @@ exports.createStudent = async (req, res, next) => {
     // the structure was created.
     await syncStudentFeeInvoices(prisma, { id: createdStudent.id, schoolId, classId });
 
+    // Which class they are in this session, for results that must describe the past.
+    await recordEnrollment(prisma, {
+      id: createdStudent.id,
+      schoolId,
+      academicSessionId: resolvedAcademicSession.id,
+      classId,
+      classGroupId: groupData.classGroupId ?? null,
+      campusId,
+    });
+
     res.status(201).json({
       success: true,
       message: `Student created successfully${groupId ? " and added to group" : ""}`,
@@ -470,6 +484,14 @@ exports.bulkCreateStudents = async (req, res, next) => {
         // Same reasoning as the single-create path: this class may already
         // have a fee structure this student needs invoicing against.
         await syncStudentFeeInvoices(prisma, { id: created.id, schoolId, classId: classRecord.id });
+        await recordEnrollment(prisma, {
+          id: created.id,
+          schoolId,
+          academicSessionId: resolvedSession.id,
+          classId: classRecord.id,
+          classGroupId: groupId,
+          campusId,
+        });
 
         results.push({ row: rowNumber, success: true, student: created });
         successCount++;
@@ -589,6 +611,9 @@ exports.updateStudent = async (req, res, next) => {
     if (classChanged) {
       await syncStudentFeeInvoices(prisma, { id: studentExist.id, schoolId, classId: finalClassId });
     }
+
+    // Class, group, campus or session may all have changed in this edit.
+    await recordEnrollment(prisma, updatedStudent);
 
     res.status(200).json({
       success: true,
@@ -770,6 +795,9 @@ exports.changeStudentClass = async (req, res, next) => {
     for (const studentId of moving) {
       await syncStudentFeeInvoices(prisma, { id: studentId, schoolId, classId: classExist.id });
     }
+
+    // Everyone named, not only those who changed class: a group or campus may have changed too.
+    await syncEnrollments(prisma, ids, schoolId);
 
     const updatedStudents = await prisma.student.findMany({
       where: { id: { in: ids }, schoolId },

@@ -1,5 +1,7 @@
 import prisma from "../../util/prisma";
 import { AppError } from "../../util/AppError";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { getEnrolledClassId } = require("../../util/enrolledClass");
 
 export class StudentResultService {
 
@@ -42,6 +44,10 @@ export class StudentResultService {
             }
         }
 
+        // The class they were in THAT session, not the one they are in now: after a
+        // promotion the old session's results belong to the old class.
+        const classId = await getEnrolledClassId(prisma, studentId, sessionId, student.classId);
+
         // One term at a time. With none named this used to merge every term in the
         // session — fine with a single term, but from Second Term each subject
         // would appear twice with both terms' scores added together. Default to
@@ -49,7 +55,7 @@ export class StudentResultService {
         let termId = requestedTermId;
         if (!termId) {
             const latest = await prisma.publishedResult.findFirst({
-                where: { classId: student.classId, academicSessionId: sessionId, termId: { not: null } },
+                where: { classId: classId, academicSessionId: sessionId, termId: { not: null } },
                 orderBy: { publishedAt: "desc" },
                 select: { termId: true }
             });
@@ -59,7 +65,7 @@ export class StudentResultService {
         // Get published results for this student's class and session
         const publishedResults = await prisma.publishedResult.findMany({
             where: {
-                classId: student.classId,
+                classId: classId,
                 academicSessionId: sessionId,
                 ...(termId ? { termId } : {})
             },
@@ -70,7 +76,7 @@ export class StudentResultService {
 
         // Get all subjects for the student's class
         const classSubjects = await prisma.classSubject.findMany({
-            where: { classId: student.classId },
+            where: { classId: classId },
             select: { subject: { select: { id: true, name: true, code: true } } }
         });
 
@@ -83,7 +89,7 @@ export class StudentResultService {
 
                     // Get all CA scores for this subject
                     const cas = await prisma.continuousAssessment.findMany({
-                        where: { classId: student.classId, subjectId },
+                        where: { classId: classId, subjectId },
                         select: {
                             id: true,
                             name: true,
@@ -98,7 +104,7 @@ export class StudentResultService {
 
                     // Get exam score
                     const exams = await prisma.exam.findMany({
-                        where: { classId: student.classId, subjectId },
+                        where: { classId: classId, subjectId },
                         select: {
                             id: true,
                             name: true,
@@ -118,7 +124,7 @@ export class StudentResultService {
 
                     // Get grade
                     const gradingScheme = await prisma.gradingScheme.findFirst({
-                        where: { classes: { some: { classId: student.classId } } },
+                        where: { classes: { some: { classId: classId } } },
                         select: { grades: { orderBy: { minScore: "desc" } } }
                     });
 
@@ -126,7 +132,7 @@ export class StudentResultService {
 
                     // Calculate class average and position for this subject
                     const allStudentsInClass = await prisma.student.findMany({
-                        where: { classId: student.classId },
+                        where: { classId: classId },
                         select: { id: true }
                     });
 
@@ -137,7 +143,7 @@ export class StudentResultService {
                         const studentTotals = await Promise.all(
                             allStudentsInClass.map(async (s) => {
                                 const sCAs = await prisma.continuousAssessment.findMany({
-                                    where: { classId: student.classId, subjectId },
+                                    where: { classId: classId, subjectId },
                                     select: {
                                         caResults: {
                                             where: { studentId: s.id, academicSessionId: sessionId, ...(termId ? { termId } : {}) },
@@ -147,7 +153,7 @@ export class StudentResultService {
                                 });
 
                                 const sExams = await prisma.exam.findMany({
-                                    where: { classId: student.classId, subjectId },
+                                    where: { classId: classId, subjectId },
                                     select: {
                                         examResults: {
                                             where: { studentId: s.id, academicSessionId: sessionId, ...(termId ? { termId } : {}) },

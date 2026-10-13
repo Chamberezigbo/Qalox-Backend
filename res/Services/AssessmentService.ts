@@ -1,5 +1,6 @@
 import prisma from "../util/prisma";
 const { schoolMediaUrl } = require("../controller/public/publicController");
+const { getEnrolledClassId } = require("../util/enrolledClass");
 
 export class AssessmentService {
 
@@ -1522,6 +1523,21 @@ export class AssessmentService {
         });
 
         if (!student) throw new Error("Student not found");
+
+        // The class they were in during THIS session. After a promotion the
+        // student's own classId is the new class, and a report for last session
+        // must still show, and be built from, the class it was earned in.
+        const enrolledClassId = await getEnrolledClassId(prisma, studentId, sessionId, student.classId);
+        if (enrolledClassId !== student.classId) {
+            const enrolledClass = await prisma.class.findFirst({
+                where: { id: enrolledClassId, schoolId },
+                select: { id: true, name: true, customName: true, campus: { select: { name: true } } }
+            });
+            if (enrolledClass) {
+                student.classId = enrolledClassId;
+                student.class = enrolledClass;
+            }
+        }
 
         const school = await prisma.school.findUnique({
             where: { id: schoolId },

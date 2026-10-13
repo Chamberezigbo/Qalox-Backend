@@ -4,6 +4,7 @@ const { getActivePlanForSchool } = require("../util/getActivePlanForSchool");
 const { syncStudentFeeInvoices } = require("../util/studentFeeSync");
 const { normalizeDuty } = require("../util/staffDuty");
 const { firstPhone } = require("./DataMappingService");
+const { recordEnrollment } = require("../util/studentEnrollment");
 
 /**
  * Commits reviewed bulk-import rows into real Student / Staff records.
@@ -255,6 +256,14 @@ class BulkImportImporter {
         // Same gap as the other student-creation paths: this class may
         // already have a fee structure set up before this student existed.
         await syncStudentFeeInvoices(prisma, { id: created.id, schoolId, classId: classRecord.id });
+        await recordEnrollment(prisma, {
+          id: created.id,
+          schoolId,
+          academicSessionId: session.id,
+          classId: classRecord.id,
+          classGroupId,
+          campusId,
+        });
 
         results.push({ recordId: record.id, rowNumber: record.rowNumber, ok: true, data });
       } catch (error) {

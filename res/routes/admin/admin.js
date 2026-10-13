@@ -18,6 +18,7 @@ const {
 } = require("../../controller/admin/admin");
 
 const { updateSchoolBranding } = require("../../controller/school/schoolController");
+const classLadderController = require("../../controller/admin/ClassLadderController");
 
 const {
   getStudentDetails, createStudent,
@@ -213,6 +214,8 @@ router.put("/student/:id",
   updateStudent
 );
 router.get("/student/:id/delete-preview", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, previewStudentDeletion);
+router.get("/class-ladder", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classLadderController.getClassLadder);
+router.put("/class-ladder", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classLadderController.saveClassLadder);
 router.patch("/student/:id/withdraw", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, withdrawStudent);
 router.patch("/student/:id/restore", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, restoreStudent);
 router.delete("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, deleteStudent);
@@ -290,7 +293,7 @@ router.get("/analytics/campuses", auth.authenticateSchoolLevelAdmin, auth.requir
 // Class routes — sub-admins need PERMISSIONS.CLASSES_MANAGE; head admins always pass
 router.post("/classes/create", validate(classSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, createClass);
 router.get("/classes", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, getAllClasses);
-router.delete("/classes/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), deleteClass);
+router.delete("/classes/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, deleteClass);
 router.post("/class-groups/create", validate(classGroupSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, createClassGroup);
 router.get("/class-groups", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.CLASSES_MANAGE, PERMISSIONS.STUDENTS_MANAGE]), auth.attachSchoolId, getClassGroups);
 router.patch("/class/update/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClass);

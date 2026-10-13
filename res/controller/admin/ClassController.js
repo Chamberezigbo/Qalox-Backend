@@ -85,8 +85,9 @@ exports.deleteClass = async (req, res, next) => {
          const { classId } = req.params;
      
          // Ensure class exists
-         const existingClass = await prisma.class.findUnique({
-           where: { id: Number(classId) },
+         // Within the admin's own school: another school's class reads as not found.
+         const existingClass = await prisma.class.findFirst({
+           where: { id: Number(classId), schoolId: req.schoolId },
            include: { students: true, assignments: true },
          });
      
@@ -101,6 +102,25 @@ exports.deleteClass = async (req, res, next) => {
            });
          }
      
+         // A class that past sessions' students were in keeps its history; deleting
+         // it would orphan their records. Students who have moved up still count.
+         const pastEnrollments = await prisma.studentEnrollment.count({
+           where: { classId: Number(classId) },
+         });
+         if (pastEnrollments > 0) {
+           return res.status(400).json({
+             success: false,
+             message:
+               "Cannot delete a class that has had students in it. Its history is kept for their past results.",
+           });
+         }
+
+         // No class should be left pointing at a class that no longer exists.
+         await prisma.class.updateMany({
+           where: { schoolId: req.schoolId, promotesToClassId: Number(classId) },
+           data: { promotesToClassId: null },
+         });
+
          // Remove teacher assignments first
          await prisma.teacherAssignment.deleteMany({
            where: { classId: Number(classId) },
