@@ -117,12 +117,25 @@ exports.createStudent = async (req, res, next) => {
     const normalizedEmail = email?.trim() || null;
 
     // Convert string IDs to integers (HTTP always sends strings)
-    const campusId = rawCampusId ? parseInt(rawCampusId) : null;
+    let campusId = rawCampusId ? parseInt(rawCampusId) : null;
     const classId = rawClassId ? parseInt(rawClassId) : null;
 
     if (!classId) {
       return res.status(400).json({ message: "Class ID is required" });
     }
+
+    // A class belongs to one campus, so a student registered without naming a
+    // campus takes the class's — the same rule the importer and the edit form use.
+    // Without it these students had no campus at all and crashed the student view.
+    // Looked up within this school, so another school's class reads as not found.
+    const classExist = await prisma.class.findFirst({
+      where: { id: classId, schoolId },
+      include: { classGroups: true },
+    });
+    if (!classExist) {
+      return res.status(404).json({ message: "Class not found" });
+    }
+    if (!campusId && classExist.campusId) campusId = classExist.campusId;
 
     // Get the school prefix
     const school = await prisma.school.findUnique({
@@ -159,14 +172,7 @@ exports.createStudent = async (req, res, next) => {
     }
 
 
-    // 1️⃣ Validate class existence
-    const classExist = await prisma.class.findUnique({
-      where: { id: classId },
-      include: { classGroups: true },
-    });
-    if (!classExist) {
-      return res.status(404).json({ message: "Class not found" });
-    }
+    // 1️⃣ The class was validated above, within this school.
 
     // 2️⃣ Validate group if provided
     let groupData = {};

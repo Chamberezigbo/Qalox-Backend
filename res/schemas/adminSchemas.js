@@ -46,9 +46,10 @@ exports.studentSchema = Joi.object({
 
   // Associations
   // schoolId: Joi.number().integer().required(),
-  campusId: Joi.number().integer().optional(),
+  // The form sends "" for a campus or group that was not chosen; both are optional.
+  campusId: Joi.number().integer().allow("", null).optional(),
   classId: Joi.number().integer().required(),
-  groupId: Joi.number().integer().optional(),
+  groupId: Joi.number().integer().allow("", null).optional(),
 
   // Optional contact info
   email: Joi.string().email().max(255).allow("").optional(),
