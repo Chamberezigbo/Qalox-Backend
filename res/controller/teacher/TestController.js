@@ -5,6 +5,8 @@ const AiCreditService = require("../../Services/AiCreditService");
 const AiGenerationWorker = require("../../Services/AiGenerationWorker");
 const GeminiTextService = require("../../Services/GeminiTextService");
 const { validateQuestionInput, publishProblems, MAX_QUESTIONS } = require("../../util/testQuestions");
+const { buildRows, summarize, questionStats } = require("../../util/testResults");
+const { settleExpiredForTest } = require("../../Services/student/StudentTestService");
 
 /**
  * Multiple-choice tests for a teacher's own classes.
@@ -418,6 +420,65 @@ exports.publish = handle(async (req, res) => {
   if (count === 0) throw new TestError(409, "This test was just published.", "TEST_NOT_DRAFT");
 
   return ok(res, { id: test.id, status: "published" }, 200, "Test published");
+});
+
+/**
+ * GET /api/teacher/tests/:id/results
+ * How the class did: a row per student, class figures and which questions were
+ * missed most. Only for the teacher who set the test.
+ */
+exports.results = handle(async (req, res) => {
+  const test = await loadTest(req, {
+    questions: { orderBy: { order: "asc" }, select: { id: true, text: true, order: true } },
+  });
+  if (test.status === "draft") {
+    throw new TestError(409, "Nobody can take a draft, so there are no results yet.", "TEST_NOT_PUBLISHED");
+  }
+
+  // Finish attempts that ran out of time unseen, so every score is final.
+  await settleExpiredForTest(test.id, req.schoolId);
+
+  const attempts = await prisma.studentTestAttempt.findMany({
+    where: { testId: test.id },
+    select: { id: true, studentId: true, attemptNumber: true, status: true, score: true, totalPossible: true, submittedAt: true },
+  });
+  const numeric = attempts.map((a) => ({
+    ...a,
+    score: a.score === null ? null : Number(a.score),
+    totalPossible: a.totalPossible === null ? null : Number(a.totalPossible),
+  }));
+
+  // The class as it is now, plus anyone outside it who has an attempt on record.
+  const inClass = await prisma.student.findMany({
+    where: { schoolId: req.schoolId, classId: test.classId, status: "active" },
+    select: { id: true, name: true, surname: true, registrationNumber: true },
+    orderBy: [{ surname: "asc" }, { name: "asc" }],
+  });
+  const known = new Set(inClass.map((s) => s.id));
+  const extraIds = [...new Set(numeric.map((a) => a.studentId))].filter((id) => !known.has(id));
+  const others = extraIds.length
+    ? await prisma.student.findMany({
+        where: { id: { in: extraIds }, schoolId: req.schoolId },
+        select: { id: true, name: true, surname: true, registrationNumber: true },
+      })
+    : [];
+
+  const rows = buildRows([...inClass, ...others], numeric);
+
+  const bestIds = rows.map((r) => r.bestAttemptId).filter((id) => id !== null);
+  const answers = bestIds.length
+    ? await prisma.studentAnswer.findMany({
+        where: { attemptId: { in: bestIds } },
+        select: { questionId: true, isCorrect: true, selectedOptionId: true },
+      })
+    : [];
+
+  return ok(res, {
+    test: { id: test.id, title: test.title, status: test.status, questionCount: test.questions.length },
+    summary: summarize(rows),
+    students: rows,
+    questions: questionStats(test.questions, answers, bestIds.length),
+  });
 });
 
 /** POST /api/teacher/tests/:id/close — students can no longer start or continue it. */

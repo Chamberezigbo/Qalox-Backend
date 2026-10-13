@@ -71,7 +71,7 @@ async function seed() {
     return prisma.test.findUnique({ where: { id: test.id }, include: { questions: { include: { options: true } } } });
   };
 
-  return { schoolId, cls, ada, bola, outsider, mkTest };
+  return { schoolId, cls, ada, bola, outsider, mkTest, staff };
 }
 
 const correctOf = (test, questionId) => test.questions.find((q) => q.id === questionId).options.find((o) => o.isCorrect).id;
@@ -208,6 +208,52 @@ async function main() {
   assert.strictEqual(a.attemptId, b.attemptId);
   assert.strictEqual(await prisma.studentTestAttempt.count({ where: { testId: t4.id, studentId: w.ada.id } }), 1);
   log("a double tap makes one attempt, not two");
+
+  console.log("Teacher results");
+  const { settleExpiredForTest } = S;
+  // Bola walked away from a timed test; her attempt must be finished and counted.
+  const t5 = await w.mkTest({ title: "Walked away", durationMinutes: 10 });
+  const s5 = await S.startAttempt(w.bola.id, schoolId, t5.id);
+  const q5 = s5.questions.map((q) => q.id);
+  await S.saveAnswer(w.bola.id, schoolId, s5.attemptId, { questionId: q5[0], optionId: correctOf(t5, q5[0]) });
+  await prisma.studentTestAttempt.update({ where: { id: s5.attemptId }, data: { deadlineAt: new Date(Date.now() - 60 * 1000) } });
+  assert.strictEqual(await settleExpiredForTest(t5.id, schoolId), 1);
+  const settled = await prisma.studentTestAttempt.findUnique({ where: { id: s5.attemptId } });
+  assert.strictEqual(settled.status, "auto_submitted");
+  assert.strictEqual(Number(settled.score), 1);
+  assert.strictEqual(await settleExpiredForTest(t5.id, schoolId), 0);
+  log("an attempt left running past its deadline is finished and scored when the teacher looks, once");
+
+  const controller = require("../res/controller/teacher/TestController");
+  const callResults = async (testId, staffId = w.staff.id) => {
+    const res = { code: 200, body: null, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+    await controller.results({ staffId, schoolId, params: { id: String(testId) } }, res, (e) => { throw e; });
+    return res;
+  };
+
+  const r1 = await callResults(test.id);
+  assert.strictEqual(r1.code, 200);
+  const rows = Object.fromEntries(r1.body.data.students.map((x) => [x.name.split(" ")[1], x]));
+  assert.strictEqual(rows.Ada.status, "submitted");
+  assert.strictEqual(rows.Ada.score, 2);
+  assert.strictEqual(rows.Ada.percentage, 66.7);
+  assert.strictEqual(rows.Bola.status, "not_started");
+  assert.strictEqual(r1.body.data.students.some((x) => x.name.includes("Out")), false, "another class is not listed");
+  assert.deepStrictEqual(
+    { c: r1.body.data.summary.classSize, s: r1.body.data.summary.submitted, n: r1.body.data.summary.notStarted, a: r1.body.data.summary.average },
+    { c: 2, s: 1, n: 1, a: 66.7 }
+  );
+  const byNumber = r1.body.data.questions;
+  assert.strictEqual(byNumber.length, 3);
+  assert.strictEqual(byNumber.find((q) => q.questionId === ids[2]).correctPercent, 0);
+  assert.strictEqual(byNumber.find((q) => q.questionId === ids[0]).correctPercent, 100);
+  log("the teacher sees each student's score, who has not started, class figures and per-question results");
+
+  const notOwner = await callResults(test.id, w.staff.id + 999);
+  assert.strictEqual(notOwner.code, 404);
+  const draft2 = await callResults(draft.id);
+  assert.strictEqual(draft2.code, 409);
+  log("another teacher cannot read the results, and a draft has none");
 
   console.log("\nAll checks passed.");
 }

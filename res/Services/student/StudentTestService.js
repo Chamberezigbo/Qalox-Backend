@@ -352,8 +352,39 @@ async function submitAttempt(studentId, schoolId, attemptId) {
   return resultPayload(finished);
 }
 
+/**
+ * Marks every attempt of a test whose time is up and that nobody has touched
+ * since (a student who closed the tab). Called before a teacher reads results,
+ * so a score is never missing just because the student has not come back.
+ *
+ * @returns {Promise<number>} how many attempts were finished
+ */
+async function settleExpiredForTest(testId, schoolId) {
+  const stale = await prisma.studentTestAttempt.findMany({
+    where: {
+      testId,
+      status: "in_progress",
+      test: { schoolId },
+      OR: [{ deadlineAt: { lt: new Date() } }, { test: { status: "closed" } }],
+    },
+    select: { id: true, studentId: true },
+  });
+
+  for (const { id, studentId } of stale) {
+    try {
+      await finalizeAttempt(await loadAttempt(studentId, schoolId, id), "auto_submitted");
+    } catch (error) {
+      // One bad attempt must not hide every other student's result.
+      logger.warn("[CBT] Could not finish an expired attempt", { attemptId: id, error: error.message });
+    }
+  }
+
+  return stale.length;
+}
+
 module.exports = {
   StudentTestError,
+  settleExpiredForTest,
   listForStudent,
   startAttempt,
   getAttempt,
