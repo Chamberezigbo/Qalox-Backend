@@ -146,6 +146,22 @@ async function callGemini(body) {
   const json = await response.json().catch(() => null);
   if (!response.ok || !json) {
     logger.warn("[GEMINI_TEXT] Non-OK response", { status: response.status, raw: json });
+
+    // Google's own wording for a quota or overload is long, mentions billing
+    // dashboards and API keys, and is no use to a teacher. What they can act on
+    // is "try again shortly". The real reason stays in the log above.
+    const apiStatus = json?.error?.status;
+    if (response.status === 429 || apiStatus === "RESOURCE_EXHAUSTED") {
+      const error = new Error("The AI service has reached its usage limit for now. Please try again in a few minutes.");
+      error.code = "AI_RATE_LIMITED";
+      throw error;
+    }
+    if (response.status === 503 || apiStatus === "UNAVAILABLE") {
+      const error = new Error("The AI service is busy right now. Please try again in a moment.");
+      error.code = "AI_BUSY";
+      throw error;
+    }
+
     throw new Error(json?.error?.message || `Gemini request failed with status ${response.status}`);
   }
 

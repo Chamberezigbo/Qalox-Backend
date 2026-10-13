@@ -112,3 +112,29 @@ describe("refineNote", () => {
     expect(out.parsed.content).toBe("revised");
   });
 });
+
+describe("quota and overload errors", () => {
+  const failing = (status: number, error: object) => ({ ok: false, status, json: async () => ({ error }) });
+  const input = { schemeText: "Week 1", className: "SS2", subjectName: "Biology", topic: "x", count: 5 };
+
+  it("turns a quota error into something a teacher can act on, not Google's billing text", async () => {
+    (global as any).fetch.mockResolvedValue(
+      failing(429, { status: "RESOURCE_EXHAUSTED", message: "You exceeded your current quota, please check your plan and billing details..." })
+    );
+    const error = await gemini.generateExamQuestions(input).catch((e: any) => e);
+    expect(error.message).toBe("The AI service has reached its usage limit for now. Please try again in a few minutes.");
+    expect(error.code).toBe("AI_RATE_LIMITED");
+    expect(error.message).not.toContain("billing");
+  });
+
+  it("says the service is busy when the model is overloaded", async () => {
+    (global as any).fetch.mockResolvedValue(failing(503, { status: "UNAVAILABLE", message: "The model is overloaded." }));
+    const error = await gemini.generateExamQuestions(input).catch((e: any) => e);
+    expect(error.code).toBe("AI_BUSY");
+  });
+
+  it("still reports other failures as they are", async () => {
+    (global as any).fetch.mockResolvedValue(failing(400, { status: "INVALID_ARGUMENT", message: "Bad request" }));
+    await expect(gemini.generateExamQuestions(input)).rejects.toThrow("Bad request");
+  });
+});
