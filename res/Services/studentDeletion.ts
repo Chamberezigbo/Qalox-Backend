@@ -61,12 +61,12 @@ export async function planStudentDeletion(client: any, studentId: number, school
   const name = `${student.name} ${student.surname}`.trim();
   if (published > 0) {
     blockers.push(
-      `${name} has published results (${published} subject record${published === 1 ? "" : "s"}). Those are the school's official record and are not deleted with a student.`
+      `${name} has published results (${published} subject record${published === 1 ? "" : "s"}). Those are the school's official record and are not deleted with a student. Withdraw the student instead: their records are kept and they leave class lists.`
     );
   }
   if (payments > 0) {
     blockers.push(
-      `${name} has ${payments} recorded fee payment${payments === 1 ? "" : "s"}. Payments have receipts issued against them and are not deleted with a student.`
+      `${name} has ${payments} recorded fee payment${payments === 1 ? "" : "s"}. Payments have receipts issued against them and are not deleted with a student. Withdraw the student instead: their records are kept and they leave class lists.`
     );
   }
 

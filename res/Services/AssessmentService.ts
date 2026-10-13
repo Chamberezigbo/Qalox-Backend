@@ -420,7 +420,7 @@ export class AssessmentService {
 
         // 1. Get students in this class for this session
         const students = await prisma.student.findMany({
-            where: { classId, schoolId, academicSessionId, ...(classGroupId ? { classGroupId } : {}) },
+            where: { classId, schoolId, academicSessionId, status: "active", ...(classGroupId ? { classGroupId } : {}) },
             select: {
                 id: true,
                 surname: true,

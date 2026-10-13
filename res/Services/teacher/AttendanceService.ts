@@ -38,7 +38,7 @@ export class AttendanceService {
         // (and group, when one was selected — a teacher assigned to a class
         // shouldn't be able to mark students outside the group they picked).
         const validStudents = await prisma.student.findMany({
-            where: { schoolId, classId, ...(groupId != null ? { classGroupId: groupId } : {}), id: { in: records.map(r => r.studentId) } },
+            where: { schoolId, classId, status: "active", ...(groupId != null ? { classGroupId: groupId } : {}), id: { in: records.map(r => r.studentId) } },
             select: { id: true, parentId: true, name: true, surname: true, guardianNumber: true },
         });
         const validById = new Map(validStudents.map(s => [s.id, s]));
@@ -147,7 +147,7 @@ export class AttendanceService {
 
         const [students, records] = await Promise.all([
             prisma.student.findMany({
-                where: { schoolId, classId, ...(groupId != null ? { classGroupId: groupId } : {}) },
+                where: { schoolId, classId, status: "active", ...(groupId != null ? { classGroupId: groupId } : {}) },
                 select: { id: true, name: true, surname: true, otherNames: true, registrationNumber: true, gender: true },
                 orderBy: { surname: "asc" },
             }),
@@ -178,7 +178,7 @@ export class AttendanceService {
 
         const [students, records] = await Promise.all([
             prisma.student.findMany({
-                where: { schoolId, classId, ...(groupId != null ? { classGroupId: groupId } : {}) },
+                where: { schoolId, classId, status: "active", ...(groupId != null ? { classGroupId: groupId } : {}) },
                 select: { id: true, name: true, surname: true, otherNames: true, registrationNumber: true },
                 orderBy: { surname: "asc" },
             }),

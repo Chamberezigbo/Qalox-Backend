@@ -121,7 +121,7 @@ exports.upsertFeeStructure = async (req, res, next) => {
       }
 
       // Generate/refresh StudentFee invoices for all students currently in this class
-      const students = await tx.student.findMany({ where: { classId: classRecord.id, schoolId } });
+      const students = await tx.student.findMany({ where: { classId: classRecord.id, schoolId, status: "active" } });
       for (const student of students) {
         const existingFee = await tx.studentFee.findUnique({
           where: { studentId_feeStructureId: { studentId: student.id, feeStructureId: structure.id } },

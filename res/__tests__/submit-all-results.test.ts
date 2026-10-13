@@ -285,7 +285,8 @@ describe("submitAllResults", () => {
 
       expect(outcomes(result).Mathematics).toBe("submitted");
       expect(db.student.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { classId: 9, classGroupId: { not: null } } })
+        // Withdrawn students are left out as well: they have no new scores to wait for.
+        expect.objectContaining({ where: { classId: 9, classGroupId: { not: null }, status: "active" } })
       );
     });
 

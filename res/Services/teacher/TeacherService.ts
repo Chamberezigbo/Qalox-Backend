@@ -72,7 +72,8 @@ export class TeacherService {
             where: {
                 schoolId,
                 classId: classId || { in: assignedClassIds },
-                academicSessionId: session.id
+                academicSessionId: session.id,
+                status: "active"
             },
             select: {
                 id: true,
@@ -437,7 +438,7 @@ export class TeacherService {
 
         // Get students in this class
         const students = await prisma.student.findMany({
-            where: { classId, schoolId, academicSessionId },
+            where: { classId, schoolId, academicSessionId, status: "active" },
             select: {
                 id: true,
                 surname: true,
@@ -744,7 +745,7 @@ export class TeacherService {
         if (groups.length === 0) return [];
 
         const students = await prisma.student.findMany({
-            where: { classId, classGroupId: { not: null } },
+            where: { classId, classGroupId: { not: null }, status: "active" },
             select: { id: true, classGroupId: true }
         });
 
@@ -1272,6 +1273,7 @@ export class TeacherService {
                 schoolId,
                 classId: { in: resolvedClassIds },
                 academicSessionId: sessionId,
+                status: "active",
                 ...(classGroupId && { classGroupId })
             },
             select: {
@@ -1457,6 +1459,7 @@ export class TeacherService {
                 schoolId,
                 classId: { in: resolvedClassIds },
                 academicSessionId: sessionId,
+                status: "active",
                 ...(classGroupId && { classGroupId })
             },
             select: {

@@ -16,8 +16,9 @@ export class StudentAuthService {
             }
         });
 
-        // If no match, reject — don't reveal whether it exists or not
-        if (!student) {
+        // If no match, reject — don't reveal whether it exists or not. A withdrawn
+        // student is answered exactly like an unknown number.
+        if (!student || student.status !== "active") {
             throw new AppError("Invalid registration number");
         }
 

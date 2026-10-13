@@ -28,7 +28,9 @@ exports.getStudentDetails = async (req, res, next) => {
       return res.status(400).json({ message: "School ID is required" });
     }
 
-    const filter = { schoolId: req.schoolId };
+    // Withdrawn students are hidden unless asked for: they are still on record,
+    // but are not part of any class's day-to-day list.
+    const filter = { schoolId: req.schoolId, status: req.query.status === "withdrawn" ? "withdrawn" : "active" };
 
     if (campusId) filter.campusId = parseInt(campusId);
     // Matches either name field — a search for "Daniel" should surface a
@@ -846,3 +848,51 @@ exports.deleteStudent = async (req, res, next) => {
     next(error);
   }
 };
+
+
+/**
+ * PATCH /api/admin/student/:id/withdraw   Body: { reason? }
+ * PATCH /api/admin/student/:id/restore
+ *
+ * A student who leaves the school is withdrawn, not deleted: results, fees and
+ * payments stay on record, and the student drops out of class lists, score
+ * entry, attendance and login. Restoring reverses it.
+ */
+const setStudentStatus = (status) => async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, message: "Invalid student ID" });
+
+    const reason = status === "withdrawn" && typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 255) || null : null;
+
+    // Within the admin's school; already in the requested state is a no-op, not an error.
+    const { count } = await prisma.student.updateMany({
+      where: { id, schoolId: req.schoolId, status: status === "withdrawn" ? "active" : "withdrawn" },
+      data: { status, withdrawnAt: status === "withdrawn" ? new Date() : null, withdrawnReason: reason },
+    });
+
+    if (count === 0) {
+      const exists = await prisma.student.findFirst({ where: { id, schoolId: req.schoolId }, select: { status: true } });
+      if (!exists) return res.status(404).json({ success: false, message: "Student not found" });
+    }
+
+    logger.info(`[STUDENT_${status === "withdrawn" ? "WITHDRAW" : "RESTORE"}]`, {
+      studentId: id,
+      schoolId: req.schoolId,
+      reason,
+      actorId: req.user?.id ?? null,
+      changed: count,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: status === "withdrawn" ? "Student withdrawn" : "Student restored",
+      data: { studentId: id, status },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.withdrawStudent = setStudentStatus("withdrawn");
+exports.restoreStudent = setStudentStatus("active");

@@ -390,6 +390,13 @@ model Student {
   classGroupId      Int? // ✅ optional since not all students must have a group
   parentId          Int? // linked once a parent account claims this child via /api/parent/link-child
 
+  // active | withdrawn. A withdrawn student keeps every record (results, fees,
+  // payments) but drops out of class lists, score entry, attendance and login.
+  // This is how a real student leaves; deleting is for mistakes and test rows.
+  status          String    @default("active") @db.VarChar(16)
+  withdrawnAt     DateTime?
+  withdrawnReason String?   @db.VarChar(255)
+
   academicSession    AcademicSession @relation(fields: [academicSessionId], references: [id])
   classGroup         ClassGroup?     @relation(fields: [classGroupId], references: [id])
   // ✅ NEW: Registration Number Field
