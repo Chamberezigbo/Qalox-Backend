@@ -135,3 +135,43 @@ describe("a school's own payments", () => {
 });
 
 export {};
+
+describe("granting credits to a school", () => {
+  const grantMocks = () => {
+    mockPrisma.school.findUnique.mockResolvedValue({ id: 9, name: "Mercy" });
+    mockPrisma.school.update = jest.fn().mockResolvedValue({ aiCreditsPurchased: 150 });
+    mockPrisma.schoolPayment.create.mockResolvedValue({});
+    mockPrisma.$transaction = jest.fn(async (ops: any[]) => Promise.all(ops));
+    mockPrisma.admin = { findMany: jest.fn().mockResolvedValue([]) };
+  };
+
+  it("adds the credits to the bought balance and records the grant, together", async () => {
+    grantMocks();
+    const { status, body } = await call(superBilling.grantSchoolCredits, {
+      params: { schoolId: "9" }, body: { credits: 100, reason: "Pilot school" },
+    });
+
+    expect(status).toBe(201);
+    expect(body.data).toMatchObject({ schoolId: 9, granted: 100, purchasedBalance: 150 });
+    expect(mockPrisma.school.update.mock.calls[0][0].data).toEqual({ aiCreditsPurchased: { increment: 100 } });
+    expect(mockPrisma.schoolPayment.create.mock.calls[0][0].data).toMatchObject({
+      schoolId: 9, amount: 0, status: "success", purpose: "credit_grant", creditsGranted: 100,
+    });
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([[0], [-5], [1.5], [100001], ["abc"]])("refuses %j credits", async (credits) => {
+    grantMocks();
+    const { status } = await call(superBilling.grantSchoolCredits, { params: { schoolId: "9" }, body: { credits } });
+    expect(status).toBe(400);
+    expect(mockPrisma.school.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses a school that does not exist", async () => {
+    grantMocks();
+    mockPrisma.school.findUnique.mockResolvedValue(null);
+    const { status } = await call(superBilling.grantSchoolCredits, { params: { schoolId: "9" }, body: { credits: 10 } });
+    expect(status).toBe(404);
+    expect(mockPrisma.school.update).not.toHaveBeenCalled();
+  });
+});

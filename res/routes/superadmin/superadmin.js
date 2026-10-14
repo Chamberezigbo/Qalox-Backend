@@ -35,6 +35,8 @@ const {
   getCreditPacks,
   createCreditPack,
   updateCreditPack,
+  getSchoolCredits,
+  grantSchoolCredits,
 } = require("../../controller/superadmin/BillingController");
 const {
   createCoupon,
@@ -197,6 +199,8 @@ router.post("/billing/schools/:schoolId/start-trial", authenticateSuperAdminJWT,
 router.get("/billing/credit-packs", authenticateSuperAdminJWT, getCreditPacks);
 router.post("/billing/credit-packs", authenticateSuperAdminJWT, createCreditPack);
 router.patch("/billing/credit-packs/:id", authenticateSuperAdminJWT, updateCreditPack);
+router.get("/billing/schools/:schoolId/credits", authenticateSuperAdminJWT, getSchoolCredits);
+router.post("/billing/schools/:schoolId/grant-credits", authenticateSuperAdminJWT, grantSchoolCredits);
 router.post("/billing/coupons", authenticateSuperAdminJWT, createCoupon);
 router.get("/billing/coupons", authenticateSuperAdminJWT, getCoupons);
 router.patch("/billing/coupons/:id/deactivate", authenticateSuperAdminJWT, deactivateCoupon);

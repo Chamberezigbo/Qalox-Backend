@@ -1,7 +1,10 @@
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const { parsePlanFeatures } = require("../../util/planFeatures");
+const crypto = require("crypto");
 const billingService = require("../../Services/BillingService");
+const { createNotification } = require("../../util/notify");
+const { getAiCreditsStatusForSchool } = require("../../util/getAiCreditsAllowanceForSchool");
 
 /**
  * POST /api/billing/initialize-payment
@@ -383,6 +386,112 @@ exports.updateCreditPack = async (req, res, next) => {
     const pack = await prisma.aiCreditPack.update({ where: { id }, data: fields });
     logger.info("[BILLING] Credit pack updated", { packId: id, adminId: req.admin?.id });
     res.json({ success: true, data: pack });
+  } catch (err) {
+    next(err);
+  }
+};
+
+
+// ---------------------------------------------------------------------------
+// Granting AI credits to a school (goodwill, a pilot, or putting right a fault)
+// ---------------------------------------------------------------------------
+
+const MAX_GRANT = 100_000;
+
+/** GET /api/billing/schools/:schoolId/credits — a school's credit position. */
+exports.getSchoolCredits = async (req, res, next) => {
+  try {
+    const schoolId = Number(req.params.schoolId);
+    if (!Number.isInteger(schoolId)) return res.status(400).json({ success: false, message: "Invalid school id" });
+
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true } });
+    if (!school) return res.status(404).json({ success: false, message: "School not found" });
+
+    const credits = await getAiCreditsStatusForSchool(schoolId);
+    res.json({ success: true, data: { school, credits } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/billing/schools/:schoolId/grant-credits
+ * Body: { credits, reason? }
+ *
+ * Adds free credits to the school's bought balance, so they carry over between
+ * terms exactly like purchased ones. A zero-amount SchoolPayment with purpose
+ * "credit_grant" is the durable record of it (revenue figures only count
+ * subscription and credit_pack payments, so it never appears as income). The
+ * reason goes in the log, with who granted it.
+ */
+exports.grantSchoolCredits = async (req, res, next) => {
+  try {
+    const schoolId = Number(req.params.schoolId);
+    const credits = Number(req.body?.credits);
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 255) : "";
+
+    if (!Number.isInteger(schoolId)) return res.status(400).json({ success: false, message: "Invalid school id" });
+    if (!Number.isInteger(credits) || credits < 1 || credits > MAX_GRANT) {
+      return res.status(400).json({
+        success: false,
+        message: `Credits must be a whole number between 1 and ${MAX_GRANT.toLocaleString("en-NG")}`,
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true } });
+    if (!school) return res.status(404).json({ success: false, message: "School not found" });
+
+    const reference = `grant-${schoolId}-${crypto.randomUUID().slice(0, 8)}`;
+
+    // One transaction: the balance and its record move together.
+    const [updated] = await prisma.$transaction([
+      prisma.school.update({
+        where: { id: schoolId },
+        data: { aiCreditsPurchased: { increment: credits } },
+        select: { aiCreditsPurchased: true },
+      }),
+      prisma.schoolPayment.create({
+        data: {
+          schoolId,
+          amount: 0,
+          flwReference: reference,
+          status: "success",
+          paidAt: new Date(),
+          purpose: "credit_grant",
+          creditsGranted: credits,
+        },
+      }),
+    ]);
+
+    logger.info("[BILLING] AI credits granted", { schoolId, credits, reason, reference, adminId: req.admin?.id ?? null });
+
+    // Tell the school's head admins. Best effort: the grant has already happened.
+    try {
+      const admins = await prisma.admin.findMany({
+        where: { schoolId, role: { in: ["school_admin", "super_admin"] } },
+        select: { id: true },
+      });
+      for (const admin of admins) {
+        await createNotification({
+          recipientType: "admin",
+          recipientId: admin.id,
+          schoolId,
+          title: "AI credits added",
+          message: `${credits.toLocaleString("en-NG")} AI credits have been added to your school.`,
+          type: "success",
+          link: "/admin/billing",
+        });
+      }
+    } catch (error) {
+      logger.warn("[BILLING] Could not notify school about granted credits", { schoolId, error: error.message });
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `${credits.toLocaleString("en-NG")} credits added to ${school.name}`,
+      data: { schoolId, granted: credits, purchasedBalance: updated.aiCreditsPurchased },
+    });
   } catch (err) {
     next(err);
   }
