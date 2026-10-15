@@ -1483,8 +1483,14 @@ export class AssessmentService {
         schoolId: number;
         academicSessionId?: number;
         termId?: number;
+        /**
+         * Only subjects the school has published for this class, session and term.
+         * A student's own report card sets this; the admin's keeps showing live
+         * scores for every subject.
+         */
+        publishedOnly?: boolean;
     }) {
-        const { studentId, schoolId, academicSessionId } = input;
+        const { studentId, schoolId, academicSessionId, publishedOnly } = input;
 
         // Resolve academic session
         let sessionId = academicSessionId;
@@ -1547,7 +1553,7 @@ export class AssessmentService {
 
         const school = await prisma.school.findUnique({
             where: { id: schoolId },
-            select: { logoUrl: true, stampUrl: true }
+            select: { name: true, logoUrl: true, stampUrl: true }
         });
         const [schoolLogo, schoolStamp] = await Promise.all([
             schoolMediaUrl(school?.logoUrl),
@@ -1555,12 +1561,25 @@ export class AssessmentService {
         ]);
 
         // Fetch class subjects
-        const classSubjects = await prisma.classSubject.findMany({
+        let classSubjects = await prisma.classSubject.findMany({
             where: { classId: student.classId },
             select: {
                 subject: { select: { id: true, name: true, code: true } }
             }
         });
+
+        if (publishedOnly) {
+            const published = await prisma.publishedResult.findMany({
+                where: {
+                    classId: student.classId,
+                    academicSessionId: sessionId,
+                    ...(termId ? { termId } : {})
+                },
+                select: { subjectId: true }
+            });
+            const publishedIds = new Set(published.map((p: { subjectId: number }) => p.subjectId));
+            classSubjects = classSubjects.filter((cs) => publishedIds.has(cs.subject.id));
+        }
 
         // Get grading scheme for the class
         const gradingScheme = await prisma.gradingScheme.findFirst({
@@ -1652,10 +1671,9 @@ export class AssessmentService {
         // Calculate scores for all students in class to determine position
         const classStudentScores = await Promise.all(
             classStudents.map(async (cs) => {
-                const csSubjects = await prisma.classSubject.findMany({
-                    where: { classId: student.classId },
-                    select: { subject: { select: { id: true } } }
-                });
+                // The same subjects the card lists, so a position is never decided by
+                // a subject the student cannot see.
+                const csSubjects = classSubjects.map((c) => ({ subject: { id: c.subject.id } }));
 
                 let csTotal = 0;
                 for (const subj of csSubjects) {
@@ -1752,6 +1770,7 @@ export class AssessmentService {
 
         return {
             school: {
+                name: school?.name ?? null,
                 logoUrl: schoolLogo,
                 stampUrl: schoolStamp
             },

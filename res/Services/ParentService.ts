@@ -5,6 +5,7 @@ import { AppError } from "../util/AppError";
 import { generateReceiptNo } from "../util/receiptNo";
 import { loadStudentFeeForReceipt, buildReceiptData } from "../util/receiptData";
 import { schoolMediaUrl } from "../controller/public/publicController";
+import { StudentResultService } from "./student/StudentResultService";
 
 export class ParentService {
     /** Confirms the requesting parent actually owns this child before any read. */
@@ -79,6 +80,22 @@ export class ParentService {
                 };
             })
         );
+    }
+
+    /**
+     * A child's report card: the same payload and component the school's admin
+     * and the student see, limited to published subjects. Ownership is checked
+     * first, and the school comes from the child's own record.
+     */
+    async getChildReportCard(parentId: number, studentId: number, academicSessionId?: number, termId?: number) {
+        const student = await this.assertOwnsChild(parentId, studentId);
+        return new StudentResultService().getReportCard(studentId, student.schoolId, academicSessionId, termId);
+    }
+
+    /** The sessions (with their terms) to choose from for a child's report card. */
+    async getChildReportCardSessions(parentId: number, studentId: number) {
+        const student = await this.assertOwnsChild(parentId, studentId);
+        return new StudentResultService().getSessions(student.schoolId);
     }
 
     async getChildResults(parentId: number, studentId: number) {

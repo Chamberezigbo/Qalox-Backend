@@ -27,6 +27,29 @@ export class ParentController {
         }
     };
 
+    getChildReportCard = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const studentId = Number(req.params.studentId);
+            const academicSessionId = req.query.academicSessionId ? Number(req.query.academicSessionId) : undefined;
+            const termId = req.query.termId ? Number(req.query.termId) : undefined;
+            const data = await this.service.getChildReportCard(req.parentId, studentId, academicSessionId, termId);
+            res.json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    getChildReportCardSessions = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const data = await this.service.getChildReportCardSessions(req.parentId, Number(req.params.studentId));
+            res.json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     getChildAttendance = async (req: ParentRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });

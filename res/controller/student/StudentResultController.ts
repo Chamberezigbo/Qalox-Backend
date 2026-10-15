@@ -31,12 +31,12 @@ export class StudentResultController {
         }
     };
 
-    getSummary = async (req: StudentRequest, res: Response, next: NextFunction) => {
+    getReportCard = async (req: StudentRequest, res: Response, next: NextFunction) => {
         try {
             const academicSessionId = req.query.academicSessionId ? Number(req.query.academicSessionId) : undefined;
             const termId = req.query.termId ? Number(req.query.termId) : undefined;
 
-            const data = await this.resultService.getSummary(
+            const data = await this.resultService.getReportCard(
                 req.studentId!,
                 Number(req.schoolId!),
                 academicSessionId,

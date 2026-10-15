@@ -22,7 +22,7 @@ const studentExamController = new StudentExamController();
 router.get("/student/metrics", studentAuthMiddleware, studentDashboardController.getDashboard);
 router.get("/student/sessions", studentAuthMiddleware, studentResultController.getSessions);
 router.get("/student/results",  studentAuthMiddleware, studentResultController.getResults);
-router.get("/student/results/summary", studentAuthMiddleware, studentResultController.getSummary);
+router.get("/student/report-card", studentAuthMiddleware, studentResultController.getReportCard);
 router.get("/student/assignments", studentAuthMiddleware, studentAssignmentController.list);
 router.get("/student/fees", studentAuthMiddleware, studentFeeController.getFees);
 router.get("/student/bank-accounts", studentAuthMiddleware, studentFeeController.getBankAccounts);

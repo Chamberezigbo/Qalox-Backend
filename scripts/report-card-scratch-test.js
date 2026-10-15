@@ -47,6 +47,11 @@ async function main() {
   const subject = await prisma.subject.create({ data: { schoolId, name: "Maths" } });
   await prisma.classSubject.create({ data: { classId: jss3.id, subjectId: subject.id } });
 
+  // A second subject with scores that is NEVER published: a student must not see it.
+  const unpublished = await prisma.subject.create({ data: { schoolId, name: "Unpublished" } });
+  await prisma.classSubject.create({ data: { classId: jss3.id, subjectId: unpublished.id } });
+  const uExam = await prisma.exam.create({ data: { classId: jss3.id, subjectId: unpublished.id, name: "Exam", maxScore: 100 } });
+
   const ca = await prisma.continuousAssessment.create({ data: { classId: jss3.id, subjectId: subject.id, name: "CA1", maxScore: 40 } });
   const exam = await prisma.exam.create({ data: { classId: jss3.id, subjectId: subject.id, name: "Exam", maxScore: 60 } });
 
@@ -82,18 +87,28 @@ async function main() {
     }
   }
 
+  // The unpublished subject: Low scores highest, so ranking WITH it would differ.
+  for (const [sid, score] of [[top.id, 10], [mid.id, 20], [low.id, 99]]) {
+    for (const term of [t1, t2]) {
+      await prisma.examResult.create({ data: { studentId: sid, examId: uExam.id, academicSessionId: sessA.id, termId: term.id, score } });
+    }
+  }
+
   const fs = await prisma.feeStructure.create({ data: { schoolId, classId: jss3.id, term: "First Term", session: "2026/2027" } });
   await prisma.studentFee.create({
     data: { schoolId, studentId: mid.id, feeStructureId: fs.id, totalFee: 50000, amountPaid: 20000, status: "partial" },
   });
 
+  const { StudentResultService } = require("../res/Services/student/StudentResultService");
+  const svc2 = new StudentResultService();
+  const studentCard = (id) => svc2.getReportCard(id, schoolId, sessA.id, t2.id);
   const svc = new AssessmentService();
   const card = (studentId, termId) =>
     svc.getStudentCompleteResult({ studentId, schoolId, academicSessionId: sessA.id, termId });
 
   console.log("Before promotion");
   let c = await card(mid.id, t2.id);
-  assert.strictEqual(c.performanceSummary.classPosition, "2");
+  assert.strictEqual((await studentCard(mid.id)).performanceSummary.classPosition, "2");
   assert.strictEqual(c.sessionSummary.promotion, null, "no run yet, so no claim");
   assert.strictEqual(c.feeSummary.outstanding, 30000);
   log("position 2 of 3, no promotion claim, owes 30,000");
@@ -113,11 +128,9 @@ async function main() {
   console.log("After promotion, the old session's card");
   c = await card(top.id, t2.id);
   assert.strictEqual(c.studentInformation.className, "JSS 3");
-  assert.strictEqual(c.performanceSummary.classPosition, "1");
-  c = await card(mid.id, t2.id);
-  assert.strictEqual(c.performanceSummary.classPosition, "2", "ranked among the old classmates, not nobody");
-  c = await card(low.id, t2.id);
-  assert.strictEqual(c.performanceSummary.classPosition, "3");
+  assert.strictEqual((await studentCard(top.id)).performanceSummary.classPosition, "1");
+  assert.strictEqual((await studentCard(mid.id)).performanceSummary.classPosition, "2", "ranked among the old classmates, not nobody");
+  assert.strictEqual((await studentCard(low.id)).performanceSummary.classPosition, "3");
   log("positions 1, 2, 3 survive the class moving on");
 
   c = await card(top.id, t2.id);
@@ -139,14 +152,28 @@ async function main() {
   assert.strictEqual(c.schoolRecommendationDate, "2027-09-13", "next session's first term date");
   log("last term resumes on the next session's first term date");
 
-  const { StudentResultService } = require("../res/Services/student/StudentResultService");
-  const sum = await new StudentResultService().getSummary(top.id, schoolId, sessA.id, t2.id);
-  assert.strictEqual(sum.className, "JSS 3");
-  assert.strictEqual(sum.termName, "Second Term");
-  assert.strictEqual(sum.resumptionDate, "2027-09-13");
-  assert.strictEqual(sum.sessionSummary.promotion.label, "Promoted to SS 1");
-  assert.strictEqual((await new StudentResultService().getSummary(mid.id, schoolId, sessA.id, t2.id)).outstandingFees, 30000);
-  log("student summary matches the admin card");
+  // Admin sees both subjects; the student sees only the published one.
+  const adminTop = await card(top.id, t2.id);
+  const stuTop = await studentCard(top.id);
+  assert.strictEqual(adminTop.subjects.length, 2);
+  assert.strictEqual(stuTop.subjects.length, 1);
+  assert.strictEqual(stuTop.subjects[0].name, "Maths");
+  assert.strictEqual(stuTop.performanceSummary.classPosition, "1", "ranked on published subjects only");
+  assert.strictEqual((await studentCard(low.id)).performanceSummary.classPosition, "3");
+  assert.strictEqual(adminTop.performanceSummary.classPosition === "1", false, "the admin's live card ranks with the unpublished subject");
+  assert.strictEqual(stuTop.school.name, `RC ${stamp}`);
+  assert.strictEqual(stuTop.sessionSummary.promotion.label, "Promoted to SS 1");
+  assert.strictEqual(stuTop.schoolRecommendationDate, "2027-09-13");
+  assert.strictEqual((await studentCard(mid.id)).feeSummary.outstanding, 30000);
+  log("student card is the admin card limited to published subjects, ranked on those only");
+
+  // Another school's session cannot be asked for.
+  const other = await prisma.school.create({ data: { name: `Other ${stamp}`, prefix: "OT" } });
+  const foreign = await prisma.academicSession.create({ data: { schoolId: other.id, name: "2026/2027" } });
+  let refused = false;
+  try { await svc2.getReportCard(top.id, schoolId, foreign.id, undefined); } catch (e) { refused = e.statusCode === 404; }
+  assert.ok(refused, "a session from another school is refused");
+  log("another school's session is refused");
 
   const run = await prisma.promotionRun.findFirst({ where: { schoolId } });
   await PromotionService.undoRun({ schoolId, runId: run.id });
