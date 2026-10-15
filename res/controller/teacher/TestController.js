@@ -7,6 +7,7 @@ const GeminiTextService = require("../../Services/GeminiTextService");
 const { validateQuestionInput, publishProblems, MAX_QUESTIONS } = require("../../util/testQuestions");
 const { buildRows, summarize, questionStats } = require("../../util/testResults");
 const { settleExpiredForTest } = require("../../Services/student/StudentTestService");
+const { validateNewClosingTime, planReopen } = require("../../util/testSchedule");
 
 /**
  * Multiple-choice tests for a teacher's own classes.
@@ -254,11 +255,31 @@ exports.get = handle(async (req, res) => {
 
 /**
  * PATCH /api/teacher/tests/:id
- * Settings, while the test is still a draft.
+ * Settings, while the test is still a draft. Once published, the closing time is
+ * the one thing that can still move (students may already have answered, so the
+ * questions and rules are locked).
  */
 exports.update = handle(async (req, res) => {
   const test = await loadTest(req);
-  requireDraft(test);
+
+  if (test.status !== "draft") {
+    const keys = Object.keys(req.body ?? {});
+    if (test.status === "closed") {
+      throw new TestError(409, "This test is closed. Reopen it to change its closing time.", "TEST_CLOSED");
+    }
+    if (keys.length !== 1 || keys[0] !== "closesAt") {
+      throw new TestError(
+        409,
+        "This test is already published. Only its closing time can be changed. Close it to stop students taking it.",
+        "TEST_NOT_DRAFT"
+      );
+    }
+    const checked = validateNewClosingTime({ now: new Date(), opensAt: test.opensAt, requested: req.body.closesAt });
+    if (!checked.ok) throw new TestError(400, checked.message, "INVALID_REQUEST");
+
+    await prisma.test.update({ where: { id: test.id }, data: { closesAt: checked.closesAt } });
+    return ok(res, { id: test.id, closesAt: checked.closesAt }, 200, "Closing time changed");
+  }
 
   const b = req.body ?? {};
   const data = {};
@@ -489,6 +510,34 @@ exports.close = handle(async (req, res) => {
   }
   await prisma.test.update({ where: { id: test.id }, data: { status: "closed" } });
   return ok(res, { id: test.id, status: "closed" }, 200, "Test closed");
+});
+
+/**
+ * POST /api/teacher/tests/:id/reopen
+ * Body: { closesAt? }
+ *
+ * Lets students take a closed test again (or one whose closing time has passed).
+ * Attempts and scores already recorded are untouched, and attempt limits still
+ * apply: a student who used all their attempts cannot retake it. A new closing
+ * time is required only when the old one has passed.
+ *
+ * Attempts that were still running when it was closed are finished first, so
+ * closing stays final for them; reopening only lets students start new ones.
+ */
+exports.reopen = handle(async (req, res) => {
+  const test = await loadTest(req);
+  const plan = planReopen({ test, now: new Date(), requested: req.body?.closesAt });
+  if (!plan.ok) {
+    throw new TestError(plan.conflict ? 409 : 400, plan.message, "CANNOT_REOPEN");
+  }
+
+  if (test.status === "closed") await settleExpiredForTest(test.id, req.schoolId);
+
+  const data = { status: "published", ...(plan.closesAt !== undefined && { closesAt: plan.closesAt }) };
+  const updated = await prisma.test.update({ where: { id: test.id }, data, select: { closesAt: true } });
+
+  logger.info("[CBT] Test reopened", { testId: test.id, staffId: req.staffId, closesAt: updated.closesAt });
+  return ok(res, { id: test.id, status: "published", closesAt: updated.closesAt }, 200, "Test reopened");
 });
 
 /**

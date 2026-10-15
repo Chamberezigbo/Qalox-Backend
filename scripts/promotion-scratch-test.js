@@ -116,6 +116,19 @@ async function main() {
   const s = w.students;
   const base = { schoolId: w.schoolId, classId: w.jss3.id, fromSessionId: w.sessionA.id };
 
+  console.log("School overview, before anything is applied");
+  const ovBefore = await PromotionService.schoolOverview({ schoolId: w.schoolId, fromSessionId: w.sessionA.id });
+  const row = (o, id) => o.classes.find((c) => c.classId === id);
+  assert.strictEqual(row(ovBefore, w.jss3.id).status, "ready");
+  assert.strictEqual(row(ovBefore, w.jss3.id).studentsLeft, 5);
+  assert.strictEqual(row(ovBefore, w.jss3.id).publishedTerms, 2);
+  assert.strictEqual(row(ovBefore, w.jss3.id).nextClassName, "SS 1");
+  assert.strictEqual(row(ovBefore, w.ss3.id).isFinalClass, true);
+  assert.strictEqual(row(ovBefore, w.ss3.id).status, "ready");
+  assert.strictEqual(row(ovBefore, w.ss1.id), undefined, "a class with nobody in it is not listed");
+  assert.strictEqual(ovBefore.totals.studentsLeft, 6);
+  log("every class with students is listed with its count, terms and next class");
+
   console.log("Preview");
   const preview = await PromotionService.previewClass(base);
   const byName = Object.fromEntries(preview.students.map((p) => [p.name.split(" ")[1], p]));
@@ -163,6 +176,14 @@ async function main() {
   assert.strictEqual(get(s.fail).academicSessionId, w.sessionB.id);
   assert.strictEqual(get(s.grad).academicSessionId, w.sessionA.id);
   log("promoted and trial students are in SS 1, repeaters stay in JSS 3, all in the new session");
+
+  const ovAfter = await PromotionService.schoolOverview({ schoolId: w.schoolId, fromSessionId: w.sessionA.id });
+  assert.strictEqual(row(ovAfter, w.jss3.id).status, "done");
+  assert.strictEqual(row(ovAfter, w.jss3.id).studentsLeft, 0);
+  assert.ok(row(ovAfter, w.jss3.id).lastRun.counts.promoted >= 1);
+  assert.strictEqual(ovAfter.suggestedToSessionId, w.sessionB.id);
+  assert.strictEqual(row(ovAfter, w.ss3.id).status, "ready", "other classes are unaffected");
+  log("after applying, the class shows as done and the other class is untouched");
 
   const enrolB = await prisma.studentEnrollment.findMany({ where: { academicSessionId: w.sessionB.id } });
   assert.strictEqual(enrolB.length, 5);

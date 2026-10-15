@@ -147,6 +147,38 @@ async function main() {
   assert.strictEqual(status.remaining, 450);
   log("the term reset renews the plan's 100 and keeps the 350 bought credits that were not spent");
 
+  console.log("Taking credits back");
+  const superBilling = require("../res/controller/superadmin/BillingController");
+  const takeBack = async (credits) => {
+    const res = { code: 0, body: null, status(c) { this.code = c; return this; }, json(b) { this.body = b; } };
+    await superBilling.deductSchoolCredits(
+      { admin: { id: 1 }, params: { schoolId: String(schoolId) }, body: { credits, reason: "Granted by mistake" } },
+      res,
+      (e) => { throw e; }
+    );
+    return res;
+  };
+  // 350 bought. Three at once for 200 each: the row lock lets exactly one through.
+  const attempts = await Promise.all([takeBack(200), takeBack(200), takeBack(200)]);
+  const done = attempts.filter((r) => r.code === 201).length;
+  assert.strictEqual(done, 1, `exactly one of three concurrent takes should win, got ${done}`);
+  assert.strictEqual(attempts.filter((r) => r.code === 409).length, 2);
+  const left = await prisma.school.findUnique({ where: { id: schoolId } });
+  assert.strictEqual(left.aiCreditsPurchased, 150, "balance is 350 - 200, never negative");
+  const adj = await prisma.schoolPayment.findMany({ where: { schoolId, purpose: "credit_adjustment" } });
+  assert.strictEqual(adj.length, 1);
+  assert.strictEqual(adj[0].creditsGranted, -200);
+  log("three simultaneous take-backs: one wins, balance is 150, one adjustment recorded");
+
+  // Spend most of it, then ask for more than is unspent.
+  await prisma.school.update({ where: { id: schoolId }, data: { aiCreditsUsedThisTerm: 200 } }); // base 100 + 150 bought: 50 unspent
+  const over = await takeBack(100);
+  assert.strictEqual(over.code, 409);
+  assert.strictEqual(over.body.data.available, 50);
+  assert.strictEqual((await takeBack(50)).code, 201);
+  assert.strictEqual((await prisma.school.findUnique({ where: { id: schoolId } })).aiCreditsPurchased, 100);
+  log("cannot take back credits the school has already spent");
+
   console.log("\nAll checks passed.");
 }
 

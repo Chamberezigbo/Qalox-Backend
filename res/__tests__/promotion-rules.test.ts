@@ -117,4 +117,26 @@ describe("validateDecisions", () => {
   });
 });
 
+describe("classPromotionStatus", () => {
+  const { classPromotionStatus } = require("../util/promotionRules");
+  const base = { studentsLeft: 12, publishedTerms: 2, hasRun: false, hasNextClassSet: true, nextClassFound: true };
+
+  it.each([
+    [{}, "ready"],
+    [{ studentsLeft: 0, hasRun: true }, "done"],
+    [{ studentsLeft: 0, hasRun: false }, "no_students"],
+    [{ hasRun: true }, "partly_done"],
+    [{ publishedTerms: 0 }, "no_results"],
+    [{ nextClassFound: false }, "needs_next_class"],
+    // A final class has no next class and is still reviewable (its students graduate).
+    [{ hasNextClassSet: false, nextClassFound: false }, "ready"],
+  ])("%j is %s", (over, expected) => {
+    expect(classPromotionStatus({ ...base, ...over })).toBe(expected);
+  });
+
+  it("a missing next class outranks a missing result, because it blocks applying", () => {
+    expect(classPromotionStatus({ ...base, publishedTerms: 0, nextClassFound: false })).toBe("needs_next_class");
+  });
+});
+
 export {};

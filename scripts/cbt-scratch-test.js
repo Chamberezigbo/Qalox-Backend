@@ -209,6 +209,50 @@ async function main() {
   assert.strictEqual(await prisma.studentTestAttempt.count({ where: { testId: t4.id, studentId: w.ada.id } }), 1);
   log("a double tap makes one attempt, not two");
 
+  console.log("Reopening a closed test");
+  const ctl = require("../res/controller/teacher/TestController");
+  const teacherCall = async (fn, testId, body = {}) => {
+    const res = { code: 200, body: null, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+    await ctl[fn]({ staffId: w.staff.id, schoolId, params: { id: String(testId) }, body }, res, (e) => { throw e; });
+    return res;
+  };
+  // Ada finishes her one attempt; Bola has one running when the teacher closes.
+  const t6 = await w.mkTest({ title: "Reopen me", maxAttempts: 1 });
+  const adaRun = await S.startAttempt(w.ada.id, schoolId, t6.id);
+  await S.submitAttempt(w.ada.id, schoolId, adaRun.attemptId);
+  const bolaRun = await S.startAttempt(w.bola.id, schoolId, t6.id);
+  assert.strictEqual((await teacherCall("close", t6.id)).code, 200);
+  await refused(S.startAttempt(w.bola.id, schoolId, t6.id), "TEST_NOT_AVAILABLE", "closed test");
+
+  const reopened = await teacherCall("reopen", t6.id);
+  assert.strictEqual(reopened.code, 200, JSON.stringify(reopened.body));
+  const bolaDone = await prisma.studentTestAttempt.findUnique({ where: { id: bolaRun.attemptId } });
+  assert.strictEqual(bolaDone.status, "auto_submitted", "the run that was in progress when it closed stays finished");
+  const adaStill = await prisma.studentTestAttempt.findUnique({ where: { id: adaRun.attemptId } });
+  assert.strictEqual(adaStill.status, "submitted", "recorded scores are untouched");
+  assert.strictEqual((await prisma.studentTestAttempt.count({ where: { testId: t6.id } })), 2);
+  // Both used their only attempt, so reopening does not give them another.
+  await refused(S.startAttempt(w.ada.id, schoolId, t6.id), "NO_ATTEMPTS_LEFT", "attempts used");
+  await refused(S.startAttempt(w.bola.id, schoolId, t6.id), "NO_ATTEMPTS_LEFT", "attempts used (auto-submitted)");
+  log("reopening keeps scores, finishes the run that was open at close, and does not give out extra attempts");
+
+  // A student who never started can take it after it reopens.
+  const t7 = await w.mkTest({ title: "Missed it", maxAttempts: 1 });
+  await teacherCall("close", t7.id);
+  await refused(S.startAttempt(w.ada.id, schoolId, t7.id), "TEST_NOT_AVAILABLE", "while closed");
+  await teacherCall("reopen", t7.id);
+  const late = await S.startAttempt(w.ada.id, schoolId, t7.id);
+  assert.strictEqual(late.status, "in_progress");
+  log("a student who missed a closed test can take it once it is reopened");
+
+  // Closing time passed: needs a new time; then it opens again.
+  const t8 = await w.mkTest({ title: "Expired", closesAt: new Date(Date.now() - 3600 * 1000) });
+  await refused(S.startAttempt(w.bola.id, schoolId, t8.id), "TEST_CLOSED", "past closing time");
+  assert.strictEqual((await teacherCall("update", t8.id, { closesAt: new Date(Date.now() - 1000).toISOString() })).code, 400);
+  assert.strictEqual((await teacherCall("update", t8.id, { closesAt: new Date(Date.now() + 3600 * 1000).toISOString() })).code, 200);
+  assert.strictEqual((await S.startAttempt(w.bola.id, schoolId, t8.id)).status, "in_progress");
+  log("moving the closing time of an expired test opens it again, and a past time is refused");
+
   console.log("Teacher results");
   const { settleExpiredForTest } = S;
   // Bola walked away from a timed test; her attempt must be finished and counted.

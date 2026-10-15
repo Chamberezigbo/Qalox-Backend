@@ -9,6 +9,7 @@ const {
   sessionAverage,
   suggestOutcome,
   validateDecisions,
+  classPromotionStatus,
 } = require("../util/promotionRules");
 
 /**
@@ -482,4 +483,106 @@ async function listRuns(schoolId) {
   }));
 }
 
-module.exports = { getPolicy, savePolicy, previewClass, applyPromotion, undoRun, listRuns };
+/**
+ * Every class of the school at a glance for one closing session: how many
+ * students are still to move, what has already been applied, and whether the
+ * class can be reviewed. Read-only; each class is still reviewed and applied on
+ * its own, in any order.
+ */
+async function schoolOverview({ schoolId, fromSessionId }) {
+  const session = await prisma.academicSession.findFirst({
+    where: { id: fromSessionId, schoolId },
+    select: { id: true, name: true, isActive: true },
+  });
+  if (!session) throw new AppError("Session not found", 404);
+
+  const [classes, waiting, runs, published] = await Promise.all([
+    prisma.class.findMany({
+      where: { schoolId },
+      select: {
+        id: true, name: true, customName: true, campusId: true, promotesToClassId: true,
+        campus: { select: { name: true } },
+      },
+      orderBy: [{ campusId: "asc" }, { id: "asc" }],
+    }),
+    prisma.student.groupBy({
+      by: ["classId"],
+      where: { schoolId, academicSessionId: fromSessionId, status: ACTIVE },
+      _count: { _all: true },
+    }),
+    prisma.promotionRun.findMany({
+      where: { schoolId, fromSessionId, undoneAt: null },
+      orderBy: { id: "desc" },
+      include: { items: { select: { outcome: true } } },
+    }),
+    prisma.publishedResult.findMany({
+      where: { academicSessionId: fromSessionId, class: { schoolId }, termId: { not: null } },
+      select: { classId: true, termId: true },
+      distinct: ["classId", "termId"],
+    }),
+  ]);
+
+  const waitingByClass = new Map(waiting.map((w) => [w.classId, w._count._all]));
+  const termsByClass = new Map();
+  for (const row of published) {
+    if (!termsByClass.has(row.classId)) termsByClass.set(row.classId, new Set());
+    termsByClass.get(row.classId).add(row.termId);
+  }
+  // Newest first, so the first run seen for a class is its latest.
+  const latestRun = new Map();
+  for (const run of runs) if (!latestRun.has(run.classId)) latestRun.set(run.classId, run);
+
+  const byId = new Map(classes.map((c) => [c.id, c]));
+
+  const rows = classes.map((cls) => {
+    const run = latestRun.get(cls.id);
+    const next = cls.promotesToClassId ? byId.get(cls.promotesToClassId) : null;
+    // The next class has to be in the same campus, the same rule the review applies.
+    const nextClassFound = !!next && next.campusId === cls.campusId;
+    const studentsLeft = waitingByClass.get(cls.id) ?? 0;
+    const publishedTerms = termsByClass.get(cls.id)?.size ?? 0;
+
+    return {
+      classId: cls.id,
+      name: cls.name,
+      customName: cls.customName,
+      campusName: cls.campus?.name ?? null,
+      isFinalClass: cls.promotesToClassId == null,
+      nextClassName: nextClassFound ? next.name : null,
+      studentsLeft,
+      publishedTerms,
+      status: classPromotionStatus({
+        studentsLeft,
+        publishedTerms,
+        hasRun: !!run,
+        hasNextClassSet: cls.promotesToClassId != null,
+        nextClassFound,
+      }),
+      lastRun: run
+        ? {
+            runId: run.id,
+            toSessionId: run.toSessionId,
+            createdAt: run.createdAt,
+            counts: run.items.reduce((acc, i) => ({ ...acc, [i.outcome]: (acc[i.outcome] ?? 0) + 1 }), {}),
+          }
+        : null,
+    };
+  });
+
+  // Classes with nobody in them and nothing applied are noise on a school-wide page.
+  const visible = rows.filter((r) => r.status !== "no_students");
+
+  return {
+    session,
+    // Where the last applied run went, so the page can suggest the same target.
+    suggestedToSessionId: runs[0]?.toSessionId ?? null,
+    totals: {
+      classes: visible.length,
+      done: visible.filter((r) => r.status === "done").length,
+      studentsLeft: visible.reduce((sum, r) => sum + r.studentsLeft, 0),
+    },
+    classes: visible,
+  };
+}
+
+module.exports = { getPolicy, savePolicy, previewClass, applyPromotion, undoRun, listRuns, schoolOverview };

@@ -4,7 +4,11 @@ const { parsePlanFeatures } = require("../../util/planFeatures");
 const crypto = require("crypto");
 const billingService = require("../../Services/BillingService");
 const { createNotification } = require("../../util/notify");
-const { getAiCreditsStatusForSchool } = require("../../util/getAiCreditsAllowanceForSchool");
+const {
+  getAiCreditsStatusForSchool,
+  getAiCreditsAllowanceForSchool,
+} = require("../../util/getAiCreditsAllowanceForSchool");
+const { maxTakeBack } = require("../../util/creditTakeBack");
 
 /**
  * POST /api/billing/initialize-payment
@@ -491,6 +495,101 @@ exports.grantSchoolCredits = async (req, res, next) => {
       success: true,
       message: `${credits.toLocaleString("en-NG")} credits added to ${school.name}`,
       data: { schoolId, granted: credits, purchasedBalance: updated.aiCreditsPurchased },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/billing/schools/:schoolId/deduct-credits
+ * Body: { credits, reason }   (reason is required)
+ *
+ * Takes back credits granted or sold by mistake. Only the BOUGHT/GRANTED balance
+ * is touched, and never more than the school has not yet spent: taking back
+ * credits it has already used would leave it overdrawn and locked out of
+ * generation until the next term. The school's row is read FOR UPDATE inside one
+ * transaction, which is what stops a generation reserving credits between the
+ * check and the deduction (every reservation also updates that row).
+ *
+ * Recorded as a zero-amount SchoolPayment with purpose "credit_adjustment" and a
+ * negative creditsGranted, so revenue figures (which filter by purpose) are
+ * unaffected and the history shows it.
+ */
+exports.deductSchoolCredits = async (req, res, next) => {
+  try {
+    const schoolId = Number(req.params.schoolId);
+    const credits = Number(req.body?.credits);
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 255) : "";
+
+    if (!Number.isInteger(schoolId)) return res.status(400).json({ success: false, message: "Invalid school id" });
+    if (!Number.isInteger(credits) || credits < 1 || credits > MAX_GRANT) {
+      return res.status(400).json({
+        success: false,
+        message: `Credits must be a whole number between 1 and ${MAX_GRANT.toLocaleString("en-NG")}`,
+        code: "INVALID_REQUEST",
+      });
+    }
+    if (reason.length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: "Give a reason for taking credits back",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    const school = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true, name: true } });
+    if (!school) return res.status(404).json({ success: false, message: "School not found" });
+
+    const base = await getAiCreditsAllowanceForSchool(schoolId);
+    const reference = `adjust-${schoolId}-${crypto.randomUUID().slice(0, 8)}`;
+
+    const outcome = await prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw`
+        SELECT aiCreditsPurchased, aiCreditsUsedThisTerm FROM schools WHERE id = ${schoolId} FOR UPDATE`;
+      const purchased = Number(rows?.[0]?.aiCreditsPurchased ?? 0);
+      const used = Number(rows?.[0]?.aiCreditsUsedThisTerm ?? 0);
+
+      const available = maxTakeBack({ base, purchased, used });
+      if (credits > available) return { ok: false, available, purchased };
+
+      const updated = await tx.school.update({
+        where: { id: schoolId },
+        data: { aiCreditsPurchased: { decrement: credits } },
+        select: { aiCreditsPurchased: true },
+      });
+      await tx.schoolPayment.create({
+        data: {
+          schoolId,
+          amount: 0,
+          flwReference: reference,
+          status: "success",
+          paidAt: new Date(),
+          purpose: "credit_adjustment",
+          creditsGranted: -credits,
+        },
+      });
+      return { ok: true, balance: updated.aiCreditsPurchased };
+    });
+
+    if (!outcome.ok) {
+      return res.status(409).json({
+        success: false,
+        code: "NOT_ENOUGH_TO_TAKE_BACK",
+        message:
+          outcome.available === 0
+            ? `${school.name} has no unspent bought or granted credits to take back.`
+            : `Only ${outcome.available.toLocaleString("en-NG")} credits can be taken back from ${school.name}: the rest are already spent.`,
+        data: { available: outcome.available, purchasedBalance: outcome.purchased },
+      });
+    }
+
+    logger.info("[BILLING] AI credits taken back", { schoolId, credits, reason, reference, adminId: req.admin?.id ?? null });
+
+    res.status(201).json({
+      success: true,
+      message: `${credits.toLocaleString("en-NG")} credits taken back from ${school.name}`,
+      data: { schoolId, deducted: credits, purchasedBalance: outcome.balance },
     });
   } catch (err) {
     next(err);

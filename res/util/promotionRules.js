@@ -124,4 +124,30 @@ function validateDecisions({ cls, decisions, sameCampusClassIds, expectedStudent
   return null;
 }
 
-module.exports = { OUTCOMES, BASES, DEFAULT_POLICY, sessionAverage, suggestOutcome, validateDecisions };
+/**
+ * Where a class stands in the school-wide promotion overview.
+ *
+ *   done             nobody is left to move and a promotion was applied
+ *   no_students      nobody is in it for this session
+ *   needs_next_class a next class is set but cannot be found (Promotion Setup)
+ *   no_results       students are waiting but no results were published, so
+ *                    there is no suggestion to start from (still reviewable)
+ *   partly_done      a promotion was applied, but students are still waiting
+ *   ready            students are waiting and there is something to review
+ *
+ * @param {object} input
+ * @param {number} input.studentsLeft active students still in the closing session
+ * @param {number} input.publishedTerms terms with published results for the class
+ * @param {boolean} input.hasRun a promotion for this class and session is applied (not undone)
+ * @param {boolean} input.hasNextClassSet the class names a next class
+ * @param {boolean} input.nextClassFound that class exists in the same campus
+ */
+function classPromotionStatus({ studentsLeft, publishedTerms, hasRun, hasNextClassSet, nextClassFound }) {
+  if (studentsLeft === 0) return hasRun ? "done" : "no_students";
+  if (hasNextClassSet && !nextClassFound) return "needs_next_class";
+  if (hasRun) return "partly_done";
+  if (publishedTerms === 0) return "no_results";
+  return "ready";
+}
+
+module.exports = { OUTCOMES, BASES, DEFAULT_POLICY, sessionAverage, suggestOutcome, validateDecisions, classPromotionStatus };

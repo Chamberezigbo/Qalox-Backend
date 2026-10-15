@@ -112,6 +112,7 @@ router.patch("/tests/:id/questions/:questionId", teacherAuthMiddleware, testCont
 router.delete("/tests/:id/questions/:questionId", teacherAuthMiddleware, testController.deleteQuestion);
 router.post("/tests/:id/publish", teacherAuthMiddleware, testController.publish);
 router.post("/tests/:id/close", teacherAuthMiddleware, testController.close);
+router.post("/tests/:id/reopen", teacherAuthMiddleware, testController.reopen);
 router.get("/tests/:id/results", teacherAuthMiddleware, testController.results);
 
 router.post("/lesson-notes/generate", teacherAuthMiddleware, lessonNoteController.generateLessonNote);

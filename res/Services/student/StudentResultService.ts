@@ -2,6 +2,8 @@ import prisma from "../../util/prisma";
 import { AppError } from "../../util/AppError";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getEnrolledClassId } = require("../../util/enrolledClass");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { loadSessionSummary, resumptionDateFor, orderTerms } = require("../../util/reportCardContext");
 
 export class StudentResultService {
 
@@ -186,6 +188,90 @@ export class StudentResultService {
         );
 
         return results;
+    }
+
+    /**
+     * What goes above a student's results table: the class and term the results
+     * are for, and, on the session's closing term, the session average and where
+     * they were promoted to. A separate call so the results array keeps its shape.
+     */
+    async getSummary(studentId: number, schoolId: number, academicSessionId?: number, requestedTermId?: number) {
+        const student = await prisma.student.findFirst({
+            where: { id: studentId, schoolId },
+            select: { classId: true }
+        });
+        if (!student) throw new AppError("Student not found", 404);
+
+        let sessionId = academicSessionId;
+        if (!sessionId) {
+            const session =
+                (await prisma.academicSession.findFirst({ where: { schoolId, isActive: true }, select: { id: true } })) ??
+                (await prisma.academicSession.findFirst({ where: { schoolId }, orderBy: { id: "desc" }, select: { id: true } }));
+            if (!session) throw new AppError("No academic session found", 404);
+            sessionId = session.id;
+        }
+
+        const classId: number = await getEnrolledClassId(prisma, studentId, sessionId, student.classId);
+        const cls = await prisma.class.findFirst({
+            where: { id: classId, schoolId },
+            select: { name: true, customName: true }
+        });
+
+        const terms = orderTerms(
+            await prisma.academicTerm.findMany({
+                where: { schoolId, sessionId },
+                select: { id: true, name: true, resumptionDate: true, createdAt: true }
+            })
+        );
+
+        // Same default as the results list: the term published most recently.
+        let termId = requestedTermId;
+        if (!termId) {
+            const latest = await prisma.publishedResult.findFirst({
+                where: { classId, academicSessionId: sessionId, termId: { not: null } },
+                orderBy: { publishedAt: "desc" },
+                select: { termId: true }
+            });
+            termId = latest?.termId ?? undefined;
+        }
+        const term = terms.find((t: { id: number }) => t.id === termId) ?? null;
+
+        const nextSession = await prisma.academicSession.findFirst({
+            where: { schoolId, id: { gt: sessionId } },
+            orderBy: { id: "asc" },
+            select: { id: true }
+        });
+        const nextSessionTerms = nextSession
+            ? await prisma.academicTerm.findMany({
+                where: { sessionId: nextSession.id },
+                select: { id: true, resumptionDate: true, createdAt: true }
+            })
+            : [];
+
+        const sessionSummary = termId
+            ? await loadSessionSummary(prisma, {
+                schoolId,
+                studentId,
+                classId,
+                sessionId,
+                termId,
+                sessionTerms: terms
+            })
+            : null;
+
+        const fees = await prisma.studentFee.aggregate({
+            where: { studentId, schoolId },
+            _sum: { totalFee: true, amountPaid: true }
+        });
+
+        return {
+            className: cls ? (cls.customName ? `${cls.name} — ${cls.customName}` : cls.name) : null,
+            termId: term?.id ?? null,
+            termName: term?.name ?? null,
+            resumptionDate: resumptionDateFor(terms, term?.id ?? null, nextSessionTerms),
+            sessionSummary,
+            outstandingFees: Math.max(0, (fees._sum.totalFee ?? 0) - (fees._sum.amountPaid ?? 0))
+        };
     }
 
 }

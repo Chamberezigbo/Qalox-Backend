@@ -1,6 +1,12 @@
 import prisma from "../util/prisma";
 const { schoolMediaUrl } = require("../controller/public/publicController");
 const { getEnrolledClassId } = require("../util/enrolledClass");
+const {
+    resumptionDateFor,
+    loadSessionSummary,
+    classmateIdsForSession,
+    orderTerms
+} = require("../util/reportCardContext");
 
 export class AssessmentService {
 
@@ -1635,10 +1641,13 @@ export class AssessmentService {
         const overallGrade = gradingScheme?.grades.find(g => averageScore >= g.minScore && averageScore <= g.maxScore);
 
         // Get class position - rank students by total score
-        const classStudents = await prisma.student.findMany({
-            where: { classId: student.classId, academicSessionId: sessionId },
-            select: { id: true }
+        // Who was in the class THAT session. Student.classId is where they are now,
+        // so after a promotion it would rank this student against nobody.
+        const classmateIds: number[] = await classmateIdsForSession(prisma, {
+            classId: student.classId,
+            sessionId
         });
+        const classStudents = classmateIds.map((id) => ({ id }));
 
         // Calculate scores for all students in class to determine position
         const classStudentScores = await Promise.all(
@@ -1701,25 +1710,45 @@ export class AssessmentService {
         });
 
         // Fetch all terms in session to find current and next term
-        const allTerms = await prisma.academicTerm.findMany({
+        const sessionTerms = await prisma.academicTerm.findMany({
             where: { sessionId },
-            select: { id: true, name: true, resumptionDate: true },
-            orderBy: { createdAt: 'asc' }
+            select: { id: true, name: true, resumptionDate: true, createdAt: true }
+        });
+        const allTerms = orderTerms(sessionTerms);
+        const currentTerm = termId ? allTerms.find((t: { id: number }) => t.id === termId) : null;
+
+        // After the last term the school resumes in the next session's first term.
+        // No date set means no date shown, never today's date.
+        // By id: createdAt comes back as a date-only string (see util/prisma.js),
+        // which cannot be compared, and sessions are created in order.
+        const nextSession = await prisma.academicSession.findFirst({
+            where: { schoolId, id: { gt: sessionId } },
+            orderBy: { id: "asc" },
+            select: { id: true }
+        });
+        const nextSessionTerms = nextSession
+            ? await prisma.academicTerm.findMany({
+                where: { sessionId: nextSession.id },
+                select: { id: true, resumptionDate: true, createdAt: true }
+            })
+            : [];
+        const schoolRecommendationDate = resumptionDateFor(allTerms, termId ?? null, nextSessionTerms);
+
+        const sessionSummary = await loadSessionSummary(prisma, {
+            schoolId,
+            studentId,
+            classId: student.classId,
+            sessionId,
+            termId: termId ?? null,
+            sessionTerms: allTerms
         });
 
-        const currentTermIndex = termId
-            ? allTerms.findIndex(t => t.id === termId)
-            : -1; // a session with no terms has no "next term" to point at (this used to compare a term id with a session id)
-
-        const currentTerm = termId ? allTerms.find(t => t.id === termId) : null;
-        const nextTerm = currentTermIndex >= 0 && currentTermIndex < allTerms.length - 1
-            ? allTerms[currentTermIndex + 1]
-            : null;
-
-        // Determine school recommendation date from next term or fallback to current date
-        const schoolRecommendationDate = nextTerm?.resumptionDate
-            ? nextTerm.resumptionDate.toISOString().split('T')[0]
-            : new Date().toISOString().split('T')[0];
+        // Everything still owed across every term, not just the term on the card.
+        const fees = await prisma.studentFee.aggregate({
+            where: { studentId, schoolId },
+            _sum: { totalFee: true, amountPaid: true }
+        });
+        const outstandingFees = Math.max(0, (fees._sum.totalFee ?? 0) - (fees._sum.amountPaid ?? 0));
 
         return {
             school: {
@@ -1751,8 +1780,11 @@ export class AssessmentService {
                 averageScore,
                 classPosition: `${classPosition}`,
                 overallGrade: overallGrade?.grade ?? "N/A",
-                sessionLength: allTerms.length
+                sessionLength: allTerms.length,
+                subjectCount: subjects.length
             },
+            sessionSummary,
+            feeSummary: { outstanding: outstandingFees },
             teacherRemark: personalizedRemark,
             schoolRecommendationDate
         };

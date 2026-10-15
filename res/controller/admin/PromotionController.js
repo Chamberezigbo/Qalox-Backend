@@ -35,6 +35,14 @@ exports.savePolicy = handle(async (req, res) => {
   res.status(200).json({ success: true, message: "Promotion policy saved", data });
 });
 
+/** GET /api/admin/promotion/overview?fromSessionId= — every class and where it stands. */
+exports.overview = handle(async (req, res) => {
+  const fromSessionId = toId(req.query.fromSessionId);
+  if (!fromSessionId) return res.status(400).json({ success: false, message: "fromSessionId is required" });
+  const data = await PromotionService.schoolOverview({ schoolId: req.schoolId, fromSessionId });
+  res.status(200).json({ success: true, data });
+});
+
 /** GET /api/admin/promotion/preview?classId=&fromSessionId= */
 exports.preview = handle(async (req, res) => {
   const classId = toId(req.query.classId);

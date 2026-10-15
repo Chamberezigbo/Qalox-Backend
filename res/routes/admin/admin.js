@@ -222,6 +222,7 @@ router.get("/student/:id/delete-preview", auth.authenticateSchoolLevelAdmin, aut
 // Promotion: head admins only. It moves many students at once.
 router.get("/promotion/policy", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.getPolicy);
 router.put("/promotion/policy", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.savePolicy);
+router.get("/promotion/overview", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.overview);
 router.get("/promotion/preview", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.preview);
 router.post("/promotion/apply", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.apply);
 router.get("/promotion/runs", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.listRuns);
