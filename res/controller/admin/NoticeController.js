@@ -4,6 +4,7 @@ const bulkSms = require("../../Services/BulkSmsService");
 const { getSmsQuotaForSchool } = require("../../util/getSmsQuotaForSchool");
 const { toInternationalFormat } = require("../../util/phoneFormat");
 const { smsSenderIdFromSchoolName } = require("../../util/smsSenderId");
+const campusScope = require("../../util/campusScope");
 
 const CATEGORIES = ["fee", "pta", "event", "general"];
 const RECIPIENT_TYPES = ["all", "parents", "teachers", "students"];
@@ -11,12 +12,12 @@ const RECIPIENT_TYPES = ["all", "parents", "teachers", "students"];
 /**
  * Resolve the phone numbers for a given recipientType, deduplicated.
  */
-const resolveRecipientPhones = async (schoolId, recipientType) => {
+const resolveRecipientPhones = async (schoolId, recipientType, req) => {
   const numbers = new Set();
 
   if (recipientType === "parents" || recipientType === "all") {
     const students = await prisma.student.findMany({
-      where: { schoolId, guardianNumber: { not: null } },
+      where: campusScope.withScope({ schoolId, guardianNumber: { not: null } }, campusScope.studentWhere(req)),
       select: { guardianNumber: true },
     });
     students.forEach((s) => {
@@ -27,7 +28,7 @@ const resolveRecipientPhones = async (schoolId, recipientType) => {
 
   if (recipientType === "teachers" || recipientType === "all") {
     const staff = await prisma.staff.findMany({
-      where: { schoolId, phoneNumber: { not: null } },
+      where: campusScope.withScope({ schoolId, phoneNumber: { not: null } }, campusScope.staffWhere(req)),
       select: { phoneNumber: true },
     });
     staff.forEach((s) => {
@@ -45,20 +46,23 @@ const resolveRecipientPhones = async (schoolId, recipientType) => {
 /**
  * Count total in-app recipients for a given recipientType (used even when SMS is off).
  */
-const countRecipients = async (schoolId, recipientType) => {
+const countRecipients = async (schoolId, recipientType, req) => {
+  // A campus-restricted admin reaches only their campuses' students and staff.
+  const studentScope = campusScope.studentWhere(req);
+  const staffScope = campusScope.staffWhere(req);
   if (recipientType === "students") {
-    return prisma.student.count({ where: { schoolId } });
+    return prisma.student.count({ where: campusScope.withScope({ schoolId }, studentScope) });
   }
   if (recipientType === "teachers") {
-    return prisma.staff.count({ where: { schoolId } });
+    return prisma.staff.count({ where: campusScope.withScope({ schoolId }, staffScope) });
   }
   if (recipientType === "parents") {
-    return prisma.student.count({ where: { schoolId, guardianNumber: { not: null } } });
+    return prisma.student.count({ where: campusScope.withScope({ schoolId, guardianNumber: { not: null } }, studentScope) });
   }
   // all
   const [students, staff] = await Promise.all([
-    prisma.student.count({ where: { schoolId } }),
-    prisma.staff.count({ where: { schoolId } }),
+    prisma.student.count({ where: campusScope.withScope({ schoolId }, studentScope) }),
+    prisma.staff.count({ where: campusScope.withScope({ schoolId }, staffScope) }),
   ]);
   return students + staff;
 };
@@ -129,7 +133,7 @@ exports.createBroadcast = async (req, res, next) => {
       });
     }
 
-    const totalRecipients = await countRecipients(schoolId, recipientType);
+    const totalRecipients = await countRecipients(schoolId, recipientType, req);
     let smsSentCount = 0;
 
     if (sendSms) {
@@ -147,7 +151,7 @@ exports.createBroadcast = async (req, res, next) => {
       });
 
       const quotaPerTerm = await getSmsQuotaForSchool(schoolId);
-      const phones = await resolveRecipientPhones(schoolId, recipientType);
+      const phones = await resolveRecipientPhones(schoolId, recipientType, req);
       const remaining = quotaPerTerm - school.smsUsedThisTerm;
 
       if (phones.length > remaining) {
@@ -222,14 +226,17 @@ exports.getBroadcasts = async (req, res, next) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 20));
 
+    // A campus-restricted admin sees only the notices they sent themselves.
+    const where = campusScope.isRestricted(req) ? { schoolId, createdByAdminId: req.user?.id ?? -1 } : { schoolId };
+
     const [broadcasts, total] = await Promise.all([
       prisma.broadcast.findMany({
-        where: { schoolId },
+        where,
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      prisma.broadcast.count({ where: { schoolId } }),
+      prisma.broadcast.count({ where }),
     ]);
 
     res.status(200).json({

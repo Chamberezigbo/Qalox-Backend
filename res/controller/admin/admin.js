@@ -7,6 +7,7 @@ const { logLoginEvent } = require("../../util/logLoginEvent");
 const emailService = require("../../Services/EmailService");
 const logger = require("../../config/logger");
 const { schoolMediaUrl } = require("../public/publicController");
+const campusScope = require("../../util/campusScope");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -143,6 +144,7 @@ const {
   SCHOOL_SUSPENDED_MESSAGE,
   ACCOUNT_SUSPENDED_MESSAGE,
 } = require("../../util/schoolSuspension");
+const { campusesByAdmin } = require("../../util/subAdminCampuses");
 
 exports.loginAdmin = async (req, res, next) => {
   const { email, password } = req.body;
@@ -196,9 +198,15 @@ exports.loginAdmin = async (req, res, next) => {
 
     await logLoginEvent({ actorType: "admin", actorId: admin.id, schoolId: admin.schoolId, req });
 
+    // Which campuses a restricted sub-admin may work in, for the screens to say so.
+    // Everyone else (head admins, unrestricted sub-admins, schools with no campuses)
+    // has access to all of them.
+    const campuses = (await campusesByAdmin(prisma, [admin])).get(admin.id) ?? [];
+    const campusAccess = { all: admin.allCampuses !== false || admin.role !== "sub_admin", campuses };
+
     res.status(200).json({
       message: "Admin logged in successfully",
-      data: { token, admin: responseAdmin, firstLogin },
+      data: { token, admin: { ...responseAdmin, campusAccess }, firstLogin },
     });
   } catch (error) {
     next(error);
@@ -331,38 +339,38 @@ exports.getSchoolAdmins = async (req, res, next) => {
   }
 };
 
+// Both of these were reachable by anyone (update had no authentication at all) and
+// could change a role or campus of any admin of any school. They are now head-admin only,
+// confined to the caller's own school, and cannot touch a head admin's role, a sub-admin's
+// campus access (that is the sub-admin screen) or another school's admins.
+const SCHOOL_ADMIN_ROLES = ["super_admin", "school_admin", "sub_admin"];
+
 exports.updateAdmin = async (req, res, next) => {
   const { error } = updateAdminSchema.validate(req.body);
-
   if (error) return res.status(400).json({ message: error.details[0].message });
 
   const { id } = req.params;
-  const { name, email, password, role, campusId } = req.body;
+  const { name, email, password } = req.body;
 
   try {
-    // find admin to update
-    const admin = await prisma.admin.findUnique({
-      where: { id: parseInt(id) },
+    const admin = await prisma.admin.findFirst({
+      where: { id: parseInt(id), schoolId: req.schoolId, role: { in: SCHOOL_ADMIN_ROLES } },
+      select: { id: true },
     });
     if (!admin) return res.status(404).json({ message: "Admin not found" });
 
-    // prepare data to update
     const updateData = {};
     if (name) updateData.name = name;
     if (email) updateData.email = email;
-    if (password) updateData.password = password;
-    if (role) updateData.role = role;
-    if (campusId) updateData.campusId = campusId;
-    if (steps) updateData.steps = steps;
+    // Never stored as typed.
+    if (password) updateData.password = await bcrypt.hash(password, 12);
 
-    // update admin
     const updatedAdmin = await prisma.admin.update({
-      where: { id: parseInt(id) },
+      where: { id: admin.id },
       data: updateData,
+      select: { id: true, name: true, email: true, role: true, schoolId: true },
     });
-    res
-      .status(200)
-      .json({ message: "Admin updated successfully", updatedAdmin });
+    res.status(200).json({ message: "Admin updated successfully", updatedAdmin });
   } catch (error) {
     next(error);
   }
@@ -371,13 +379,20 @@ exports.updateAdmin = async (req, res, next) => {
 exports.deleteAdmin = async (req, res, next) => {
   const { id } = req.params;
   try {
-    // Find and delete the admin
-    const admin = await prisma.admin.findUnique({
-      where: { id: parseInt(id) },
+    const target = parseInt(id);
+    if (target === req.user.id) return res.status(400).json({ message: "You cannot delete your own account" });
+
+    const admin = await prisma.admin.findFirst({
+      where: { id: target, schoolId: req.schoolId, role: { in: SCHOOL_ADMIN_ROLES } },
+      select: { id: true, name: true, email: true },
     });
     if (!admin) return res.status(404).json({ message: "Admin not found" });
 
-    await prisma.admin.delete({ where: { id: parseInt(id) } });
+    await prisma.$transaction(async (tx) => {
+      await tx.adminCampusAccess.deleteMany({ where: { adminId: admin.id } });
+      await tx.admin.delete({ where: { id: admin.id } });
+    });
+    // The record, minus anything secret (this used to return the password hash).
     res.status(200).json({ message: "Admin deleted successfully", admin });
   } catch (error) {
     next(error);
@@ -506,7 +521,7 @@ exports.getSchoolAssessments = async (req, res, next) => {
 
     // Only scope by school through class relation
     const where = {
-      class: { is: { schoolId: Number(schoolId) } }
+      class: { is: campusScope.withScope({ schoolId: Number(schoolId) }, campusScope.classWhere(req)) }
     };
 
     const [total, assessments] = await Promise.all([
@@ -555,6 +570,9 @@ exports.getOverview = async (req, res, next) => {
     if (!schoolId) return res.status(400).json({ message: "School ID required" });
 
     const sid = Number(schoolId);
+    // Counts are of the admin's own campuses (a head admin's scope is empty: everything).
+    const studentScope = campusScope.studentWhere(req);
+    const staffScope = campusScope.staffWhere(req);
 
     // Run all DB queries in parallel — much faster than sequential awaits
     const [
@@ -566,13 +584,13 @@ exports.getOverview = async (req, res, next) => {
       recentExams,
       activeSession
     ] = await Promise.all([
-      prisma.student.count({ where: { schoolId: sid } }),
-      prisma.student.count({ where: { schoolId: sid, gender: "Male" } }),
-      prisma.student.count({ where: { schoolId: sid, gender: "Female" } }),
-      prisma.staff.count({ where: { schoolId: sid } }),
-      prisma.campus.count({ where: { schoolId: sid } }),
+      prisma.student.count({ where: campusScope.withScope({ schoolId: sid }, studentScope) }),
+      prisma.student.count({ where: campusScope.withScope({ schoolId: sid, gender: "Male" }, studentScope) }),
+      prisma.student.count({ where: campusScope.withScope({ schoolId: sid, gender: "Female" }, studentScope) }),
+      prisma.staff.count({ where: campusScope.withScope({ schoolId: sid }, staffScope) }),
+      prisma.campus.count({ where: { schoolId: sid, ...(campusScope.isRestricted(req) ? { id: { in: req.campusIds } } : {}) } }),
       prisma.exam.findMany({
-        where: { class: { schoolId: sid } },
+        where: { class: campusScope.withScope({ schoolId: sid }, campusScope.classWhere(req)) },
         orderBy: { createdAt: "desc" },
         take: 5,
         select: {

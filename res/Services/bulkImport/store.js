@@ -76,13 +76,13 @@ function summaryOf(records) {
  *
  * @returns {Promise<{ records: Array, summary: Object }>}
  */
-async function revalidateJob(job) {
+async function revalidateJob(job, campusIds = null) {
   const stored = await prisma.bulkImportRecord.findMany({
     where: { jobId: job.id },
     orderBy: { rowNumber: "asc" },
   });
 
-  const reference = await BulkImportValidator.loadReference(job.schoolId, job.entity);
+  const reference = await BulkImportValidator.loadReference(job.schoolId, job.entity, campusIds);
 
   const validated = BulkImportValidator.validateAll(
     stored.map((row) => ({

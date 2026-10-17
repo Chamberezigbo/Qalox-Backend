@@ -1,5 +1,6 @@
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
+const campusScope = require("../../util/campusScope");
 
 const MONTHS_BACK = 6;
 
@@ -77,7 +78,9 @@ exports.getCampusAnalytics = async (req, res, next) => {
     const schoolId = req.schoolId;
 
     const [campuses, classes, students, resultRows, studentFees, payments] = await Promise.all([
-      prisma.campus.findMany({ where: { schoolId } }),
+      // A campus-restricted admin gets analytics for their campuses only; every figure
+      // below is worked out per campus, so nothing from another campus is included.
+      prisma.campus.findMany({ where: { schoolId, ...(campusScope.isRestricted(req) ? { id: { in: req.campusIds } } : {}) } }),
       prisma.class.findMany({ where: { schoolId }, select: { id: true, campusId: true, department: true } }),
       prisma.student.findMany({ where: { schoolId }, select: { id: true, campusId: true, classId: true, createdAt: true } }),
       prisma.publishedResultRow.findMany({

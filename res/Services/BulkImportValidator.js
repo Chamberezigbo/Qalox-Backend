@@ -29,11 +29,18 @@ class BulkImportValidator {
    *
    * @param {Number} schoolId
    * @param {String} entity "students" | "staff"
+   * @param {number[] | null} [campusIds] a campus-restricted admin's campuses; null for everyone else.
+   *   A restricted admin's file can name only their own campuses and classes (and classes
+   *   with no campus), so another campus's reads exactly like a name that does not exist.
    */
-  static async loadReference(schoolId, entity) {
+  static async loadReference(schoolId, entity, campusIds = null) {
+    const campusFilter = Array.isArray(campusIds) ? { id: { in: campusIds } } : {};
+    const classCampusFilter = Array.isArray(campusIds)
+      ? { OR: [{ campusId: null }, { campusId: { in: campusIds } }] }
+      : {};
     if (entity === "staff") {
       const [campuses, staff] = await Promise.all([
-        prisma.campus.findMany({ where: { schoolId }, select: { id: true, name: true } }),
+        prisma.campus.findMany({ where: { schoolId, ...campusFilter }, select: { id: true, name: true } }),
         // Staff.email is unique across the whole table, not per school, so an
         // email taken by another school still blocks this import. Scoping this
         // lookup to the school would report "no duplicate" and then fail at
@@ -56,10 +63,10 @@ class BulkImportValidator {
 
     const [classes, campuses, students] = await Promise.all([
       prisma.class.findMany({
-        where: { schoolId },
+        where: { schoolId, ...classCampusFilter },
         select: { id: true, name: true, classGroups: { select: { id: true, name: true } } },
       }),
-      prisma.campus.findMany({ where: { schoolId }, select: { id: true, name: true } }),
+      prisma.campus.findMany({ where: { schoolId, ...campusFilter }, select: { id: true, name: true } }),
       // Students have no unique key, so a duplicate is a judgement call made on
       // name + date of birth. Scoped to this school and to three small columns,
       // so even a large school is a cheap read.

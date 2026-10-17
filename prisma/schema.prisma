@@ -107,6 +107,10 @@ model Admin {
   subAdminLabel    String?  @db.VarChar(100) // custom label when subAdminType = other, e.g. "Exams Officer"
   createdByAdminId Int? // id of the head admin (super_admin/school_admin) who created this sub-admin
   permissions      String?  @db.Text // JSON array of granted permission keys, e.g. ["students.manage","fees.manage"]
+  // Campus access of a sub-admin. true (the default, and every existing sub-admin) means
+  // all of the school's campuses; false means ONLY the campuses in AdminCampusAccess.
+  // Head admins are never restricted, whatever this says.
+  allCampuses      Boolean  @default(true)
 
   // Relationships
   school                       School?                @relation(fields: [schoolId], references: [id])
@@ -1375,6 +1379,23 @@ model Broadcast {
 
   @@index([schoolId])
   @@map("broadcasts")
+}
+
+// The campuses a campus-restricted sub-admin may work in. Read from the database on
+// every request, so changing it takes effect on their next click. Plain ids, no
+// relations, like the other ledgers.
+model AdminCampusAccess {
+  id        Int      @id @default(autoincrement())
+  adminId   Int
+  campusId  Int
+  // JSON array of permission keys held on THIS campus. NULL = the sub-admin's own
+  // (global) permissions apply here, so existing rows keep working unchanged.
+  permissions String? @db.Text
+  createdAt DateTime @default(now())
+
+  @@unique([adminId, campusId])
+  @@index([campusId])
+  @@map("admin_campus_access")
 }
 
 // ============================================

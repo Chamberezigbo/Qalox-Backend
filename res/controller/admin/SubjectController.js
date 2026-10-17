@@ -1,4 +1,5 @@
 const prisma = require("../../util/prisma");
+const campusScope = require("../../util/campusScope");
 
 // ✅ Create a new subject
 exports.createSubject = async (req, res, next) => {
@@ -14,6 +15,17 @@ exports.createSubject = async (req, res, next) => {
            });
          }
      
+         // A restricted admin creates subjects only in their own campuses; one with no
+         // campus would belong to nobody they can reach.
+         if (campusScope.isRestricted(req) && (campusId == null || campusId === "")) {
+           return res.status(403).json({ success: false, message: "Choose one of your campuses for this subject" });
+         }
+         campusScope.assertCampusAllowed(req, campusId);
+         if (campusId != null && campusId !== "") {
+           const campus = await prisma.campus.findFirst({ where: { id: Number(campusId), schoolId }, select: { id: true } });
+           if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
+         }
+
          // Check for existing subject with same name in same school/campus
          const existing = await prisma.subject.findFirst({
            where: {
@@ -59,13 +71,14 @@ exports.getAllSubjects = async (req, res, next) => {
   // schoolId from auth middleware
   const schoolId = req.schoolId;
 
+    campusScope.assertCampusAllowed(req, campusId);
     const filters = {};
     if (schoolId) filters.schoolId = parseInt(schoolId);
     if (campusId) filters.campusId = parseInt(campusId);
     if (name) filters.name = { contains: name};
 
     const subjects = await prisma.subject.findMany({
-      where: filters,
+      where: campusScope.withScope(filters, campusScope.subjectWhere(req)),
       orderBy: { createdAt: "desc" },
       include: {
         campus: {
@@ -86,9 +99,20 @@ exports.editSubject = async (req, res, next) => {
          const { subjectId } = req.params;
          const { name, code, campusId } = req.body;
      
-         const subject = await prisma.subject.findUnique({ where: { id: parseInt(subjectId) } });
+         const subject = await prisma.subject.findFirst({
+           where: campusScope.withScope({ id: parseInt(subjectId), schoolId: req.schoolId }, campusScope.subjectWhere(req)),
+         });
          if (!subject) {
            return res.status(404).json({ success: false, message: "Subject not found" });
+         }
+
+         // Moving a subject to another campus: this school's, and the admin's own.
+         if (campusId !== undefined && campusId !== null) {
+           campusScope.assertCampusAllowed(req, campusId);
+           const campus = await prisma.campus.findFirst({ where: { id: Number(campusId), schoolId: req.schoolId }, select: { id: true } });
+           if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
+         } else if (campusId === null && campusScope.isRestricted(req)) {
+           return res.status(403).json({ success: false, message: "You do not have access to that campus" });
          }
      
          // Check duplicate name within same school/campus if name is changing
@@ -123,7 +147,9 @@ exports.deleteSubject = async (req, res, next) => {
        try {
          const { subjectId } = req.params;
      
-         const subject = await prisma.subject.findUnique({ where: { id: parseInt(subjectId) } });
+         const subject = await prisma.subject.findFirst({
+           where: campusScope.withScope({ id: parseInt(subjectId), schoolId: req.schoolId }, campusScope.subjectWhere(req)),
+         });
          if (!subject) {
            return res.status(404).json({ success: false, message: "Subject not found" });
          }

@@ -118,9 +118,9 @@ class BulkImportImporter {
    * @param {Array}  params.records validated records to create (already filtered to valid ones)
    * @returns {Promise<Array<{ recordId, rowNumber, ok, reason, data }>>}
    */
-  static async importRecords({ schoolId, entity, records }) {
-    if (entity === "students") return this.importStudents({ schoolId, records });
-    return this.importStaff({ schoolId, records });
+  static async importRecords({ schoolId, entity, records, campusIds = null }) {
+    if (entity === "students") return this.importStudents({ schoolId, records, campusIds });
+    return this.importStaff({ schoolId, records, campusIds });
   }
 
   /**
@@ -174,7 +174,12 @@ class BulkImportImporter {
     return null;
   }
 
-  static async importStudents({ schoolId, records }) {
+  static async importStudents({ schoolId, records, campusIds = null }) {
+    // A campus-restricted admin imports only into their own campuses (and classes with none).
+    const campusFilter = Array.isArray(campusIds) ? { id: { in: campusIds } } : {};
+    const classCampusFilter = Array.isArray(campusIds)
+      ? { OR: [{ campusId: null }, { campusId: { in: campusIds } }] }
+      : {};
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
       select: { prefix: true },
@@ -203,7 +208,7 @@ class BulkImportImporter {
     // repeat across every row.
     const [classes, campuses] = await Promise.all([
       prisma.class.findMany({
-        where: { schoolId },
+        where: { schoolId, ...classCampusFilter },
         select: {
           id: true,
           name: true,
@@ -211,7 +216,7 @@ class BulkImportImporter {
           classGroups: { select: { id: true, name: true } },
         },
       }),
-      prisma.campus.findMany({ where: { schoolId }, select: { id: true, name: true } }),
+      prisma.campus.findMany({ where: { schoolId, ...campusFilter }, select: { id: true, name: true } }),
     ]);
 
     const results = [];
@@ -280,14 +285,14 @@ class BulkImportImporter {
     return results;
   }
 
-  static async importStaff({ schoolId, records }) {
+  static async importStaff({ schoolId, records, campusIds = null }) {
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
       select: { prefix: true },
     });
 
     const campuses = await prisma.campus.findMany({
-      where: { schoolId },
+      where: { schoolId, ...(Array.isArray(campusIds) ? { id: { in: campusIds } } : {}) },
       select: { id: true, name: true },
     });
 

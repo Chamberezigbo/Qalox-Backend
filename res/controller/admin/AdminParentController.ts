@@ -1,5 +1,7 @@
 import { Response, NextFunction, Request } from "express";
 import { AdminParentService } from "../../Services/admin/AdminParentService";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const campusScope = require("../../util/campusScope");
 
 interface AdminRequest extends Request {
     schoolId?: number;
@@ -19,6 +21,7 @@ export class AdminParentController {
                 email,
                 phone,
                 registrationNumbers,
+                studentScope: campusScope.studentWhere(req),
             });
 
             return res.status(201).json({ success: true, data });
@@ -32,7 +35,7 @@ export class AdminParentController {
             if (!req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
             const { name, email, phone } = req.body;
-            const data = await this.service.updateParent(req.schoolId, Number(req.params.id), { name, email, phone });
+            const data = await this.service.updateParent(req.schoolId, Number(req.params.id), { name, email, phone }, campusScope.studentWhere(req));
 
             return res.json({ success: true, data });
         } catch (err) {
@@ -45,7 +48,7 @@ export class AdminParentController {
             if (!req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
             const { registrationNumbers } = req.body;
-            const data = await this.service.linkChildren(req.schoolId, Number(req.params.id), registrationNumbers);
+            const data = await this.service.linkChildren(req.schoolId, Number(req.params.id), registrationNumbers, campusScope.studentWhere(req));
 
             return res.json({ success: true, data });
         } catch (err) {
@@ -57,7 +60,7 @@ export class AdminParentController {
         try {
             if (!req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-            const data = await this.service.unlinkChild(req.schoolId, Number(req.params.id), Number(req.params.studentId));
+            const data = await this.service.unlinkChild(req.schoolId, Number(req.params.id), Number(req.params.studentId), campusScope.studentWhere(req));
 
             return res.json({ success: true, data });
         } catch (err) {
@@ -69,7 +72,7 @@ export class AdminParentController {
         try {
             if (!req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-            const data = await this.service.list(req.schoolId);
+            const data = await this.service.list(req.schoolId, campusScope.studentWhere(req));
             return res.json({ success: true, data });
         } catch (err) {
             next(err);
@@ -80,7 +83,7 @@ export class AdminParentController {
         try {
             if (!req.schoolId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-            const data = await this.service.resetPassword(req.schoolId, Number(req.params.id));
+            const data = await this.service.resetPassword(req.schoolId, Number(req.params.id), campusScope.studentWhere(req));
             return res.json({ success: true, data });
         } catch (err) {
             next(err);

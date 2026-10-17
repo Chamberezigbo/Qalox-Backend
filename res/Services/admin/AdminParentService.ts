@@ -29,6 +29,8 @@ interface CreateOrLinkInput {
     email: string;
     phone?: string;
     registrationNumbers: string[];
+    /** A prisma `where` on Student: the campuses a restricted admin can reach. */
+    studentScope?: Record<string, unknown>;
 }
 
 interface LinkResult {
@@ -61,11 +63,12 @@ export class AdminParentService {
     private async classifyLinks(
         schoolId: number,
         existingParentId: number | null,
-        registrationNumbers: string[]
+        registrationNumbers: string[],
+        studentScope: Record<string, unknown> = {}
     ): Promise<{ results: LinkResult[]; toLink: LinkCandidate[] }> {
         const trimmed = [...new Set(registrationNumbers.map((r) => r.trim()).filter(Boolean))];
         const students = await prisma.student.findMany({
-            where: { schoolId, registrationNumber: { in: trimmed } },
+            where: { schoolId, registrationNumber: { in: trimmed }, ...studentScope },
             select: { id: true, name: true, surname: true, registrationNumber: true, parentId: true },
         });
         const byRegNo = new Map(students.map((s) => [s.registrationNumber, s]));
@@ -115,7 +118,7 @@ export class AdminParentService {
      * the student record. Here the admin already has that authority directly.
      */
     async createOrLinkParent(input: CreateOrLinkInput) {
-        const { schoolId, name, email, phone, registrationNumbers } = input;
+        const { schoolId, name, email, phone, registrationNumbers, studentScope = {} } = input;
 
         if (
             !name?.trim() ||
@@ -130,7 +133,7 @@ export class AdminParentService {
         let parent = await prisma.parent.findUnique({ where: { email: normalizedEmail } });
         let rawPassword: string | null = null;
 
-        const { results, toLink } = await this.classifyLinks(schoolId, parent?.id ?? null, registrationNumbers);
+        const { results, toLink } = await this.classifyLinks(schoolId, parent?.id ?? null, registrationNumbers, studentScope);
 
         if (!parent) {
             if (toLink.length === 0) {
@@ -191,17 +194,17 @@ export class AdminParentService {
     }
 
     /** Links one or more additional students to an already-existing parent. */
-    async linkChildren(schoolId: number, parentId: number, registrationNumbers: string[]) {
+    async linkChildren(schoolId: number, parentId: number, registrationNumbers: string[], studentScope: Record<string, unknown> = {}) {
         if (!Array.isArray(registrationNumbers) || registrationNumbers.filter((r) => r?.trim()).length === 0) {
             throw new AppError("At least one student registration number is required", 400);
         }
 
         const parent = await prisma.parent.findFirst({
-            where: { id: parentId, children: { some: { schoolId } } },
+            where: { id: parentId, children: { some: { schoolId, ...studentScope } } },
         });
         if (!parent) throw new AppError("Parent not found", 404);
 
-        const { results, toLink } = await this.classifyLinks(schoolId, parent.id, registrationNumbers);
+        const { results, toLink } = await this.classifyLinks(schoolId, parent.id, registrationNumbers, studentScope);
 
         const linkedStudents: { id: number; name: string; registrationNumber: string }[] = [];
         for (const candidate of toLink) {
@@ -214,9 +217,9 @@ export class AdminParentService {
     }
 
     /** Edits a parent's own contact details (name / email / phone). */
-    async updateParent(schoolId: number, parentId: number, input: { name?: string; email?: string; phone?: string }) {
+    async updateParent(schoolId: number, parentId: number, input: { name?: string; email?: string; phone?: string }, studentScope: Record<string, unknown> = {}) {
         const parent = await prisma.parent.findFirst({
-            where: { id: parentId, children: { some: { schoolId } } },
+            where: { id: parentId, children: { some: { schoolId, ...studentScope } } },
         });
         if (!parent) throw new AppError("Parent not found", 404);
 
@@ -247,9 +250,9 @@ export class AdminParentService {
     }
 
     /** Unlinks one child from a parent's account. */
-    async unlinkChild(schoolId: number, parentId: number, studentId: number) {
+    async unlinkChild(schoolId: number, parentId: number, studentId: number, studentScope: Record<string, unknown> = {}) {
         const student = await prisma.student.findFirst({
-            where: { id: studentId, schoolId, parentId },
+            where: { id: studentId, schoolId, parentId, ...studentScope },
         });
         if (!student) throw new AppError("This student is not linked to that parent account", 404);
 
@@ -257,9 +260,9 @@ export class AdminParentService {
         return { studentId: student.id, unlinked: true };
     }
 
-    async resetPassword(schoolId: number, parentId: number) {
+    async resetPassword(schoolId: number, parentId: number, studentScope: Record<string, unknown> = {}) {
         const parent = await prisma.parent.findFirst({
-            where: { id: parentId, children: { some: { schoolId } } },
+            where: { id: parentId, children: { some: { schoolId, ...studentScope } } },
         });
         if (!parent) throw new AppError("Parent not found", 404);
 
@@ -271,12 +274,12 @@ export class AdminParentService {
     }
 
     /** Every parent with at least one child in this school. */
-    async list(schoolId: number) {
+    async list(schoolId: number, studentScope: Record<string, unknown> = {}) {
         const parents = await prisma.parent.findMany({
-            where: { children: { some: { schoolId } } },
+            where: { children: { some: { schoolId, ...studentScope } } },
             include: {
                 children: {
-                    where: { schoolId },
+                    where: { schoolId, ...studentScope },
                     select: { id: true, name: true, surname: true, registrationNumber: true },
                 },
             },

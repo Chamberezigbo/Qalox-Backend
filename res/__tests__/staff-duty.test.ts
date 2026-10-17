@@ -4,7 +4,7 @@
 // while the assign-teacher list matched the same value through MySQL (which is
 // case-insensitive) and showed them as a teacher anyway.
 jest.mock("../util/prisma", () => ({
-  staff: { findUnique: jest.fn(), update: jest.fn(), create: jest.fn() },
+  staff: { findUnique: jest.fn(), findFirst: jest.fn(), update: jest.fn(), create: jest.fn() },
   school: { findUnique: jest.fn() },
 }));
 jest.mock("../util/jwt", () => ({ signTeacherToken: jest.fn().mockReturnValue("signed-token") }));
@@ -19,7 +19,7 @@ import { normalizeDuty, isTeacherDuty, STAFF_DUTIES } from "../util/staffDuty";
 import { TeacherAuthService } from "../Services/auth/TeacherAuthService";
 
 const db = prisma as unknown as {
-  staff: { findUnique: jest.Mock; update: jest.Mock; create: jest.Mock };
+  staff: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock; create: jest.Mock };
   school: { findUnique: jest.Mock };
 };
 
@@ -126,10 +126,10 @@ describe("updateStaff — blanks from the edit form", () => {
   // collide under the unique index, and a blank date or salary is not a valid
   // DateTime or Decimal at all.
   const update = async (body: Record<string, unknown>) => {
-    db.staff.findUnique.mockResolvedValue({ id: 9 });
+    db.staff.findFirst.mockResolvedValue({ id: 9 });
     db.staff.update.mockImplementation(({ data }: any) => Promise.resolve({ id: 9, ...data }));
     const res = mockRes();
-    await updateStaff({ params: { staffId: "9" }, body: { ...body } }, res, jest.fn());
+    await updateStaff({ params: { staffId: "9" }, schoolId: 7, body: { ...body } }, res, jest.fn());
     return res;
   };
 

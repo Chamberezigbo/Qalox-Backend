@@ -7,6 +7,22 @@ const { sendEmail } = require("../../Services/EmailService");
 const { brandedEmail } = require("../../util/emailTemplate");
 const { loadStudentFeeForReceipt, buildReceiptData } = require("../../util/receiptData");
 const flutterwave = require("../../Services/FlutterwaveService");
+const campusScope = require("../../util/campusScope");
+
+/**
+ * A student-fee record of this school, in the admin's campus scope (by the student's
+ * campus); 404 otherwise, so another campus's invoice reads as not found.
+ */
+async function assertFeeInScope(req, studentFeeId) {
+  const found = await prisma.studentFee.findFirst({
+    where: campusScope.withScope({ id: studentFeeId, schoolId: req.schoolId }, campusScope.viaStudent(req)),
+    select: { id: true },
+  });
+  if (!found) {
+    const { AppError } = require("../../util/AppError");
+    throw new AppError("Student fee record not found", 404);
+  }
+}
 
 const PAYMENT_METHODS = ["Bank Transfer", "Cash", "Card"];
 
@@ -86,7 +102,9 @@ exports.upsertFeeStructure = async (req, res, next) => {
       });
     }
 
-    const classRecord = await prisma.class.findFirst({ where: { id: parseInt(classId), schoolId } });
+    const classRecord = await prisma.class.findFirst({
+      where: campusScope.withScope({ id: parseInt(classId), schoolId }, campusScope.classWhere(req)),
+    });
     if (!classRecord) {
       return res.status(404).json({ success: false, message: "Class not found", code: "CLASS_NOT_FOUND" });
     }
@@ -184,7 +202,7 @@ exports.getFeeStructures = async (req, res, next) => {
     if (session) where.session = session;
 
     const structures = await prisma.feeStructure.findMany({
-      where,
+      where: campusScope.withScope(where, campusScope.viaClass(req)),
       include: { items: true, class: { select: { name: true } } },
       orderBy: { createdAt: "desc" },
     });
@@ -229,9 +247,12 @@ exports.getStudentFees = async (req, res, next) => {
       };
     }
 
+    // A restricted admin's list, and its total, hold only their campuses' students.
+    const scopedWhere = campusScope.withScope(where, campusScope.viaStudent(req));
+
     const [records, total] = await Promise.all([
       prisma.studentFee.findMany({
-        where,
+        where: scopedWhere,
         include: {
           student: true,
           feeStructure: { include: { class: { select: { name: true } } } },
@@ -241,7 +262,7 @@ exports.getStudentFees = async (req, res, next) => {
         skip: (page - 1) * limit,
         take: limit,
       }),
-      prisma.studentFee.count({ where }),
+      prisma.studentFee.count({ where: scopedWhere }),
     ]);
 
     res.status(200).json({
@@ -263,14 +284,16 @@ exports.getDebtSummary = async (req, res, next) => {
   try {
     const schoolId = req.schoolId;
 
+    const scope = campusScope.viaStudent(req);
+    const feeWhere = (extra = {}) => campusScope.withScope({ schoolId, ...extra }, scope);
     const [totals, paidCount, partialCount, unpaidCount] = await Promise.all([
       prisma.studentFee.aggregate({
-        where: { schoolId },
+        where: feeWhere(),
         _sum: { totalFee: true, amountPaid: true },
       }),
-      prisma.studentFee.count({ where: { schoolId, status: "paid" } }),
-      prisma.studentFee.count({ where: { schoolId, status: "partial" } }),
-      prisma.studentFee.count({ where: { schoolId, status: "unpaid" } }),
+      prisma.studentFee.count({ where: feeWhere({ status: "paid" }) }),
+      prisma.studentFee.count({ where: feeWhere({ status: "partial" }) }),
+      prisma.studentFee.count({ where: feeWhere({ status: "unpaid" }) }),
     ]);
 
     const totalExpected = totals._sum.totalFee || 0;
@@ -318,11 +341,11 @@ exports.recordPayment = async (req, res, next) => {
       });
     }
 
-    const studentFee = await prisma.studentFee.findUnique({
-      where: { id: parseInt(studentFeeId) },
+    const studentFee = await prisma.studentFee.findFirst({
+      where: campusScope.withScope({ id: parseInt(studentFeeId), schoolId: req.schoolId }, campusScope.viaStudent(req)),
       include: {
         student: true,
-        feeStructure: { include: { items: true, class: { select: { name: true } } } },
+        feeStructure: { include: { items: true, class: { select: { name: true, campusId: true } } } },
       },
     });
 
@@ -357,15 +380,13 @@ exports.recordPayment = async (req, res, next) => {
     logger.info("[RECORD_PAYMENT] Payment recorded", { studentFeeId: studentFee.id, amount, receiptNo });
 
     // Notify the school's admins — fire-and-forget, never blocks the response.
-    prisma.admin.findMany({
-      where: { schoolId: studentFee.schoolId, role: { in: ["school_admin", "sub_admin", "super_admin"] } },
-      select: { id: true },
-    }).then((admins) => {
+    // Only the admins who can see this student's campus hear about the payment.
+    campusScope.adminIdsWhoCanSee(prisma, studentFee.schoolId, studentFee.student.campusId ?? studentFee.feeStructure?.class?.campusId).then((adminIds) => {
       const studentName = `${studentFee.student.name} ${studentFee.student.surname}`;
-      admins.forEach((a) =>
+      adminIds.forEach((adminRecipientId) =>
         createNotification({
           recipientType: "admin",
-          recipientId: a.id,
+          recipientId: adminRecipientId,
           schoolId: studentFee.schoolId,
           title: "Fee payment received",
           message: `${studentName} paid ₦${amount.toLocaleString()} (receipt ${receiptNo}).`,
@@ -423,6 +444,7 @@ exports.getReceipt = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Invalid student fee ID", code: "INVALID_REQUEST" });
     }
 
+    await assertFeeInScope(req, studentFeeId);
     const studentFee = await loadStudentFeeForReceipt(studentFeeId);
 
     if (!studentFee) {
@@ -535,6 +557,10 @@ exports.resolveBankAccount = async (req, res, next) => {
  */
 exports.createBankAccount = async (req, res, next) => {
   try {
+    // Bank accounts are the school's, shared by every campus: head admins only.
+    if (campusScope.isRestricted(req)) {
+      return res.status(403).json({ success: false, message: "Only the head admin can change the school's bank accounts" });
+    }
     const { bankName, bankCode, accountName, accountNumber, label } = req.body;
     if (!bankName || !accountName || !accountNumber) {
       return res.status(400).json({
@@ -572,6 +598,10 @@ exports.getBankAccounts = async (req, res, next) => {
 /** PATCH /api/admin/fees/bank-accounts/:id */
 exports.updateBankAccount = async (req, res, next) => {
   try {
+    // Bank accounts are the school's, shared by every campus: head admins only.
+    if (campusScope.isRestricted(req)) {
+      return res.status(403).json({ success: false, message: "Only the head admin can change the school's bank accounts" });
+    }
     const id = parseInt(req.params.id, 10);
     const { bankName, bankCode, accountName, accountNumber, label, isActive } = req.body;
 
@@ -602,6 +632,10 @@ exports.updateBankAccount = async (req, res, next) => {
 /** DELETE /api/admin/fees/bank-accounts/:id */
 exports.deleteBankAccount = async (req, res, next) => {
   try {
+    // Bank accounts are the school's, shared by every campus: head admins only.
+    if (campusScope.isRestricted(req)) {
+      return res.status(403).json({ success: false, message: "Only the head admin can change the school's bank accounts" });
+    }
     const id = parseInt(req.params.id, 10);
 
     const existing = await prisma.schoolBankAccount.findFirst({ where: { id, schoolId: req.schoolId } });
@@ -639,7 +673,7 @@ exports.deleteBankAccount = async (req, res, next) => {
 exports.listPendingPayments = async (req, res, next) => {
   try {
     const payments = await prisma.payment.findMany({
-      where: { status: "pending", studentFee: { schoolId: req.schoolId } },
+      where: { status: "pending", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
       include: {
         studentFee: {
           include: { student: true, feeStructure: { include: { class: { select: { name: true } } } } },
@@ -691,7 +725,7 @@ exports.approvePayment = async (req, res, next) => {
     }
 
     const payment = await prisma.payment.findFirst({
-      where: { id: paymentId, status: "pending", studentFee: { schoolId: req.schoolId } },
+      where: { id: paymentId, status: "pending", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
       include: { studentFee: true },
     });
     if (!payment) {
@@ -741,7 +775,7 @@ exports.rejectPayment = async (req, res, next) => {
     }
 
     const payment = await prisma.payment.findFirst({
-      where: { id: paymentId, status: "pending", studentFee: { schoolId: req.schoolId } },
+      where: { id: paymentId, status: "pending", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
     });
     if (!payment) {
       return res.status(404).json({ success: false, message: "Pending payment not found", code: "NOT_FOUND" });
@@ -774,6 +808,7 @@ exports.sendReceiptEmail = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Invalid student fee ID", code: "INVALID_REQUEST" });
     }
 
+    await assertFeeInScope(req, studentFeeId);
     const studentFee = await loadStudentFeeForReceipt(studentFeeId);
     if (!studentFee) {
       return res.status(404).json({ success: false, message: "Student fee record not found", code: "NOT_FOUND" });
@@ -859,7 +894,10 @@ exports.sendFeeReminders = async (req, res, next) => {
     }
 
     const records = await prisma.studentFee.findMany({
-      where: { id: { in: studentFeeIds.map((id) => parseInt(id)) } },
+      where: campusScope.withScope(
+        { id: { in: studentFeeIds.map((id) => parseInt(id)) }, schoolId: req.schoolId },
+        campusScope.viaStudent(req)
+      ),
       include: { student: true },
     });
 

@@ -9,6 +9,7 @@ const store = require("../../Services/bulkImport/store");
 const BulkImportValidator = require("../../Services/BulkImportValidator");
 const { PERMISSIONS } = require("../../util/permissions");
 const { parsePermissions } = require("../../util/permissions");
+const campusScope = require("../../util/campusScope");
 
 /**
  * Bulk import of students and staff.
@@ -67,7 +68,10 @@ function permissionError(req, entity) {
 async function loadJob(req, res) {
   const job = await prisma.bulkImportJob.findUnique({ where: { id: req.params.importId } });
 
-  if (!job || job.schoolId !== req.schoolId) {
+  // A campus-restricted sub-admin opens only the imports they started themselves: a
+  // file's rows are other people's records.
+  const notTheirs = campusScope.isRestricted(req) && job && job.adminId !== req.user?.id;
+  if (!job || job.schoolId !== req.schoolId || notTheirs) {
     res.status(404).json({ success: false, message: "Import not found" });
     return null;
   }
@@ -142,6 +146,7 @@ exports.uploadDocument = async (req, res, next) => {
         fileName: req.file.originalname,
         schoolId: req.schoolId,
         entity,
+        campusIds: campusScope.isRestricted(req) ? req.campusIds : null,
       }).catch((error) => {
         console.error(`Bulk import worker crashed for job ${job.id}:`, error);
       });
@@ -204,7 +209,7 @@ exports.getImportStatus = async (req, res, next) => {
     // readable if that column was never written.
     let columns = store.parseJson(job.columnsJson, null);
     if (!columns) {
-      const reference = await BulkImportValidator.loadReference(job.schoolId, job.entity);
+      const reference = await BulkImportValidator.loadReference(job.schoolId, job.entity, campusScope.isRestricted(req) ? req.campusIds : null);
       columns = buildColumns(job.entity, reference);
     }
 
@@ -321,7 +326,7 @@ exports.updateRecord = async (req, res, next) => {
       },
     });
 
-    const { records } = await store.revalidateJob(job);
+    const { records } = await store.revalidateJob(job, campusScope.isRestricted(req) ? req.campusIds : null);
     const updated = records.find((r) => r.id === record.recordId);
 
     return res.status(200).json({
@@ -382,7 +387,7 @@ exports.confirmImport = async (req, res, next) => {
       });
     }
 
-    const { records, summary } = await store.revalidateJob(job);
+    const { records, summary } = await store.revalidateJob(job, campusScope.isRestricted(req) ? req.campusIds : null);
 
     if (records.length === 0) {
       return res.status(400).json({ success: false, message: "This import has no rows." });
@@ -429,6 +434,7 @@ exports.confirmImport = async (req, res, next) => {
       schoolId: job.schoolId,
       entity: job.entity,
       records: valid,
+      campusIds: campusScope.isRestricted(req) ? req.campusIds : null,
     });
 
     const succeeded = results.filter((r) => r.ok);

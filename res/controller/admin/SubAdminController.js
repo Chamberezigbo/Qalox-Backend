@@ -9,8 +9,9 @@ const {
   isValidPermission,
   parsePermissions,
 } = require("../../util/permissions");
+const { resolveCampusAccess, saveCampusAccess, campusesByAdmin } = require("../../util/subAdminCampuses");
 
-const formatSubAdmin = (admin) => ({
+const formatSubAdmin = (admin, campuses) => ({
   id: admin.id,
   name: admin.name,
   email: admin.email,
@@ -20,6 +21,9 @@ const formatSubAdmin = (admin) => ({
   permissions: parsePermissions(admin.permissions),
   isSuspended: admin.isSuspended,
   createdAt: admin.createdAt,
+  // true: every campus. false: only the campuses listed.
+  allCampuses: admin.allCampuses !== false,
+  campuses: admin.allCampuses === false ? (campuses ?? []) : [],
 });
 
 /**
@@ -109,21 +113,29 @@ exports.createSubAdmin = async (req, res, next) => {
       }
     }
 
+    // Which campuses they can work in (only asked of a school with more than one).
+    const access = await resolveCampusAccess(prisma, { schoolId, body: req.body, creating: true });
+
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    const subAdmin = await prisma.admin.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        phone: phone || null,
-        role: "sub_admin",
-        schoolId,
-        subAdminType,
-        subAdminLabel: subAdminType === "other" ? subAdminLabel : null,
-        permissions: JSON.stringify(requestedPermissions),
-        createdByAdminId: creatorId,
-      },
+    const subAdmin = await prisma.$transaction(async (tx) => {
+      const created = await tx.admin.create({
+        data: {
+          name,
+          email,
+          password: hashedPassword,
+          phone: phone || null,
+          role: "sub_admin",
+          schoolId,
+          subAdminType,
+          subAdminLabel: subAdminType === "other" ? subAdminLabel : null,
+          permissions: JSON.stringify(requestedPermissions),
+          createdByAdminId: creatorId,
+          allCampuses: access.allCampuses,
+        },
+      });
+      await saveCampusAccess(tx, created.id, access);
+      return created;
     });
 
     logger.info("[CREATE_SUB_ADMIN] Sub-admin created", { subAdminId: subAdmin.id, schoolId });
@@ -131,7 +143,7 @@ exports.createSubAdmin = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: "Sub-admin created successfully",
-      data: formatSubAdmin(subAdmin),
+      data: formatSubAdmin(subAdmin, (await campusesByAdmin(prisma, [subAdmin])).get(subAdmin.id)),
     });
   } catch (err) {
     logger.error("[CREATE_SUB_ADMIN] Failed to create sub-admin", { error: err.message });
@@ -152,9 +164,11 @@ exports.getSubAdmins = async (req, res, next) => {
       orderBy: { createdAt: "desc" },
     });
 
+    const campuses = await campusesByAdmin(prisma, subAdmins);
+
     res.status(200).json({
       success: true,
-      data: subAdmins.map(formatSubAdmin),
+      data: subAdmins.map((a) => formatSubAdmin(a, campuses.get(a.id))),
     });
   } catch (err) {
     logger.error("[GET_SUB_ADMINS] Failed to fetch sub-admins", { error: err.message });
@@ -232,9 +246,14 @@ exports.updateSubAdmin = async (req, res, next) => {
       updateData.permissions = JSON.stringify(permissions);
     }
 
-    const updated = await prisma.admin.update({
-      where: { id: subAdminId },
-      data: updateData,
+    // Their campuses, when the request names them. Left alone otherwise.
+    const access = await resolveCampusAccess(prisma, { schoolId, body: req.body, creating: false });
+    if (access) updateData.allCampuses = access.allCampuses;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.admin.update({ where: { id: subAdminId }, data: updateData });
+      if (access) await saveCampusAccess(tx, subAdminId, access);
+      return row;
     });
 
     logger.info("[UPDATE_SUB_ADMIN] Sub-admin updated", { subAdminId });
@@ -242,7 +261,7 @@ exports.updateSubAdmin = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: "Sub-admin updated successfully",
-      data: formatSubAdmin(updated),
+      data: formatSubAdmin(updated, (await campusesByAdmin(prisma, [updated])).get(updated.id)),
     });
   } catch (err) {
     logger.error("[UPDATE_SUB_ADMIN] Failed to update sub-admin", { error: err.message });
@@ -279,7 +298,10 @@ exports.deleteSubAdmin = async (req, res, next) => {
       });
     }
 
-    await prisma.admin.delete({ where: { id: subAdminId } });
+    await prisma.$transaction(async (tx) => {
+      await tx.adminCampusAccess.deleteMany({ where: { adminId: subAdminId } });
+      await tx.admin.delete({ where: { id: subAdminId } });
+    });
 
     logger.info("[DELETE_SUB_ADMIN] Sub-admin deleted", { subAdminId });
 

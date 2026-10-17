@@ -1,10 +1,16 @@
 const prisma = require("../../util/prisma");
+const campusScope = require("../../util/campusScope");
 
 // ✅ Create a new campus
 exports.createCampus = async (req, res, next) => {
        try {
          const { name, address, phoneNumber, email } = req.body;
          const {schoolId} = req;
+
+         // A new campus would belong to nobody a restricted admin can reach.
+         if (campusScope.isRestricted(req)) {
+           return res.status(403).json({ success: false, message: "Only the head admin can add a campus" });
+         }
      
          // Check if campus with same name exists in same school
          const existing = await prisma.campus.findFirst({
@@ -44,8 +50,13 @@ exports.updateCampus = async (req, res, next) => {
          const { campusId } = req.params;
          const { name, address, phoneNumber, email, revenueTarget } = req.body;
 
-         const existing = await prisma.campus.findUnique({
-           where: { id: Number(campusId) },
+         // This school's, and (for a restricted admin) one of theirs: otherwise not found.
+         const existing = await prisma.campus.findFirst({
+           where: {
+             id: Number(campusId),
+             schoolId: req.schoolId,
+             ...(campusScope.isRestricted(req) ? { id: { in: req.campusIds.filter((id) => id === Number(campusId)) } } : {}),
+           },
          });
 
          if (!existing) {
@@ -83,6 +94,7 @@ exports.getCampuses = async (req, res, next) => {
          const { schoolId } = req;
      
          const where = {
+           ...(campusScope.isRestricted(req) && { id: { in: req.campusIds } }),
            ...(schoolId && { schoolId: Number(schoolId) }),
            ...(name && {
              name: { contains: name,}, // search by name

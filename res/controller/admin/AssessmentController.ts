@@ -4,6 +4,9 @@ import { AssessmentService } from "../../Services/AssessmentService";
 const { sendPdf } = require("../../util/sendPdf");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { buildReportCardsPdf, buildBroadsheetsPdf } = require("../../util/reportCardPdf");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const campusScope = require("../../util/campusScope");
+const prismaClient = require("../../util/prisma");
 
 interface AuthenticatedRequest extends Request {
     schoolId?: string;
@@ -11,6 +14,14 @@ interface AuthenticatedRequest extends Request {
 
 export class AssessmentController {
     private service = new AssessmentService();
+
+    /** The class, if it is this school's and in the admin's campus scope; otherwise a 404. */
+    private guardClass = (req: AuthenticatedRequest, classId: unknown) =>
+        campusScope.assertClassInScope(req, classId, prismaClient);
+
+    /** The student, if in scope; otherwise a 404. */
+    private guardStudent = (req: AuthenticatedRequest, studentId: unknown) =>
+        campusScope.assertStudentInScope(req, studentId, prismaClient);
 
     createCATemplate = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
         try {
@@ -29,6 +40,12 @@ export class AssessmentController {
                 if (!t.name || t.maxScore === undefined || t.isExam === undefined) {
                     throw new Error("Each template must have name, maxScore and isExam");
                 }
+            }
+
+            // The school-wide template (no class) is shared by every campus: head admins only.
+            if (classId) await this.guardClass(req, classId);
+            else if (campusScope.isRestricted(req)) {
+                return res.status(403).json({ success: false, message: "Only the head admin can change the school-wide template" });
             }
 
             const result = await this.service.createCATemplate({
@@ -55,6 +72,8 @@ export class AssessmentController {
 
             const classId = req.query.classId ? Number(req.query.classId) : undefined;
 
+            if (classId) await this.guardClass(req, classId);
+
             const result = await this.service.getCATemplates(Number(req.schoolId), classId);
 
             return res.status(200).json({ success: true, data: result });
@@ -74,6 +93,16 @@ export class AssessmentController {
             if (!classId || isNaN(Number(classId))) throw new Error("Invalid classId");
             if (!Array.isArray(subjectIds) || subjectIds.length === 0) {
                 throw new Error("subjectIds must be a non-empty array");
+            }
+
+            await this.guardClass(req, classId);
+            if (campusScope.isRestricted(req)) {
+                const reachable = await prismaClient.subject.count({
+                    where: campusScope.withScope({ id: { in: subjectIds.map(Number) }, schoolId: Number(req.schoolId) }, campusScope.subjectWhere(req)),
+                });
+                if (reachable !== new Set(subjectIds.map(Number)).size) {
+                    return res.status(404).json({ success: false, message: "Subject not found" });
+                }
             }
 
             const result = await this.service.assignSubjectsToClass({
@@ -100,6 +129,7 @@ export class AssessmentController {
             const classId = Number(req.params.classId);
             if (isNaN(classId)) throw new Error("Invalid classId");
 
+            await this.guardClass(req, classId);
             const result = await this.service.getClassSubjects(classId, Number(req.schoolId));
 
             return res.status(200).json({
@@ -121,6 +151,7 @@ export class AssessmentController {
             if (isNaN(classId)) throw new Error("Invalid classId");
             if (isNaN(subjectId)) throw new Error("Invalid subjectId");
 
+            await this.guardClass(req, classId);
             const result = await this.service.deleteSubjectFromClass(classId, subjectId, Number(req.schoolId));
 
             return res.status(200).json({
@@ -143,6 +174,8 @@ export class AssessmentController {
             if (!classId || !subjectId || !academicSessionId) {
                 throw new Error("classId, subjectId and academicSessionId are all required");
             }
+
+            await this.guardClass(req, classId);
 
             const result = await this.service.publishResults({
                 classId: Number(classId),
@@ -172,13 +205,17 @@ export class AssessmentController {
             const termId = req.query.termId ? Number(req.query.termId) : undefined;
             const subjectId = req.query.subjectId ? Number(req.query.subjectId) : undefined;
 
+            campusScope.assertCampusAllowed(req, campusId);
+            if (classId) await this.guardClass(req, classId);
+
             const result = await this.service.getPendingSubmissions({
                 schoolId: Number(req.schoolId),
                 campusId,
                 classId,
                 academicSessionId,
                 termId,
-                subjectId
+                subjectId,
+                classScope: campusScope.classWhere(req)
             });
 
             return res.status(200).json({ success: true, data: result });
@@ -197,13 +234,17 @@ export class AssessmentController {
             const termId = req.query.termId ? Number(req.query.termId) : undefined;
             const subjectId = req.query.subjectId ? Number(req.query.subjectId) : undefined;
 
+            campusScope.assertCampusAllowed(req, campusId);
+            if (classId) await this.guardClass(req, classId);
+
             const result = await this.service.getRejectedResults({
                 schoolId: Number(req.schoolId),
                 campusId,
                 classId,
                 academicSessionId,
                 termId,
-                subjectId
+                subjectId,
+                classScope: campusScope.classWhere(req)
             });
 
             return res.status(200).json({ success: true, data: result });
@@ -219,7 +260,7 @@ export class AssessmentController {
             const submissionId = Number(req.params.submissionId);
             if (isNaN(submissionId)) throw new Error("Invalid submissionId");
 
-            const result = await this.service.rejectSubmission(submissionId, Number(req.schoolId));
+            const result = await this.service.rejectSubmission(submissionId, Number(req.schoolId), campusScope.classWhere(req));
 
             return res.status(200).json({
                 success: true,
@@ -238,7 +279,7 @@ export class AssessmentController {
             const submissionId = Number(req.params.submissionId);
             if (isNaN(submissionId)) throw new Error("Invalid submissionId");
 
-            const result = await this.service.restoreRejectedSubmission(submissionId, Number(req.schoolId));
+            const result = await this.service.restoreRejectedSubmission(submissionId, Number(req.schoolId), campusScope.classWhere(req));
 
             return res.status(200).json({
                 success: true,
@@ -259,12 +300,15 @@ export class AssessmentController {
             const classGroupId = req.query.classGroupId ? Number(req.query.classGroupId) : undefined;
             const termId = req.query.termId ? Number(req.query.termId) : undefined;
 
+            if (classId) await this.guardClass(req, classId);
+
             const result = await this.service.getAdminBroadsheet({
                 classId,
                 academicSessionId,
                 schoolId: Number(req.schoolId),
                 classGroupId,
-                termId
+                termId,
+                classScope: campusScope.classWhere(req)
             });
 
             return res.status(200).json({ success: true, data: result });
@@ -278,7 +322,10 @@ export class AssessmentController {
         try {
             if (!req.schoolId) throw new Error("Missing schoolId");
 
+            if (req.query.classId) await this.guardClass(req, req.query.classId);
+
             const result = await this.service.getAdminBroadsheet({
+                classScope: campusScope.classWhere(req),
                 classId: req.query.classId ? Number(req.query.classId) : undefined,
                 academicSessionId: req.query.academicSessionId ? Number(req.query.academicSessionId) : undefined,
                 schoolId: Number(req.schoolId),
@@ -312,7 +359,11 @@ export class AssessmentController {
             const page = req.query.page ? Number(req.query.page) : 1;
             const pageSize = req.query.pageSize ? Number(req.query.pageSize) : 10;
 
+            if (classId) await this.guardClass(req, classId);
+            if (studentId) await this.guardStudent(req, studentId);
+
             const result = await this.service.getStudentResult({
+                studentScope: campusScope.studentWhere(req),
                 studentId,
                 classId,
                 schoolId: Number(req.schoolId),
@@ -341,7 +392,12 @@ export class AssessmentController {
             const pageSize = req.query.pageSize ? Number(req.query.pageSize) : 8;
             const termId = req.query.termId ? Number(req.query.termId) : undefined;
 
+            if (staffId) await campusScope.assertStaffInScope(req, staffId, prismaClient);
+            if (classId) await this.guardClass(req, classId);
+            if (subjectId) await campusScope.assertSubjectInScope(req, subjectId, prismaClient);
+
             const result = await this.service.getTeacherResult({
+                staffScope: campusScope.staffWhere(req),
                 staffId,
                 classId,
                 subjectId,
@@ -371,6 +427,7 @@ export class AssessmentController {
             }
 
             const result = await this.service.scheduleExam({
+                classScope: campusScope.classWhere(req),
                 examId,
                 schoolId: Number(req.schoolId),
                 scheduledDate: new Date(scheduledDate)
@@ -396,6 +453,7 @@ export class AssessmentController {
                 return res.status(400).json({ message: "Invalid studentId" });
             }
 
+            await this.guardStudent(req, studentId);
             const data = await this.service.getStudentCompleteResult({
                 studentId,
                 schoolId: Number(req.schoolId),
@@ -416,6 +474,7 @@ export class AssessmentController {
             const studentId = Number(req.params.studentId);
             if (Number.isNaN(studentId)) return res.status(400).json({ message: "Invalid studentId" });
 
+            await this.guardStudent(req, studentId);
             const card = await this.service.getStudentCompleteResult({
                 studentId,
                 schoolId: Number(req.schoolId),
@@ -440,7 +499,7 @@ export class AssessmentController {
                 return res.status(400).json({ message: "Invalid publishedResultId" });
             }
 
-            const result = await this.service.unpublishResults(publishedResultId, Number(req.schoolId), Number((req as any).user?.id) || undefined);
+            const result = await this.service.unpublishResults(publishedResultId, Number(req.schoolId), Number((req as any).user?.id) || undefined, campusScope.classWhere(req));
 
             return res.status(200).json({
                 success: true,
@@ -559,13 +618,17 @@ export class AssessmentController {
                 });
             }
 
+            campusScope.assertCampusAllowed(req, campusId);
+            if (classId) await this.guardClass(req, classId);
+
             const filterParams = {
                 schoolId: Number(req.schoolId),
                 campusId,
                 classId,
                 academicSessionId,
                 termId,
-                subjectId
+                subjectId,
+                classScope: campusScope.classWhere(req)
             };
 
             let data;

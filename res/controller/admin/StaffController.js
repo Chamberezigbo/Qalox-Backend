@@ -2,6 +2,7 @@ const prisma = require('../../util/prisma');
 const { generateUniqueIdentifier } = require("../../Models/generateUniqueIdentifier");
 const { createNotification } = require("../../util/notify");
 const { normalizeDuty } = require("../../util/staffDuty");
+const campusScope = require("../../util/campusScope");
 
 /**
  * Register a new staff
@@ -22,6 +23,13 @@ exports.createStaff = async (req, res, next) => {
       payroll,
       campusId,
     } = req.body;
+
+    // A campus named in the form has to be this school's, and a restricted admin's own.
+    if (Number.isInteger(campusId)) {
+      campusScope.assertCampusAllowed(req, campusId);
+      const campus = await prisma.campus.findFirst({ where: { id: campusId, schoolId }, select: { id: true } });
+      if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
+    }
 
     // Get the school prefix
     const school = await prisma.school.findUnique({
@@ -140,7 +148,9 @@ exports.bulkCreateStaff = async (req, res, next) => {
 
     // MySQL's Prisma client doesn't support `mode: "insensitive"` (Postgres-only),
     // so pre-fetch campuses once and match case-insensitively in JS
-    const allCampuses = await prisma.campus.findMany({ where: { schoolId } });
+    const allCampuses = await prisma.campus.findMany({
+      where: { schoolId, ...(campusScope.isRestricted(req) ? { id: { in: req.campusIds } } : {}) },
+    });
     const findCampusByName = (n) => allCampuses.find((c) => c.name.trim().toLowerCase() === n.trim().toLowerCase());
 
     const results = [];
@@ -222,8 +232,8 @@ exports.updateStaff = async (req, res, next) => {
     const value = req.body;
 
     // Ensure staff exists
-    const existingStaff = await prisma.staff.findUnique({
-      where: { id: Number(staffId) },
+    const existingStaff = await prisma.staff.findFirst({
+      where: campusScope.withScope({ id: Number(staffId), schoolId: req.schoolId }, campusScope.staffWhere(req)),
     });
 
     if (!existingStaff) {
@@ -279,6 +289,19 @@ exports.updateStaff = async (req, res, next) => {
       data.duty = duty;
     }
 
+    // Never a move to another school, and a restricted admin stays inside their campuses.
+    delete data.schoolId;
+    delete data.id;
+    if (data.campusId != null) {
+      campusScope.assertCampusAllowed(req, data.campusId);
+      const campus = await prisma.campus.findFirst({ where: { id: Number(data.campusId), schoolId: req.schoolId }, select: { id: true } });
+      if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
+      data.campusId = campus.id;
+    } else if ("campusId" in data && campusScope.isRestricted(req)) {
+      // Clearing the campus would make the record school-wide, out of this admin's reach.
+      return res.status(403).json({ success: false, message: "You do not have access to that campus" });
+    }
+
     // Update staff
     const updatedStaff = await prisma.staff.update({
       where: { id: Number(staffId) },
@@ -298,8 +321,8 @@ exports.updateStaff = async (req, res, next) => {
 exports.getStaffDetails = async (req, res, next) => {
   try {
     const { staffId } = req.params;
-    const staff = await prisma.staff.findUnique({
-      where: { id: Number(staffId) },
+    const staff = await prisma.staff.findFirst({
+      where: campusScope.withScope({ id: Number(staffId), schoolId: req.schoolId }, campusScope.staffWhere(req)),
       include: {
         campus: {
           select: { id: true, name: true },
@@ -339,24 +362,32 @@ exports.assignTeacher = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "staffId is required" });
 
     // ✅ Ensure staff exists
-    const staff = await prisma.staff.findUnique({ where: { id: parseInt(staffId) } });
+    const schoolId = req.schoolId;
+    const staff = await prisma.staff.findFirst({
+      where: campusScope.withScope({ id: parseInt(staffId), schoolId }, campusScope.staffWhere(req)),
+    });
     if (!staff) return res.status(404).json({ success: false, message: "Staff not found" });
 
     // ✅ Optional validations
     let classExists = null;
     if (classId) {
-      classExists = await prisma.class.findUnique({ where: { id: parseInt(classId) } });
+      classExists = await prisma.class.findFirst({
+        where: campusScope.withScope({ id: parseInt(classId), schoolId }, campusScope.classWhere(req)),
+      });
       if (!classExists) return res.status(404).json({ success: false, message: "Class not found" });
     }
 
     let subjectExists = null;
     if (subjectId) {
-      subjectExists = await prisma.subject.findUnique({ where: { id: parseInt(subjectId) } });
+      subjectExists = await prisma.subject.findFirst({
+        where: campusScope.withScope({ id: parseInt(subjectId), schoolId }, campusScope.subjectWhere(req)),
+      });
       if (!subjectExists) return res.status(404).json({ success: false, message: "Subject not found" });
     }
 
     if (campusId) {
-      const campusExists = await prisma.campus.findUnique({ where: { id: parseInt(campusId) } });
+      campusScope.assertCampusAllowed(req, campusId);
+      const campusExists = await prisma.campus.findFirst({ where: { id: parseInt(campusId), schoolId } });
       if (!campusExists) return res.status(404).json({ success: false, message: "Campus not found" });
     }
 
@@ -442,7 +473,7 @@ exports.getAllStaff = async (req, res, next) => {
 
     const filters = {
       schoolId, // ✅ ensures only staff of this school
-      AND: [],
+      AND: [campusScope.staffWhere(req)], // a restricted admin sees their campuses' staff and school-wide staff
     };
 
     if (name) {
@@ -452,6 +483,7 @@ exports.getAllStaff = async (req, res, next) => {
     }
 
     if (campusId) {
+      campusScope.assertCampusAllowed(req, campusId);
       filters.AND.push({ campusId: Number(campusId) });
     }
 
@@ -521,8 +553,8 @@ exports.deleteStaff = async (req, res, next) => {
     const { staffId } = req.params;
 
     // ✅ Ensure staff exists
-    const existingStaff = await prisma.staff.findUnique({
-      where: { id: Number(staffId) },
+    const existingStaff = await prisma.staff.findFirst({
+      where: campusScope.withScope({ id: Number(staffId), schoolId: req.schoolId }, campusScope.staffWhere(req)),
     });
 
     if (!existingStaff) {
@@ -563,21 +595,27 @@ exports.reassignTeacher = async (req, res, next) => {
     if (!assignment) {
       return res.status(404).json({ success: false, message: "Assignment not found" });
     }
+    // The assignment belongs to a staff member of this school and one the admin can reach.
+    const owner = await prisma.staff.findFirst({
+      where: campusScope.withScope({ id: assignment.staffId, schoolId }, campusScope.staffWhere(req)),
+      select: { id: true },
+    });
+    if (!owner) return res.status(404).json({ success: false, message: "Assignment not found" });
 
     const targetStaffId = staffId ? Number(staffId) : assignment.staffId;
     const targetClassId = newClassId !== undefined ? Number(newClassId) : assignment.classId;
     const targetSubjectId = newSubjectId !== undefined ? Number(newSubjectId) : assignment.subjectId;
     const targetCampusId = newCampusId !== undefined ? Number(newCampusId) : assignment.campusId;
-    const staff = await prisma.staff.findUnique({
-      where: { id: targetStaffId, schoolId },
+    const staff = await prisma.staff.findFirst({
+      where: campusScope.withScope({ id: targetStaffId, schoolId }, campusScope.staffWhere(req)),
     });
     if (!staff) {
       return res.status(404).json({ success: false, message: "Staff not found in your school" });
     }
 
     if (targetClassId) {
-      const cls = await prisma.class.findUnique({
-        where: { id: targetClassId, schoolId },
+      const cls = await prisma.class.findFirst({
+        where: campusScope.withScope({ id: targetClassId, schoolId }, campusScope.classWhere(req)),
       });
       if (!cls) {
         return res.status(404).json({ success: false, message: "Class not found in your school" });
@@ -585,8 +623,8 @@ exports.reassignTeacher = async (req, res, next) => {
     }
 
     if (targetSubjectId) {
-      const subject = await prisma.subject.findUnique({
-        where: { id: targetSubjectId, schoolId },
+      const subject = await prisma.subject.findFirst({
+        where: campusScope.withScope({ id: targetSubjectId, schoolId }, campusScope.subjectWhere(req)),
       });
       if (!subject) {
         return res.status(404).json({ success: false, message: "Subject not found in your school" });
@@ -594,6 +632,7 @@ exports.reassignTeacher = async (req, res, next) => {
     }
 
     if (targetCampusId) {
+      campusScope.assertCampusAllowed(req, targetCampusId);
       const campus = await prisma.campus.findUnique({
         where: { id: targetCampusId, schoolId },
       });

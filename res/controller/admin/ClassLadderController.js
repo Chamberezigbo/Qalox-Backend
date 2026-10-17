@@ -1,6 +1,7 @@
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const { effectivePassMark, suggestLadder, validateLadder } = require("../../util/classLadder");
+const campusScope = require("../../util/campusScope");
 
 /**
  * The class ladder and pass marks: which class each class's students move up to,
@@ -16,7 +17,7 @@ const { effectivePassMark, suggestLadder, validateLadder } = require("../../util
 exports.getClassLadder = async (req, res, next) => {
   try {
     const classes = await prisma.class.findMany({
-      where: { schoolId: req.schoolId },
+      where: campusScope.withScope({ schoolId: req.schoolId }, campusScope.classWhere(req)),
       select: {
         id: true,
         name: true,
@@ -91,10 +92,16 @@ exports.saveClassLadder = async (req, res, next) => {
       parsed.push({ classId, promotesToClassId, passMark });
     }
 
+    // Only the classes the admin can reach: a class on another campus is not found,
+    // whether it is being edited or named as where a class moves up to.
     const schoolClasses = await prisma.class.findMany({
-      where: { schoolId: req.schoolId },
+      where: campusScope.withScope({ schoolId: req.schoolId }, campusScope.classWhere(req)),
       select: { id: true, name: true, campusId: true, promotesToClassId: true },
     });
+    const reachable = new Set(schoolClasses.map((c) => c.id));
+    if (campusScope.isRestricted(req) && parsed.some((p) => !reachable.has(p.classId) || (p.promotesToClassId !== null && !reachable.has(p.promotesToClassId)))) {
+      return res.status(404).json({ success: false, message: "Class not found" });
+    }
 
     // Same school, same campus, no loops — see validateLadder.
     const problem = validateLadder(schoolClasses, parsed);

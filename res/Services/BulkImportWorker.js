@@ -28,8 +28,9 @@ class BulkImportWorker {
    * @param {String} params.fileName
    * @param {Number} params.schoolId
    * @param {String} params.entity    "students" | "staff"
+   * @param {number[] | null} [params.campusIds] a campus-restricted admin's campuses
    */
-  static async processJob({ jobId, buffer, mimeType, fileName, schoolId, entity }) {
+  static async processJob({ jobId, buffer, mimeType, fileName, schoolId, entity, campusIds = null }) {
     const setProgress = async (progress, stage) => {
       try {
         await prisma.bulkImportJob.update({
@@ -114,7 +115,7 @@ class BulkImportWorker {
 
       await setProgress(75, "Validating information");
 
-      const reference = await BulkImportValidator.loadReference(schoolId, entity);
+      const reference = await BulkImportValidator.loadReference(schoolId, entity, campusIds);
       const validated = BulkImportValidator.validateAll(mapped, reference);
 
       // Mapping-time warnings are merged in after validation, and also stored in

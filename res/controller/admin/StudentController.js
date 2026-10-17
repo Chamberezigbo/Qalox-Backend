@@ -11,6 +11,7 @@ const { createNotification } = require("../../util/notify");
 const { syncStudentFeeInvoices } = require("../../util/studentFeeSync");
 const { buildStudentUpdate } = require("../../util/studentUpdate");
 const { groupChangeBlockedReason } = require("../../util/resultScope");
+const campusScope = require("../../util/campusScope");
 const { recordEnrollment, syncEnrollments } = require("../../util/studentEnrollment");
 const logger = require("../../config/logger");
 const {
@@ -37,7 +38,10 @@ exports.getStudentDetails = async (req, res, next) => {
       status: ["withdrawn", "graduated"].includes(req.query.status) ? req.query.status : "active",
     };
 
-    if (campusId) filter.campusId = parseInt(campusId);
+    // A campus the client names must be one the admin may work in; the scope itself
+    // (below) is added whether or not one is named, so omitting it shows no more.
+    const namedCampus = campusScope.resolveCampusParam(req, campusId);
+    if (namedCampus !== undefined) filter.campusId = namedCampus;
     // Matches either name field — a search for "Daniel" should surface a
     // student named Daniel just as much as one whose surname is Daniel.
     if (name) {
@@ -50,8 +54,10 @@ exports.getStudentDetails = async (req, res, next) => {
     if (classId) filter.classId = parseInt(classId);
     if (classGroupId) filter.classGroupId = parseInt(classGroupId);
 
+    const scoped = campusScope.withScope(filter, campusScope.studentWhere(req));
+
     const students = await prisma.student.findMany({
-      where: filter,
+      where: scoped,
       take,
       skip,
       orderBy: { createdAt: "desc" },
@@ -69,7 +75,7 @@ exports.getStudentDetails = async (req, res, next) => {
       },
     })
 
-    const total = await prisma.student.count({ where: filter });
+    const total = await prisma.student.count({ where: scoped });
 
     res.status(200).json({
       students, meta: {
@@ -135,14 +141,20 @@ exports.createStudent = async (req, res, next) => {
     // campus takes the class's — the same rule the importer and the edit form use.
     // Without it these students had no campus at all and crashed the student view.
     // Looked up within this school, so another school's class reads as not found.
+    // A class on another campus reads as not found to a campus-restricted admin.
+    campusScope.assertCampusAllowed(req, rawCampusId);
     const classExist = await prisma.class.findFirst({
-      where: { id: classId, schoolId },
+      where: campusScope.withScope({ id: classId, schoolId }, campusScope.classWhere(req)),
       include: { classGroups: true },
     });
     if (!classExist) {
       return res.status(404).json({ message: "Class not found" });
     }
     if (!campusId && classExist.campusId) campusId = classExist.campusId;
+    // Wherever the student ends up has to be a campus this admin works in.
+    if (!campusScope.inScope(req, campusId)) {
+      return res.status(403).json({ message: "You do not have access to that campus" });
+    }
 
     // Get the school prefix
     const school = await prisma.school.findUnique({
@@ -402,8 +414,10 @@ exports.bulkCreateStudents = async (req, res, next) => {
     // Pre-fetch classes/campuses once — MySQL's Prisma client doesn't support
     // `mode: "insensitive"` (that's Postgres-only), so we match case-insensitively in JS
     const [allClasses, allCampuses] = await Promise.all([
-      prisma.class.findMany({ where: { schoolId }, include: { classGroups: true } }),
-      prisma.campus.findMany({ where: { schoolId } }),
+      // A campus-restricted admin's file can only name their own classes and campuses; a
+      // row naming another campus's reads exactly like a name that does not exist.
+      prisma.class.findMany({ where: campusScope.withScope({ schoolId }, campusScope.classWhere(req)), include: { classGroups: true } }),
+      prisma.campus.findMany({ where: { schoolId, ...(campusScope.isRestricted(req) ? { id: { in: req.campusIds } } : {}) } }),
     ]);
     const findClassByName = (n) => allClasses.find((c) => c.name.trim().toLowerCase() === n.trim().toLowerCase());
     const findCampusByName = (n) => allCampuses.find((c) => c.name.trim().toLowerCase() === n.trim().toLowerCase());
@@ -520,7 +534,7 @@ exports.updateStudent = async (req, res, next) => {
 
     // Within the admin's own school: another school's student reads as not found.
     const studentExist = await prisma.student.findFirst({
-      where: { id: parseInt(id), schoolId },
+      where: campusScope.withScope({ id: parseInt(id), schoolId }, campusScope.studentWhere(req)),
       include: {
         campus: { select: { id: true, name: true } }
       },
@@ -539,13 +553,14 @@ exports.updateStudent = async (req, res, next) => {
     let targetClass = null;
     if (ids.classId) {
       targetClass = await prisma.class.findFirst({
-        where: { id: ids.classId, schoolId },
+        where: campusScope.withScope({ id: ids.classId, schoolId }, campusScope.classWhere(req)),
         select: { id: true, campusId: true },
       });
       if (!targetClass) return res.status(404).json({ success: false, message: "Class not found" });
       data.classId = targetClass.id;
     }
     if (ids.campusId) {
+      campusScope.assertCampusAllowed(req, ids.campusId);
       const campus = await prisma.campus.findFirst({ where: { id: ids.campusId, schoolId }, select: { id: true } });
       if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
       if (targetClass?.campusId && targetClass.campusId !== campus.id) {
@@ -640,8 +655,9 @@ exports.getSingleStudent = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const studentExist = await prisma.student.findUnique({
-      where: { id: parseInt(id), },
+    // Within the admin's own school and campuses; anything else reads as not found.
+    const studentExist = await prisma.student.findFirst({
+      where: campusScope.withScope({ id: parseInt(id), schoolId: req.schoolId }, campusScope.studentWhere(req)),
       include: {
         campus:
         {
@@ -708,7 +724,7 @@ exports.changeStudentClass = async (req, res, next) => {
     // 1️⃣ The class, looked up within this school so another school's class
     // reads as simply not found.
     const classExist = await prisma.class.findFirst({
-      where: { id: targetClassId, schoolId },
+      where: campusScope.withScope({ id: targetClassId, schoolId }, campusScope.classWhere(req)),
       select: { id: true, name: true, campusId: true },
     });
     if (!classExist) {
@@ -720,6 +736,7 @@ exports.changeStudentClass = async (req, res, next) => {
     // refused if the one named is not the class's own.
     let targetCampusId = classExist.campusId ?? undefined;
     if (campusId) {
+      campusScope.assertCampusAllowed(req, campusId);
       const campusExist = await prisma.campus.findFirst({
         where: { id: parseInt(campusId, 10), schoolId },
         select: { id: true },
@@ -756,7 +773,7 @@ exports.changeStudentClass = async (req, res, next) => {
     // or belonging to another school — stops the whole batch before anything
     // is changed.
     const students = await prisma.student.findMany({
-      where: { id: { in: ids }, schoolId },
+      where: campusScope.withScope({ id: { in: ids }, schoolId }, campusScope.studentWhere(req)),
       select: { id: true, classId: true, classGroupId: true },
     });
     const foundIds = new Set(students.map((student) => student.id));
@@ -848,6 +865,7 @@ exports.changeStudentClass = async (req, res, next) => {
  */
 exports.previewStudentDeletion = async (req, res, next) => {
   try {
+    await campusScope.assertStudentInScope(req, req.params.id, prisma);
     const plan = await planStudentDeletion(prisma, parseInt(req.params.id, 10), req.schoolId);
     res.status(200).json({ success: true, data: plan });
   } catch (error) {
@@ -871,6 +889,7 @@ exports.deleteStudent = async (req, res, next) => {
     }
 
     const studentId = parseInt(req.params.id, 10);
+    await campusScope.assertStudentInScope(req, studentId, prisma);
     const plan = await deleteStudentRecords(prisma, studentId, req.schoolId);
 
     logger.info("[DELETE_STUDENT] Deleted", {
@@ -918,12 +937,18 @@ const setStudentStatus = (status) => async (req, res, next) => {
 
     // Within the admin's school; already in the requested state is a no-op, not an error.
     const { count } = await prisma.student.updateMany({
-      where: { id, schoolId: req.schoolId, status: status === "withdrawn" ? "active" : "withdrawn" },
+      where: campusScope.withScope(
+        { id, schoolId: req.schoolId, status: status === "withdrawn" ? "active" : "withdrawn" },
+        campusScope.studentWhere(req)
+      ),
       data: { status, withdrawnAt: status === "withdrawn" ? new Date() : null, withdrawnReason: reason },
     });
 
     if (count === 0) {
-      const exists = await prisma.student.findFirst({ where: { id, schoolId: req.schoolId }, select: { status: true } });
+      const exists = await prisma.student.findFirst({
+        where: campusScope.withScope({ id, schoolId: req.schoolId }, campusScope.studentWhere(req)),
+        select: { status: true },
+      });
       if (!exists) return res.status(404).json({ success: false, message: "Student not found" });
     }
 

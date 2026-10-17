@@ -553,8 +553,10 @@ export class AssessmentService {
         academicSessionId?: number;
         classGroupId?: number;
         termId?: number;
+        /** A prisma `where` on Class that limits which classes are listed (campus scope). */
+        classScope?: Record<string, unknown>;
     }) {
-        const { classId, schoolId, academicSessionId, classGroupId, termId } = input;
+        const { classId, schoolId, academicSessionId, classGroupId, termId, classScope = {} } = input;
 
         // Get active/latest session if not provided
         let sessionId = academicSessionId;
@@ -583,7 +585,7 @@ export class AssessmentService {
             classIds = [classId];
         } else {
             const classes = await prisma.class.findMany({
-                where: { schoolId },
+                where: { schoolId, ...classScope },
                 select: { id: true }
             });
             classIds = classes.map(c => c.id);
@@ -829,11 +831,11 @@ export class AssessmentService {
         }, { timeout: 20000 });
     }
 
-    async unpublishResults(publishedResultId: number, schoolId: number, adminId?: number) {
+    async unpublishResults(publishedResultId: number, schoolId: number, adminId?: number, classScope: Record<string, unknown> = {}) {
         const publishedResult = await prisma.publishedResult.findFirst({
             where: {
                 id: publishedResultId,
-                class: { schoolId }
+                class: { schoolId, ...classScope }
             },
             select: {
                 id: true,
@@ -892,15 +894,18 @@ export class AssessmentService {
         academicSessionId?: number;
         termId?: number;
         subjectId?: number;
+        /** A prisma `where` on Class that limits the classes shown (campus scope). */
+        classScope?: Record<string, unknown>;
     }) {
-        const { schoolId, campusId, classId, academicSessionId, termId, subjectId } = input;
+        const { schoolId, campusId, classId, academicSessionId, termId, subjectId, classScope = {} } = input;
 
         return prisma.resultSubmission.findMany({
             where: {
                 status: "PENDING",
                 class: {
                     schoolId,
-                    ...(campusId && { campusId })
+                    ...(campusId && { campusId }),
+                    ...classScope
                 },
                 ...(classId && { classId }),
                 ...(academicSessionId && { academicSessionId }),
@@ -934,15 +939,18 @@ export class AssessmentService {
         academicSessionId?: number;
         termId?: number;
         subjectId?: number;
+        /** A prisma `where` on Class that limits the classes shown (campus scope). */
+        classScope?: Record<string, unknown>;
     }) {
-        const { schoolId, campusId, classId, academicSessionId, termId, subjectId } = input;
+        const { schoolId, campusId, classId, academicSessionId, termId, subjectId, classScope = {} } = input;
 
         return prisma.resultSubmission.findMany({
             where: {
                 status: "REJECTED",
                 class: {
                     schoolId,
-                    ...(campusId && { campusId })
+                    ...(campusId && { campusId }),
+                    ...classScope
                 },
                 ...(classId && { classId }),
                 ...(academicSessionId && { academicSessionId }),
@@ -976,14 +984,17 @@ export class AssessmentService {
         academicSessionId?: number;
         termId?: number;
         subjectId?: number;
+        /** A prisma `where` on Class that limits the classes shown (campus scope). */
+        classScope?: Record<string, unknown>;
     }) {
-        const { schoolId, campusId, classId, academicSessionId, termId, subjectId } = input;
+        const { schoolId, campusId, classId, academicSessionId, termId, subjectId, classScope = {} } = input;
 
         return prisma.publishedResult.findMany({
             where: {
                 class: {
                     schoolId,
-                    ...(campusId && { campusId })
+                    ...(campusId && { campusId }),
+                    ...classScope
                 },
                 ...(classId && { classId }),
                 ...(academicSessionId && { academicSessionId }),
@@ -1010,9 +1021,9 @@ export class AssessmentService {
     }
 
     // Admin rejects a submission — unlocks scores for teacher
-    async rejectSubmission(submissionId: number, schoolId: number) {
+    async rejectSubmission(submissionId: number, schoolId: number, classScope: Record<string, unknown> = {}) {
         const submission = await prisma.resultSubmission.findFirst({
-            where: { id: submissionId, class: { schoolId } },
+            where: { id: submissionId, class: { schoolId, ...classScope } },
             select: { id: true, status: true }
         });
 
@@ -1029,9 +1040,9 @@ export class AssessmentService {
     }
 
     // Admin restores a rejected submission back to PENDING
-    async restoreRejectedSubmission(submissionId: number, schoolId: number) {
+    async restoreRejectedSubmission(submissionId: number, schoolId: number, classScope: Record<string, unknown> = {}) {
         const submission = await prisma.resultSubmission.findFirst({
-            where: { id: submissionId, class: { schoolId } },
+            where: { id: submissionId, class: { schoolId, ...classScope } },
             select: {
                 id: true,
                 status: true,
@@ -1079,8 +1090,10 @@ export class AssessmentService {
         termId?: number;
         page: number;
         pageSize: number;
+        /** A prisma `where` on Student that limits who is listed (campus scope). */
+        studentScope?: Record<string, unknown>;
     }) {
-        const { studentId, classId, schoolId, academicSessionId, page, pageSize } = input;
+        const { studentId, classId, schoolId, academicSessionId, page, pageSize, studentScope = {} } = input;
 
         // Get active/latest session if not provided
         let sessionId = academicSessionId;
@@ -1106,7 +1119,7 @@ export class AssessmentService {
         const termId = await this.resolveTermForSession(schoolId, sessionId, input.termId);
 
         // Build filter for students
-        const studentFilter: any = { schoolId, academicSessionId: sessionId };
+        const studentFilter: any = { schoolId, academicSessionId: sessionId, ...studentScope };
         if (studentId) studentFilter.id = studentId;
         if (classId) studentFilter.classId = classId;
 
@@ -1206,8 +1219,10 @@ export class AssessmentService {
         page: number;
         pageSize: number;
         termId?: number;
+        /** A prisma `where` on Staff that limits which teachers are listed (campus scope). */
+        staffScope?: Record<string, unknown>;
     }) {
-        const { staffId, classId, subjectId, schoolId, academicSessionId, page, pageSize, termId } = input;
+        const { staffId, classId, subjectId, schoolId, academicSessionId, page, pageSize, termId, staffScope = {} } = input;
 
         // Resolve academic session
         let sessionId = academicSessionId;
@@ -1242,8 +1257,8 @@ export class AssessmentService {
 
         // Get teacher with assignment if specific class/subject provided
         if (staffId && classId && subjectId) {
-            const teacher = await prisma.staff.findUnique({
-                where: { id: staffId },
+            const teacher = await prisma.staff.findFirst({
+                where: { id: staffId, schoolId, ...staffScope },
                 select: {
                     id: true,
                     name: true,
@@ -1388,12 +1403,12 @@ export class AssessmentService {
         }
 
         // If no specific assignment, list all teacher assignments
-        const teacher = staffId ? await prisma.staff.findUnique({
-            where: { id: staffId },
+        const teacher = staffId ? await prisma.staff.findFirst({
+            where: { id: staffId, schoolId, ...staffScope },
             select: { id: true, name: true, registrationNumber: true, gender: true }
         }) : null;
 
-        const teacherFilter: any = { schoolId };
+        const teacherFilter: any = { schoolId, ...staffScope };
         if (staffId) teacherFilter.id = staffId;
 
         const [teachers, totalCount] = await Promise.all([
@@ -1445,11 +1460,11 @@ export class AssessmentService {
     }
 
 
-    async scheduleExam(input: { examId: number; schoolId: number; scheduledDate: Date }) {
-        const { examId, schoolId, scheduledDate } = input;
+    async scheduleExam(input: { examId: number; schoolId: number; scheduledDate: Date; classScope?: Record<string, unknown> }) {
+        const { examId, schoolId, scheduledDate, classScope = {} } = input;
 
         const exam = await prisma.exam.findFirst({
-            where: { id: examId, class: { schoolId } },
+            where: { id: examId, class: { schoolId, ...classScope } },
             select: { id: true }
         });
 

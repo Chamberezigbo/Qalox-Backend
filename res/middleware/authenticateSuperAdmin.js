@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const prisma = require("../util/prisma");
 const { AppError } = require("../util/AppError");
 const { getSchoolLockStatus } = require("../util/getSchoolLockStatus");
+const { loadCampusScope, isRestrictedAdmin, holdsPermission } = require("../util/campusScope");
 const {
   isSchoolSuspended,
   SCHOOL_SUSPENDED_MESSAGE,
@@ -130,11 +131,20 @@ const authenticateSchoolLevelAdmin = async (req, res, next) => {
 
     const admin = await prisma.admin.findUnique({
       where: { id: decoded.id },
-      select: { id: true, role: true, schoolId: true, permissions: true, isSuspended: true },
+      select: { id: true, role: true, schoolId: true, permissions: true, isSuspended: true, allCampuses: true },
     });
 
     if (!admin) {
       return next(new AppError("Unauthorized: Admin not found", 401));
+    }
+
+    // A campus-restricted sub-admin may hold different permissions on each campus, so the
+    // permission gate needs their campus rows. Nobody else costs an extra query.
+    if (isRestrictedAdmin(admin)) {
+      admin.campusAccess = await prisma.adminCampusAccess.findMany({
+        where: { adminId: admin.id },
+        select: { campusId: true, permissions: true },
+      });
     }
 
     if (admin.isSuspended) {
@@ -157,34 +167,50 @@ const authenticateSchoolLevelAdmin = async (req, res, next) => {
 // (e.g. a read endpoint that's a dependency of more than one feature).
 // Head admins (super_admin/school_admin) always pass. Must run after
 // authenticateSchoolLevelAdmin.
-const requirePermission = (permissionKey) => (req, res, next) => {
-  const { role, permissions } = req.user || {};
-  const requiredKeys = Array.isArray(permissionKey) ? permissionKey : [permissionKey];
+const requirePermission = (permissionKey) => {
+  const gate = (req, res, next) => {
+    const { role, permissions } = req.user || {};
+    const requiredKeys = Array.isArray(permissionKey) ? permissionKey : [permissionKey];
 
-  if (role === "super_admin" || role === "school_admin") {
-    return next();
-  }
-
-  if (role === "sub_admin") {
-    const { parsePermissions } = require("../util/permissions");
-    const granted = parsePermissions(permissions);
-    if (requiredKeys.some((key) => granted.includes(key))) {
+    if (role === "super_admin" || role === "school_admin") {
       return next();
     }
-    return next(new AppError(`Unauthorized: Missing permission "${requiredKeys.join('" or "')}"`, 403));
-  }
 
-  return next(new AppError("Unauthorized", 403));
+    if (role === "sub_admin") {
+      const { parsePermissions } = require("../util/permissions");
+      // Remembered so attachSchoolId can narrow the campuses to where this permission is held.
+      req.requiredPermissions = requiredKeys;
+      const granted = parsePermissions(permissions);
+      // Restricted with campus rows: held on any campus (a campus without its own list uses
+      // the global one). Everyone else: the global list, exactly as before.
+      const allowed = Array.isArray(req.user.campusAccess) && req.user.campusAccess.length > 0
+        ? holdsPermission(req.user, req.user.campusAccess, requiredKeys)
+        : requiredKeys.some((key) => granted.includes(key));
+      if (allowed) {
+        return next();
+      }
+      return next(new AppError(`Unauthorized: Missing permission "${requiredKeys.join('" or "')}"`, 403));
+    }
+
+    return next(new AppError("Unauthorized", 403));
+  };
+  // Marked so a test can find every permission-gated route and check it also has a school.
+  gate.isPermissionGate = true;
+  return gate;
 };
 
-// Middleware to attach schoolId for school_admin (or super_admin with school, if ever assigned)
+// Middleware to attach schoolId for school_admin (or super_admin with school, if ever assigned).
+// It also attaches the admin's campus scope: `req.campusIds` is null for everyone who
+// may work in every campus (head admins, sub-admins not restricted, and every admin of a
+// school with no campuses), or the list of campus ids a restricted sub-admin was given.
+// Read from the database on each request, so a change applies on their next click.
 const attachSchoolId = async (req, res, next) => {
   try {
     const adminId = req.user.id;
 
     const admin = await prisma.admin.findUnique({
       where: { id: adminId },
-      select: { schoolId: true, role: true }
+      select: { id: true, schoolId: true, role: true, allCampuses: true, permissions: true }
     });
 
     if (!admin) {
@@ -195,6 +221,8 @@ const attachSchoolId = async (req, res, next) => {
       return next(new AppError("Unauthorized: School ID not found for this admin", 401));
     }
     req.schoolId = admin.schoolId;
+    // Narrowed to the campuses where the route's permission is held, when the gate said which.
+    req.campusIds = await loadCampusScope(prisma, admin, req.requiredPermissions);
     next();
   } catch (e) {
     next(e);

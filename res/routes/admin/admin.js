@@ -177,8 +177,8 @@ router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
 
 router.get("/school-admins", auth.authenticateSuperAdmin, auth.attachSchoolId, getSchoolAdmins);
-router.put("/:id", validate(updateAdminSchema), updateAdmin);
-router.delete("/:id", auth.authenticateSuperAdmin, deleteAdmin);
+router.put("/:id", validate(updateAdminSchema), auth.authenticateSuperAdmin, auth.attachSchoolId, updateAdmin);
+router.delete("/:id", auth.authenticateSuperAdmin, auth.attachSchoolId, deleteAdmin);
 router.get("/", checkHealth);
 
 // My school info for any authenticated admin
@@ -235,7 +235,7 @@ router.patch("/student/:id/restore", auth.authenticateSchoolLevelAdmin, auth.req
 router.delete("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, deleteStudent);
 
 router.patch("/student/change-class", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, changeStudentClass);
-router.get("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), getSingleStudent);
+router.get("/student/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, getSingleStudent);
 router.post("/students/bulk-upload", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, bulkCreateStudents);
 
 // Bulk import (students + staff). No requirePermission() here: which permission
@@ -261,11 +261,11 @@ router.delete("/sub-admins/:id", auth.authenticateSuperAdmin, auth.attachSchoolI
 
 // Staff routes — sub-admins need PERMISSIONS.STAFF_MANAGE; head admins always pass
 router.post("/staff/create", validate(staffSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, createStaff);
-router.patch("/staff/:staffId", validate(editStaffSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), updateStaff);
-router.get("/staff/:staffId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), getStaffDetails);
-router.post('/staff/assign-teacher', validate(assignTeacherSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), assignTeacher);
+router.patch("/staff/:staffId", validate(editStaffSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, updateStaff);
+router.get("/staff/:staffId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, getStaffDetails);
+router.post('/staff/assign-teacher', validate(assignTeacherSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, assignTeacher);
 router.get("/staff", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, getAllStaff);
-router.delete("/staff/:staffId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), deleteStaff);
+router.delete("/staff/:staffId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, deleteStaff);
 router.patch("/staff/reassign-teacher/:assignmentId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, reassignTeacher);
 router.post("/staff/bulk-upload", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, bulkCreateStaff);
 
@@ -315,7 +315,7 @@ router.get("/classes", auth.authenticateSchoolLevelAdmin, auth.requirePermission
 router.delete("/classes/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, deleteClass);
 router.post("/class-groups/create", validate(classGroupSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, createClassGroup);
 router.get("/class-groups", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.CLASSES_MANAGE, PERMISSIONS.STUDENTS_MANAGE]), auth.attachSchoolId, getClassGroups);
-router.patch("/class/update/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClass);
+router.patch("/class/update/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, updateClass);
 router.patch("/class-group/update/:groupId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, updateClassGroup);
 
 // Scheme of Work routes — sub-admins need PERMISSIONS.SCHEME_OF_WORK_MANAGE; head admins always pass.
@@ -331,14 +331,14 @@ router.get("/ai/credits", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId
 
 // Campus routes — sub-admins need PERMISSIONS.CAMPUSES_MANAGE; head admins always pass
 router.post("/campus/create", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, createCampus);
-router.patch("/campus/update/:campusId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), updateCampus);
+router.patch("/campus/update/:campusId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, updateCampus);
 router.get("/campuses", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, getCampuses);
 
 // Subject routes — sub-admins need PERMISSIONS.SUBJECTS_MANAGE; head admins always pass
 router.post("/subject/create", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, createSubject);
 router.get("/subjects", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, getAllSubjects);
 router.put("/subject/:subjectId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, editSubject);
-router.delete("/subject/:subjectId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), deleteSubject);
+router.delete("/subject/:subjectId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, deleteSubject);
 
 
 // List all CA for the authenticated admin’s school

@@ -571,13 +571,18 @@ async function submitCompilation({ schoolId, staffId, classId, classGroupId = UN
 // Admin
 // ---------------------------------------------------------------------------
 
-async function listCompilations({ schoolId, status, campusId, classId, termId }) {
+async function listCompilations({ schoolId, status, campusId, classId, termId, classScope = {} }) {
   const where = { schoolId };
   if (status) where.status = status;
   if (classId) where.classId = classId;
   if (termId) where.termId = termId;
-  if (campusId) {
-    const inCampus = await prisma.class.findMany({ where: { schoolId, campusId }, select: { id: true } });
+  const scoped = Object.keys(classScope).length > 0;
+  if (campusId || scoped) {
+    // `classScope` is a campus-restricted admin's reach: classes outside it are never listed.
+    const inCampus = await prisma.class.findMany({
+      where: { schoolId, ...(campusId ? { campusId } : {}), ...classScope },
+      select: { id: true },
+    });
     where.classId = { in: inCampus.map((c) => c.id) };
     if (classId) where.classId = { in: inCampus.map((c) => c.id).filter((id) => id === classId) };
   }
@@ -650,14 +655,19 @@ async function listCompilations({ schoolId, status, campusId, classId, termId })
   });
 }
 
-async function loadCompilation(client, { schoolId, id }) {
+async function loadCompilation(client, { schoolId, id, classScope = {} }) {
   const compilation = await client.classCompilation.findFirst({ where: { id, schoolId } });
   if (!compilation) throw fail(404, "Class submission not found", "NOT_FOUND");
+  // A class outside the admin's campuses reads exactly like one that does not exist.
+  if (Object.keys(classScope).length > 0) {
+    const reachable = await client.class.count({ where: { id: compilation.classId, schoolId, ...classScope } });
+    if (!reachable) throw fail(404, "Class submission not found", "NOT_FOUND");
+  }
   return compilation;
 }
 
-async function getCompilation({ schoolId, id }) {
-  const compilation = await loadCompilation(prisma, { schoolId, id });
+async function getCompilation({ schoolId, id, classScope }) {
+  const compilation = await loadCompilation(prisma, { schoolId, id, classScope });
   const classGroupId = compilation.classGroupId;
   const target = await classTeacherOfScope(prisma, { schoolId, classId: compilation.classId, scope: classGroupId });
   const cls = target.cls;
@@ -747,8 +757,8 @@ async function getCompilation({ schoolId, id }) {
  * its students through the existing publish step. Idempotent and safe to retry;
  * it is only marked approved once every subject is published.
  */
-async function approveCompilation({ schoolId, adminId, id }) {
-  const compilation = await loadCompilation(prisma, { schoolId, id });
+async function approveCompilation({ schoolId, adminId, id, classScope }) {
+  const compilation = await loadCompilation(prisma, { schoolId, id, classScope });
   if (!rules.adminCanReview(compilation.status)) {
     throw fail(409, `These class results are ${compilation.status.toLowerCase()}, not waiting for approval.`, "INVALID_TRANSITION");
   }
@@ -842,9 +852,9 @@ async function approveCompilation({ schoolId, adminId, id }) {
   return { approved: true, published, skipped, failed: [] };
 }
 
-async function returnCompilation({ schoolId, adminId, id, comment }) {
+async function returnCompilation({ schoolId, adminId, id, comment, classScope }) {
   const text = cleanComment(comment, { required: true });
-  const compilation = await loadCompilation(prisma, { schoolId, id });
+  const compilation = await loadCompilation(prisma, { schoolId, id, classScope });
   const scope = compilation.classGroupId;
 
   await prisma.$transaction(async (tx) => {
@@ -920,10 +930,10 @@ async function reopenAfterUnpublish(tx, { schoolId, classId, sessionId, termId, 
  * Groups and classes with students whose results nobody can receive yet: subject
  * teachers there cannot submit until the admin assigns a class teacher.
  */
-async function classesWithoutClassTeacher({ schoolId }) {
+async function classesWithoutClassTeacher({ schoolId, classScope = {} }) {
   const [classes, active] = await Promise.all([
     prisma.class.findMany({
-      where: { schoolId },
+      where: { schoolId, ...classScope },
       select: { id: true, name: true, customName: true, campus: { select: { name: true } } },
       orderBy: [{ name: "asc" }],
     }),
@@ -1077,7 +1087,7 @@ async function saveRemarks({ schoolId, staffId, classId, classGroupId = UNGROUPE
  * The principal's remark, written by the admin. It can be set at any time, since the
  * admin is the one approving, and it never touches the class teacher's own remark.
  */
-async function savePrincipalRemarks({ schoolId, adminId, termId, remarks }) {
+async function savePrincipalRemarks({ schoolId, adminId, termId, remarks, studentScope = {} }) {
   const { sessionId, termId: resolvedTermId } = await resolveSessionTerm(prisma, schoolId, termId);
   if (!Array.isArray(remarks) || remarks.length === 0) throw fail(400, "There are no remarks to save", "NOTHING_TO_SAVE");
 
@@ -1091,7 +1101,7 @@ async function savePrincipalRemarks({ schoolId, adminId, termId, remarks }) {
 
   // Only this school's students.
   const owned = await prisma.student.findMany({
-    where: { schoolId, id: { in: cleaned.map((r) => r.studentId) } },
+    where: { schoolId, id: { in: cleaned.map((r) => r.studentId) }, ...studentScope },
     select: { id: true },
   });
   if (owned.length !== new Set(cleaned.map((r) => r.studentId)).size) {

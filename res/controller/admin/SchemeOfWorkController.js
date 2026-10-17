@@ -2,6 +2,7 @@ const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const SchemeOfWorkService = require("../../Services/SchemeOfWorkService");
 const { getAiCreditsStatusForSchool } = require("../../util/getAiCreditsAllowanceForSchool");
+const campusScope = require("../../util/campusScope");
 
 /**
  * Scheme of Work management for school admins. The uploaded document is what
@@ -26,6 +27,9 @@ exports.uploadSchemeOfWork = async (req, res, next) => {
         code: "INVALID_REQUEST",
       });
     }
+
+    // The class has to be one this admin can reach.
+    await campusScope.assertClassInScope(req, classId, prisma);
 
     // A scheme of work is almost always for the term in progress, and listing
     // terms is a Super-Admin-only route, so the active term is resolved here
@@ -85,6 +89,7 @@ exports.listSchemesOfWork = async (req, res, next) => {
       subjectId,
       academicTermId,
       includeArchived: includeArchived === "true",
+      classScope: campusScope.classWhere(req),
     });
 
     return res.status(200).json({ success: true, data: schemes });
@@ -137,7 +142,7 @@ exports.listTermsForSchemes = async (req, res, next) => {
 /** GET /api/admin/scheme-of-work/:id */
 exports.getSchemeOfWork = async (req, res, next) => {
   try {
-    const scheme = await SchemeOfWorkService.getSchemeOfWork(req.schoolId, Number(req.params.id));
+    const scheme = await SchemeOfWorkService.getSchemeOfWork(req.schoolId, Number(req.params.id), campusScope.classWhere(req));
     return res.status(200).json({ success: true, data: scheme });
   } catch (err) {
     next(err);
@@ -147,7 +152,7 @@ exports.getSchemeOfWork = async (req, res, next) => {
 /** DELETE /api/admin/scheme-of-work/:id */
 exports.deleteSchemeOfWork = async (req, res, next) => {
   try {
-    const result = await SchemeOfWorkService.deleteSchemeOfWork(req.schoolId, Number(req.params.id));
+    const result = await SchemeOfWorkService.deleteSchemeOfWork(req.schoolId, Number(req.params.id), campusScope.classWhere(req));
     return res.status(200).json({ success: true, message: "Scheme of work deleted", data: result });
   } catch (err) {
     next(err);

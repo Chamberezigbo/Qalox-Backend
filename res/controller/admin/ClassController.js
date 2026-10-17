@@ -1,6 +1,7 @@
 const prisma = require('../../util/prisma');
 const { classTeacherProblem } = require('../../util/classTeacher');
 const { createNotification } = require('../../util/notify');
+const campusScope = require('../../util/campusScope');
 
 // ✅ Create a new class
 exports.createClass = async (req, res, next) => {
@@ -8,6 +9,17 @@ exports.createClass = async (req, res, next) => {
      
          const { name, campusId, customName, department } = req.body;
          const schoolId = req.schoolId; // ✅ from middleware auth
+
+         // A restricted admin creates classes only in their own campuses; a class with no
+         // campus would belong to nobody they can reach.
+         if (campusScope.isRestricted(req) && (campusId == null || campusId === '')) {
+           return res.status(403).json({ success: false, message: "Choose one of your campuses for this class" });
+         }
+         campusScope.assertCampusAllowed(req, campusId);
+         if (campusId != null && campusId !== '') {
+           const campus = await prisma.campus.findFirst({ where: { id: Number(campusId), schoolId }, select: { id: true } });
+           if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
+         }
 
          // The class teacher is optional at creation; when given it must be a real teacher.
          const staffId = req.body.staffId ? Number(req.body.staffId) : null;
@@ -64,13 +76,14 @@ exports.getAllClasses = async (req, res, next) => {
   try {
     const { campusId, name } = req.query;
     const schoolId = req.schoolId;
+    campusScope.assertCampusAllowed(req, campusId);
 
     const classes = await prisma.class.findMany({
-      where: {
+      where: campusScope.withScope({
         schoolId,
         ...(campusId && { campusId: Number(campusId) }),
         ...(name && { name: { contains: name,} }),
-      },
+      }, campusScope.classWhere(req)),
       include: {
         campus: {
           select: {
@@ -106,7 +119,7 @@ exports.deleteClass = async (req, res, next) => {
          // Ensure class exists
          // Within the admin's own school: another school's class reads as not found.
          const existingClass = await prisma.class.findFirst({
-           where: { id: Number(classId), schoolId: req.schoolId },
+           where: campusScope.withScope({ id: Number(classId), schoolId: req.schoolId }, campusScope.classWhere(req)),
            include: { students: true, assignments: true },
          });
      
@@ -166,11 +179,11 @@ exports.createClassGroup = async (req, res, next) => {
          const { classId, name } = req.body;
      
          // ✅ Ensure the class exists, and is this school's
-         const existingClass = await prisma.class.findUnique({
-           where: { id: Number(classId) },
+         const existingClass = await prisma.class.findFirst({
+           where: campusScope.withScope({ id: Number(classId), schoolId: req.schoolId }, campusScope.classWhere(req)),
          });
      
-         if (!existingClass || existingClass.schoolId !== req.schoolId) {
+         if (!existingClass) {
            return res.status(404).json({
              success: false,
              message: "Class not found",
@@ -239,7 +252,7 @@ exports.getClassGroups = async (req, res, next) => {
          const filters = {};
          if (classId) filters.classId = Number(classId);
      
-         const where = { ...filters, class: { schoolId: schoolId } };
+         const where = { ...filters, class: campusScope.withScope({ schoolId: schoolId }, campusScope.classWhere(req)) };
 
          // ✅ Get total count (for pagination metadata)
          const totalCount = await prisma.classGroup.count({ where });
@@ -291,15 +304,23 @@ exports.updateClass = async (req, res, next) => {
          const { name, campusId, customName, department } = req.body;
 
          // Ensure class exists
-         const existingClass = await prisma.class.findUnique({
-           where: { id: Number(classId) },
+         const existingClass = await prisma.class.findFirst({
+           where: campusScope.withScope({ id: Number(classId), schoolId: req.schoolId }, campusScope.classWhere(req)),
          });
 
-         if (!existingClass || existingClass.schoolId !== req.schoolId) {
+         if (!existingClass) {
            return res.status(404).json({
              success: false,
              message: "Class not found",
            });
+         }
+
+         // Moving a class to another campus: the campus is this school's, and (for a
+         // restricted admin) one of theirs.
+         if (campusId) {
+           campusScope.assertCampusAllowed(req, campusId);
+           const campus = await prisma.campus.findFirst({ where: { id: Number(campusId), schoolId: req.schoolId }, select: { id: true } });
+           if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
          }
 
          // staffId: absent leaves the class teacher alone, null removes them, a
@@ -359,12 +380,12 @@ exports.updateClassGroup = async (req, res, next) => {
          const { name, classId } = req.body;
      
          // Ensure group exists, in this school's class
-         const existingGroup = await prisma.classGroup.findUnique({
-           where: { id: Number(groupId) },
+         const existingGroup = await prisma.classGroup.findFirst({
+           where: { id: Number(groupId), class: campusScope.withScope({ schoolId: req.schoolId }, campusScope.classWhere(req)) },
            include: { class: { select: { schoolId: true, name: true, campusId: true } } },
          });
      
-         if (!existingGroup || existingGroup.class.schoolId !== req.schoolId) {
+         if (!existingGroup) {
            return res.status(404).json({
              success: false,
              message: "Class group not found",
@@ -373,8 +394,8 @@ exports.updateClassGroup = async (req, res, next) => {
      
          // Optional: Ensure class exists if classId is being updated
          if (classId) {
-           const classExists = await prisma.class.findUnique({
-             where: { id: Number(classId) },
+           const classExists = await prisma.class.findFirst({
+             where: campusScope.withScope({ id: Number(classId), schoolId: req.schoolId }, campusScope.classWhere(req)),
            });
            if (!classExists) {
              return res.status(400).json({

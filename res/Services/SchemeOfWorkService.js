@@ -299,10 +299,12 @@ async function withResolvedFiles(scheme) {
   };
 }
 
-async function listSchemesOfWork(schoolId, { classId, subjectId, academicTermId, includeArchived } = {}) {
+async function listSchemesOfWork(schoolId, { classId, subjectId, academicTermId, includeArchived, classScope } = {}) {
   const schemes = await prisma.schemeOfWork.findMany({
     where: {
       schoolId,
+      // A campus-restricted admin's reach (a Class `where`); absent for everyone else.
+      ...(classScope && Object.keys(classScope).length > 0 && { class: classScope }),
       ...(classId && { classId: Number(classId) }),
       ...(subjectId && { subjectId: Number(subjectId) }),
       ...(academicTermId && { academicTermId: Number(academicTermId) }),
@@ -329,9 +331,9 @@ async function listSchemesOfWork(schoolId, { classId, subjectId, academicTermId,
   );
 }
 
-async function getSchemeOfWork(schoolId, id) {
+async function getSchemeOfWork(schoolId, id, classScope) {
   const scheme = await prisma.schemeOfWork.findFirst({
-    where: { id, schoolId },
+    where: { id, schoolId, ...(classScope && Object.keys(classScope).length > 0 && { class: classScope }) },
     include: {
       files: { orderBy: { order: "asc" } },
       class: { select: { id: true, name: true, customName: true } },
@@ -354,9 +356,9 @@ async function getActiveSchemeOfWork(schoolId, { classId, subjectId, academicTer
   });
 }
 
-async function deleteSchemeOfWork(schoolId, id) {
+async function deleteSchemeOfWork(schoolId, id, classScope) {
   const scheme = await prisma.schemeOfWork.findFirst({
-    where: { id, schoolId },
+    where: { id, schoolId, ...(classScope && Object.keys(classScope).length > 0 && { class: classScope }) },
     include: { files: true },
   });
   if (!scheme) throw new AppError("Scheme of work not found", 404);
