@@ -2,6 +2,10 @@
 import { Response, NextFunction } from "express";
 import { ParentRequest } from "../middleware/parentMiddleware";
 import { ParentService } from "../Services/ParentService";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { sendPdf } = require("../util/sendPdf");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { buildReportCardsPdf } = require("../util/reportCardPdf");
 
 export class ParentController {
     private service = new ParentService();
@@ -35,6 +39,20 @@ export class ParentController {
             const termId = req.query.termId ? Number(req.query.termId) : undefined;
             const data = await this.service.getChildReportCard(req.parentId, studentId, academicSessionId, termId);
             res.json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    getChildReportCardPdf = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const studentId = Number(req.params.studentId);
+            const academicSessionId = req.query.academicSessionId ? Number(req.query.academicSessionId) : undefined;
+            const termId = req.query.termId ? Number(req.query.termId) : undefined;
+            const card = await this.service.getChildReportCard(req.parentId, studentId, academicSessionId, termId);
+            const pdf = await buildReportCardsPdf([card]);
+            sendPdf(res, pdf, `report-card-${card.studentInformation.surname}-${card.academicInfo.termName ?? "term"}`, { inline: req.query.inline === "1" });
         } catch (err) {
             next(err);
         }

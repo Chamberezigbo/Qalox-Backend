@@ -1,4 +1,6 @@
 const prisma = require('../../util/prisma');
+const { classTeacherProblem } = require('../../util/classTeacher');
+const { createNotification } = require('../../util/notify');
 
 // ✅ Create a new class
 exports.createClass = async (req, res, next) => {
@@ -6,6 +8,13 @@ exports.createClass = async (req, res, next) => {
      
          const { name, campusId, customName, department } = req.body;
          const schoolId = req.schoolId; // ✅ from middleware auth
+
+         // The class teacher is optional at creation; when given it must be a real teacher.
+         const staffId = req.body.staffId ? Number(req.body.staffId) : null;
+         if (staffId) {
+           const problem = await classTeacherProblem(prisma, { schoolId, staffId, campusId: campusId ?? null });
+           if (problem) return res.status(400).json({ success: false, message: problem });
+         }
 
          // Check for duplicate class name for same school + campus
          const existingClass = await prisma.class.findFirst({
@@ -27,8 +36,18 @@ exports.createClass = async (req, res, next) => {
              // Save custom class name if provided
              customName: customName ? customName : null,
              department: department ? department : null,
+             staffId,
            },
          });
+
+         if (staffId) {
+           await createNotification({
+             recipientType: 'teacher', recipientId: staffId, schoolId,
+             title: 'You are a class teacher',
+             message: `You are now the class teacher of ${newClass.name}. Subject teachers will submit their results to you.`,
+             type: 'class_teacher', link: '/staff/class-results',
+           });
+         }
      
          return res.status(201).json({
            success: true,
@@ -146,12 +165,12 @@ exports.createClassGroup = async (req, res, next) => {
      
          const { classId, name } = req.body;
      
-         // ✅ Ensure the class exists
+         // ✅ Ensure the class exists, and is this school's
          const existingClass = await prisma.class.findUnique({
            where: { id: Number(classId) },
          });
      
-         if (!existingClass) {
+         if (!existingClass || existingClass.schoolId !== req.schoolId) {
            return res.status(404).json({
              success: false,
              message: "Class not found",
@@ -173,12 +192,32 @@ exports.createClassGroup = async (req, res, next) => {
            });
          }
      
+         // The group's class teacher is optional; when given it must be a real teacher
+         // of this school (and of the class's campus).
+         const groupTeacherId = req.body.staffId ? Number(req.body.staffId) : null;
+         if (groupTeacherId) {
+           const problem = await classTeacherProblem(prisma, {
+             schoolId: req.schoolId, staffId: groupTeacherId, campusId: existingClass.campusId ?? null,
+           });
+           if (problem) return res.status(400).json({ success: false, message: problem });
+         }
+
          const newGroup = await prisma.classGroup.create({
            data: {
              classId: Number(classId),
              name,
+             staffId: groupTeacherId,
            },
          });
+
+         if (groupTeacherId) {
+           await createNotification({
+             recipientType: 'teacher', recipientId: groupTeacherId, schoolId: req.schoolId,
+             title: 'You are a class teacher',
+             message: `You are now the class teacher of ${existingClass.name} — ${name}. Subject teachers will submit their results to you.`,
+             type: 'class_teacher', link: '/staff/class-results',
+           });
+         }
      
          res.status(201).json({
            success: true,
@@ -221,6 +260,14 @@ exports.getClassGroups = async (req, res, next) => {
            },
          });
      
+         // The class teacher's name for each group that has one.
+         const teacherIds = [...new Set(groups.map((g) => g.staffId).filter(Boolean))];
+         const teachers = teacherIds.length
+           ? await prisma.staff.findMany({ where: { id: { in: teacherIds } }, select: { id: true, name: true } })
+           : [];
+         const teacherBy = new Map(teachers.map((t) => [t.id, t]));
+         const groupsWithTeacher = groups.map((g) => ({ ...g, staff: g.staffId ? (teacherBy.get(g.staffId) ?? null) : null }));
+
          res.status(200).json({
            success: true,
            message: "Class groups retrieved successfully",
@@ -230,7 +277,7 @@ exports.getClassGroups = async (req, res, next) => {
              perPage: Number(limit),
              totalPages: Math.ceil(totalCount / limit),
            },
-           groups,
+           groups: groupsWithTeacher,
          });
        } catch (err) {
          next(err);
@@ -248,11 +295,30 @@ exports.updateClass = async (req, res, next) => {
            where: { id: Number(classId) },
          });
 
-         if (!existingClass) {
+         if (!existingClass || existingClass.schoolId !== req.schoolId) {
            return res.status(404).json({
              success: false,
              message: "Class not found",
            });
+         }
+
+         // staffId: absent leaves the class teacher alone, null removes them, a
+         // number assigns one (checked: a teacher of this school and campus).
+         let staffUpdate = {};
+         let newTeacherId = null;
+         if (req.body.staffId === null || req.body.staffId === '') {
+           staffUpdate = { staffId: null };
+         } else if (req.body.staffId !== undefined) {
+           newTeacherId = Number(req.body.staffId);
+           if (!Number.isInteger(newTeacherId) || newTeacherId < 1) {
+             return res.status(400).json({ success: false, message: 'Invalid class teacher' });
+           }
+           const problem = await classTeacherProblem(prisma, {
+             schoolId: req.schoolId, staffId: newTeacherId,
+             campusId: campusId ?? existingClass.campusId ?? null,
+           });
+           if (problem) return res.status(400).json({ success: false, message: problem });
+           staffUpdate = { staffId: newTeacherId };
          }
 
          // Update class
@@ -263,8 +329,18 @@ exports.updateClass = async (req, res, next) => {
              ...(campusId && { campusId }),
              ...(customName && { customName: customName }),
              ...(department !== undefined && { department: department || null }),
+             ...staffUpdate,
            },
          });
+
+         if (newTeacherId && newTeacherId !== existingClass.staffId) {
+           await createNotification({
+             recipientType: 'teacher', recipientId: newTeacherId, schoolId: req.schoolId,
+             title: 'You are a class teacher',
+             message: `You are now the class teacher of ${updatedClass.name}. Subject teachers will submit their results to you.`,
+             type: 'class_teacher', link: '/staff/class-results',
+           });
+         }
      
          res.status(200).json({
            success: true,
@@ -282,12 +358,13 @@ exports.updateClassGroup = async (req, res, next) => {
          const { groupId } = req.params;
          const { name, classId } = req.body;
      
-         // Ensure group exists
+         // Ensure group exists, in this school's class
          const existingGroup = await prisma.classGroup.findUnique({
            where: { id: Number(groupId) },
+           include: { class: { select: { schoolId: true, name: true, campusId: true } } },
          });
      
-         if (!existingGroup) {
+         if (!existingGroup || existingGroup.class.schoolId !== req.schoolId) {
            return res.status(404).json({
              success: false,
              message: "Class group not found",
@@ -307,18 +384,46 @@ exports.updateClassGroup = async (req, res, next) => {
            }
          }
      
+         // staffId: absent leaves the group's class teacher alone, null removes them, a
+         // number assigns one (a teacher of this school and of the class's campus).
+         let staffUpdate = {};
+         let newTeacherId = null;
+         if (req.body.staffId === null || req.body.staffId === '') {
+           staffUpdate = { staffId: null };
+         } else if (req.body.staffId !== undefined) {
+           newTeacherId = Number(req.body.staffId);
+           if (!Number.isInteger(newTeacherId) || newTeacherId < 1) {
+             return res.status(400).json({ success: false, message: 'Invalid class teacher' });
+           }
+           const problem = await classTeacherProblem(prisma, {
+             schoolId: req.schoolId, staffId: newTeacherId, campusId: existingGroup.class.campusId ?? null,
+           });
+           if (problem) return res.status(400).json({ success: false, message: problem });
+           staffUpdate = { staffId: newTeacherId };
+         }
+
          // Update class group
          const updatedGroup = await prisma.classGroup.update({
            where: { id: Number(groupId) },
            data: {
              ...(name && { name }),
              ...(classId && { classId: Number(classId) }),
+             ...staffUpdate,
            },
            include: {
              class: { select: { id: true, name: true } },
            },
          });
      
+         if (newTeacherId && newTeacherId !== existingGroup.staffId) {
+           await createNotification({
+             recipientType: 'teacher', recipientId: newTeacherId, schoolId: req.schoolId,
+             title: 'You are a class teacher',
+             message: `You are now the class teacher of ${existingGroup.class.name} — ${updatedGroup.name}. Subject teachers will submit their results to you.`,
+             type: 'class_teacher', link: '/staff/class-results',
+           });
+         }
+
          res.status(200).json({
            success: true,
            message: "Class group updated successfully",

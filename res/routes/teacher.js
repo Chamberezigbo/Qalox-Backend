@@ -24,6 +24,7 @@ const assignmentController = new AssignmentController();
 const lessonNoteController = require("../controller/teacher/LessonNoteController");
 const lessonNoteChatController = require("../controller/teacher/LessonNoteChatController");
 const testController = require("../controller/teacher/TestController");
+const classResultController = require("../controller/teacher/ClassResultController");
 const teacherSchemeOfWorkController = require("../controller/teacher/SchemeOfWorkController");
 const examTimetableController = new ExamTimetableController();
 
@@ -63,6 +64,20 @@ router.get("/broadsheet", teacherAuthMiddleware, teacherController.getTeacherBro
 router.post("/results/submit", teacherAuthMiddleware, teacherController.submitResults);
 // Every subject the teacher is assigned in one class, in a single request.
 router.post("/results/submit-all", teacherAuthMiddleware, teacherController.submitAllResults);
+router.get("/results/my-submissions", teacherAuthMiddleware, teacherController.getMySubmissions);
+
+// Class teacher: review subject submissions, compile the class, send it to the admin.
+router.get("/class-results/classes", teacherAuthMiddleware, classResultController.myClasses);
+router.get("/class-results", teacherAuthMiddleware, classResultController.overview);
+router.get("/class-results/broadsheet", teacherAuthMiddleware, classResultController.broadsheet);
+router.get("/class-results/report-cards.pdf", teacherAuthMiddleware, classResultController.reportCardsPdf);
+router.get("/class-results/broadsheet.pdf", teacherAuthMiddleware, classResultController.broadsheetPdf);
+router.get("/class-results/students/:studentId/report-card", teacherAuthMiddleware, classResultController.studentReportCard);
+router.post("/class-results/submissions/:id/accept", teacherAuthMiddleware, classResultController.accept);
+router.post("/class-results/submissions/:id/return", teacherAuthMiddleware, classResultController.returnSubmission);
+router.post("/class-results/submit", teacherAuthMiddleware, classResultController.submit);
+router.get("/class-results/remarks", teacherAuthMiddleware, classResultController.remarks);
+router.put("/class-results/remarks", teacherAuthMiddleware, classResultController.saveRemarks);
 
 router.get("/active-term", teacherAuthMiddleware, teacherController.getActiveTerm);
 
@@ -71,6 +86,7 @@ router.get("/classes", teacherAuthMiddleware, teacherController.getMyClasses);
 router.get("/campuses", teacherAuthMiddleware, teacherController.getMyCampus);
 router.get("/class-groups", teacherAuthMiddleware, teacherController.getMyClassGroups);
 router.get("/sessions", teacherAuthMiddleware, teacherController.getActiveSession);
+router.get("/sessions-with-terms", teacherAuthMiddleware, teacherController.getSessionsWithTerms);
 router.get("/students", teacherAuthMiddleware, teacherController.getStudents);
 router.get("/students-with-scores", teacherAuthMiddleware, teacherController.getStudentsWithScores);
 router.get("/my-subjects", teacherAuthMiddleware, teacherController.getTeacherSubjects);

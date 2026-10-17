@@ -116,7 +116,7 @@ exports.classSchema = Joi.object({
   name: Joi.string().max(100).required(),
   campusId: Joi.number().integer().optional(), // optional since not all schools have campuses
   customName: Joi.string().max(255).allow("").optional(), // custom class name (if school uses custom naming)
-  staffId: Joi.number().integer().optional(), // optional, assign class teacher at creation
+  staffId: Joi.number().integer().allow(null).optional(), // optional, assign class teacher at creation
   department: Joi.string().max(100).allow("").optional(), // e.g. Sciences, Arts, Commercial, Social Sciences
 });
 
@@ -124,4 +124,5 @@ exports.classSchema = Joi.object({
 exports.classGroupSchema = Joi.object({
   classId: Joi.number().integer().required(),
   name: Joi.string().max(100).required(), // e.g., "JS1A", "SS2B"
+  staffId: Joi.number().integer().allow(null).optional(), // the group's class teacher
 });

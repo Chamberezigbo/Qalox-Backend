@@ -134,10 +134,13 @@ async function loadSessionSummary(client, { schoolId, studentId, classId, sessio
  * position is ranked among. After a promotion the classmates have moved on, so
  * Student.classId is no longer the answer: the enrollment history is. Students
  * with no history row for the session fall back to their current class.
+ * With `classGroupId`, only that group's students (null: those in no group).
  */
-async function classmateIdsForSession(client, { classId, sessionId }) {
+async function classmateIdsForSession(client, { classId, sessionId, classGroupId }) {
+  // undefined: the whole class. A number or null: only that group (null = no group).
+  const inGroup = classGroupId === undefined ? {} : { classGroupId };
   const enrolled = await client.studentEnrollment.findMany({
-    where: { classId, academicSessionId: sessionId },
+    where: { classId, academicSessionId: sessionId, ...inGroup },
     select: { studentId: true },
   });
   const legacy = await client.student.findMany({
@@ -145,6 +148,7 @@ async function classmateIdsForSession(client, { classId, sessionId }) {
       classId,
       academicSessionId: sessionId,
       enrollments: { none: { academicSessionId: sessionId } },
+      ...inGroup,
     },
     select: { id: true },
   });

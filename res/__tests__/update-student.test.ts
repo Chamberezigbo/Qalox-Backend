@@ -12,12 +12,17 @@ jest.mock("../util/studentFeeSync", () => ({ syncStudentFeeInvoices: jest.fn() }
 jest.mock("../util/getActivePlanForSchool", () => ({ getActivePlanForSchool: jest.fn() }));
 jest.mock("../config/compress", () => jest.fn());
 jest.mock("../util/notify", () => ({ createNotification: jest.fn() }));
+// Whether a group's results are already with the admin is the workflow's business,
+// and is tested there; here an edit is allowed unless a test says otherwise.
+jest.mock("../util/resultScope", () => ({ groupChangeBlockedReason: jest.fn() }));
 jest.mock("../Models/generateUniqueIdentifier", () => ({ generateUniqueIdentifier: jest.fn() }));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { updateStudent } = require("../controller/admin/StudentController");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { syncStudentFeeInvoices } = require("../util/studentFeeSync");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const blockedReason = require("../util/resultScope").groupChangeBlockedReason;
 
 const STUDENT = { id: 5, schoolId: 7, classId: 11, campusId: null, registrationNumber: "REG/1" };
 
@@ -34,6 +39,7 @@ beforeEach(() => {
   // The form always names a class; here it is the student's own, in this school.
   mockPrisma.class.findFirst.mockResolvedValue({ id: 11, campusId: null });
   mockPrisma.student.update.mockImplementation(async ({ data }: any) => ({ ...STUDENT, ...data }));
+  blockedReason.mockResolvedValue(null);
 });
 
 describe("updateStudent", () => {
@@ -91,3 +97,25 @@ describe("updateStudent", () => {
 });
 
 export {}; // makes this a module, so its top-level names stay out of the global scope
+
+describe("updateStudent — a student whose group's results are with the admin", () => {
+  it("cannot change class, and nothing is saved", async () => {
+    blockedReason.mockResolvedValue("This student's class results have already been sent to the admin for this term.");
+    mockPrisma.class.findFirst.mockResolvedValue({ id: 99, campusId: null });
+
+    const { status, out } = await run({ classId: 99 });
+
+    expect(status).toBe(409);
+    expect(out.message).toContain("sent to the admin");
+    expect(mockPrisma.student.update).not.toHaveBeenCalled();
+  });
+
+  it("can still have other details edited", async () => {
+    blockedReason.mockResolvedValue("blocked");
+
+    const { status } = await run({ phoneNumber: "08011111111" });
+
+    expect(status).toBe(200);
+    expect(mockPrisma.student.update).toHaveBeenCalled();
+  });
+});

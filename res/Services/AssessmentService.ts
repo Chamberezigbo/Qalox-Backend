@@ -1,6 +1,7 @@
 import prisma from "../util/prisma";
 const { schoolMediaUrl } = require("../controller/public/publicController");
 const { getEnrolledClassId } = require("../util/enrolledClass");
+const { automaticRemark, effectiveRemark } = require("../util/remarkRules");
 const {
     resumptionDateFor,
     loadSessionSummary,
@@ -417,7 +418,8 @@ export class AssessmentService {
         schoolId: number;
         academicSessionId: number;
         subjectIds: number[];  // admin passes all, teacher passes only theirs
-        classGroupId?: number;
+        /** A group's id; null means only the students in no group; undefined means everyone. */
+        classGroupId?: number | null;
         termId?: number;
     }) {
         const { classId, schoolId, academicSessionId, subjectIds, classGroupId } = input;
@@ -427,7 +429,10 @@ export class AssessmentService {
 
         // 1. Get students in this class for this session
         const students = await prisma.student.findMany({
-            where: { classId, schoolId, academicSessionId, status: "active", ...(classGroupId ? { classGroupId } : {}) },
+            where: {
+                classId, schoolId, academicSessionId, status: "active",
+                ...(classGroupId === undefined ? {} : { classGroupId })
+            },
             select: {
                 id: true,
                 surname: true,
@@ -641,8 +646,14 @@ export class AssessmentService {
         schoolId: number;
         adminId: number;
         termId?: number;
+        /**
+         * Publish only one scope's students: a class group's id, or 0 for the
+         * students in no group. Left out, the whole class is published at once
+         * (the original behaviour, still used for legacy submissions).
+         */
+        scope?: number;
     }) {
-        const { classId, subjectId, academicSessionId, schoolId, adminId } = input;
+        const { classId, subjectId, academicSessionId, schoolId, adminId, scope } = input;
 
         // 1. Verify class and subject belong to this school
         const classRecord = await prisma.class.findFirst({
@@ -664,42 +675,80 @@ export class AssessmentService {
             throw new Error("This session has no term yet. Create and activate a term before publishing.");
         }
 
-        // 3. Block re-publication — but per term: publishing Second Term must not be
-        // refused because First Term was published.
+        // 3. Block re-publication, per term (publishing Second Term must not be
+        // refused because First Term was published). A scoped publication only
+        // counts the students it covers: group B can still be published after A.
         const alreadyPublished = await prisma.publishedResult.findFirst({
-            where: { classId, subjectId, academicSessionId, termId: resolvedTermId }
+            where: { classId, subjectId, academicSessionId, termId: resolvedTermId },
+            select: { id: true }
         });
-        if (alreadyPublished) {
+        if (alreadyPublished && scope === undefined) {
             throw new Error("Results for this class, subject and term have already been published");
         }
 
         // 4. Compute live results using existing broadsheet logic. The term is
         // passed so the snapshot holds this term's scores, not a sum of all of them.
+        // Positions are ranked among the scope's own students.
         const computed = await this.computeBroadsheet({
             classId,
             schoolId,
             academicSessionId,
             subjectIds: [subjectId],
-            termId: resolvedTermId
+            termId: resolvedTermId,
+            ...(scope === undefined ? {} : { classGroupId: scope === 0 ? null : scope })
         });
+
+        let rowsToWrite = computed.rows;
+        if (alreadyPublished) {
+            const have = await prisma.publishedResultRow.findMany({
+                where: { publishedResultId: alreadyPublished.id, studentId: { in: computed.rows.map((r) => r.studentId) } },
+                select: { studentId: true }
+            });
+            const haveIds = new Set(have.map((h) => h.studentId));
+            rowsToWrite = computed.rows.filter((r) => !haveIds.has(r.studentId));
+            if (rowsToWrite.length === 0) {
+                throw new Error("Results for this class, subject and term have already been published");
+            }
+        }
+        // A scoped publication of an empty group is a mistake; a whole-class one
+        // keeps its original behaviour.
+        if (rowsToWrite.length === 0 && scope !== undefined) {
+            throw new Error("There are no students to publish results for");
+        }
 
         // 5. Save snapshot in a transaction
         return prisma.$transaction(async (tx) => {
 
-            // Create the publication record
-            const publication = await tx.publishedResult.create({
-                data: {
-                    classId,
-                    subjectId,
-                    academicSessionId,
-                    termId: resolvedTermId,
-                    publishedByAdminId: adminId
-                }
+            // The publication record: created by the first scope to be published,
+            // filled in by the others. Two scopes approved at the same moment can
+            // both try to create it; the unique key lets one through and the other
+            // uses it.
+            let publication = await tx.publishedResult.findFirst({
+                where: { classId, subjectId, academicSessionId, termId: resolvedTermId }
             });
+            if (!publication) {
+                try {
+                    publication = await tx.publishedResult.create({
+                        data: {
+                            classId,
+                            subjectId,
+                            academicSessionId,
+                            termId: resolvedTermId,
+                            publishedByAdminId: adminId
+                        }
+                    });
+                } catch (error: any) {
+                    if (error?.code !== "P2002") throw error;
+                    publication = await tx.publishedResult.findFirst({
+                        where: { classId, subjectId, academicSessionId, termId: resolvedTermId }
+                    });
+                }
+            }
+            if (!publication) throw new Error("Could not record the publication");
 
             // Save each student's row as a frozen snapshot
             await tx.publishedResultRow.createMany({
-                data: computed.rows.map((row) => {
+                data: rowsToWrite.map((row) => {
                     const subjectScores = Object.values(row.scores)[0]; // only one subject
 
                     return {
@@ -717,7 +766,7 @@ export class AssessmentService {
             // Notify every student in the published class — separate from the
             // low_grade ParentAlert below, which only fires for under-40 scores.
             await tx.userNotification.createMany({
-                data: computed.rows.map((row) => ({
+                data: rowsToWrite.map((row) => ({
                     recipientType: "student",
                     recipientId: row.studentId,
                     schoolId,
@@ -727,22 +776,26 @@ export class AssessmentService {
                 }))
             });
 
-            // Delete the submission after publishing (it's been approved)
-            await tx.resultSubmission.deleteMany({
-                where: {
-                    classId,
-                    subjectId,
-                    academicSessionId,
-                    termId: resolvedTermId,
-                    status: "PENDING"
-                }
-            });
+            // Delete the legacy submission after publishing (it's been approved).
+            // A scoped publication belongs to the class-teacher workflow, whose
+            // submissions are kept as the record.
+            if (scope === undefined) {
+                await tx.resultSubmission.deleteMany({
+                    where: {
+                        classId,
+                        subjectId,
+                        academicSessionId,
+                        termId: resolvedTermId,
+                        status: "PENDING"
+                    }
+                });
+            }
 
             // Child Performance Alerts: notify a linked parent when their
             // child scores below the pass mark (40, matching this codebase's
             // own default grading scheme) on a newly-published result.
             const LOW_GRADE_THRESHOLD = 40;
-            const lowScoringStudentIds = computed.rows
+            const lowScoringStudentIds = rowsToWrite
                 .filter((row) => (Object.values(row.scores)[0] as { subjectTotal: number }).subjectTotal < LOW_GRADE_THRESHOLD)
                 .map((row) => row.studentId);
 
@@ -771,12 +824,12 @@ export class AssessmentService {
                 academicSessionId,
                 termId: resolvedTermId,
                 publishedAt: publication.publishedAt,
-                totalStudents: computed.rows.length
+                totalStudents: rowsToWrite.length
             };
         }, { timeout: 20000 });
     }
 
-    async unpublishResults(publishedResultId: number, schoolId: number) {
+    async unpublishResults(publishedResultId: number, schoolId: number, adminId?: number) {
         const publishedResult = await prisma.publishedResult.findFirst({
             where: {
                 id: publishedResultId,
@@ -787,6 +840,7 @@ export class AssessmentService {
                 classId: true,
                 subjectId: true,
                 academicSessionId: true,
+                termId: true,
                 class: { select: { name: true } },
                 subject: { select: { name: true } },
                 academicSession: { select: { name: true } }
@@ -804,6 +858,18 @@ export class AssessmentService {
 
             await tx.publishedResult.delete({
                 where: { id: publishedResultId }
+            });
+
+            // The class has to be corrected and resubmitted: give it back to the
+            // class teacher, with the unpublish on the record.
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            await require("./ResultWorkflowService").reopenAfterUnpublish(tx, {
+                schoolId,
+                classId: publishedResult.classId,
+                sessionId: publishedResult.academicSessionId,
+                termId: publishedResult.termId,
+                subjectId: publishedResult.subjectId,
+                adminId: adminId ?? 0
             });
 
             return {
@@ -1489,8 +1555,20 @@ export class AssessmentService {
          * scores for every subject.
          */
         publishedOnly?: boolean;
+        /**
+         * Only these subjects (the class teacher's draft card: accepted plus own).
+         * Combined with publishedOnly it is the intersection.
+         */
+        subjectIds?: number[];
+        /** The class the caller is asking about; a student enrolled elsewhere is refused. */
+        expectClassId?: number;
+        /**
+         * Every classmate's total over the subjects on the card, already worked out
+         * (from computeBroadsheet). Skips ranking the class again for each card.
+         */
+        classScores?: Array<{ studentId: number; score: number }>;
     }) {
-        const { studentId, schoolId, academicSessionId, publishedOnly } = input;
+        const { studentId, schoolId, academicSessionId, publishedOnly, subjectIds, expectClassId } = input;
 
         // Resolve academic session
         let sessionId = academicSessionId;
@@ -1551,6 +1629,10 @@ export class AssessmentService {
             }
         }
 
+        if (expectClassId !== undefined && student.classId !== expectClassId) {
+            throw new Error("This student is not in that class");
+        }
+
         const school = await prisma.school.findUnique({
             where: { id: schoolId },
             select: { name: true, logoUrl: true, stampUrl: true }
@@ -1568,16 +1650,26 @@ export class AssessmentService {
             }
         });
 
+        if (subjectIds) {
+            const wanted = new Set(subjectIds);
+            classSubjects = classSubjects.filter((cs) => wanted.has(cs.subject.id));
+        }
+
         if (publishedOnly) {
-            const published = await prisma.publishedResult.findMany({
+            // Published for THIS student: group A can be approved while group B is
+            // still being reviewed, so the class having a publication is not enough.
+            const publishedRows = await prisma.publishedResultRow.findMany({
                 where: {
-                    classId: student.classId,
-                    academicSessionId: sessionId,
-                    ...(termId ? { termId } : {})
+                    studentId,
+                    publishedResult: {
+                        classId: student.classId,
+                        academicSessionId: sessionId,
+                        ...(termId ? { termId } : {})
+                    }
                 },
-                select: { subjectId: true }
+                select: { publishedResult: { select: { subjectId: true } } }
             });
-            const publishedIds = new Set(published.map((p: { subjectId: number }) => p.subjectId));
+            const publishedIds = new Set(publishedRows.map((p: { publishedResult: { subjectId: number } }) => p.publishedResult.subjectId));
             classSubjects = classSubjects.filter((cs) => publishedIds.has(cs.subject.id));
         }
 
@@ -1662,48 +1754,72 @@ export class AssessmentService {
         // Get class position - rank students by total score
         // Who was in the class THAT session. Student.classId is where they are now,
         // so after a promotion it would rank this student against nobody.
-        const classmateIds: number[] = await classmateIdsForSession(prisma, {
-            classId: student.classId,
-            sessionId
-        });
-        const classStudents = classmateIds.map((id) => ({ id }));
+        // The class's scores can be handed in (a whole class's cards are printed at once,
+        // and ranking everyone again for every card would be slow); otherwise they are
+        // worked out here. Either way the same subjects are summed.
+        let classStudentScores: Array<{ studentId: number; score: number }>;
+        if (input.classScores) {
+            classStudentScores = input.classScores.map((entry) => ({ ...entry }));
+        } else {
+            // A class with groups ranks within the student's own group (SS 1 A is
+            // ranked against SS 1 A), which is also how its results are approved.
+            const classHasGroups = (await prisma.classGroup.count({ where: { classId: student.classId } })) > 0;
+            let positionGroup: number | null | undefined = undefined;
+            if (classHasGroups) {
+                const enrollment = await prisma.studentEnrollment.findUnique({
+                    where: { studentId_academicSessionId: { studentId, academicSessionId: sessionId } },
+                    select: { classGroupId: true }
+                });
+                positionGroup = enrollment ? enrollment.classGroupId : (await prisma.student.findUnique({
+                    where: { id: studentId }, select: { classGroupId: true }
+                }))?.classGroupId ?? null;
+            }
+            const classmateIds: number[] = await classmateIdsForSession(prisma, {
+                classId: student.classId,
+                sessionId,
+                classGroupId: positionGroup
+            });
+            const classStudents = classmateIds.map((id) => ({ id }));
 
-        // Calculate scores for all students in class to determine position
-        const classStudentScores = await Promise.all(
-            classStudents.map(async (cs) => {
-                // The same subjects the card lists, so a position is never decided by
-                // a subject the student cannot see.
-                const csSubjects = classSubjects.map((c) => ({ subject: { id: c.subject.id } }));
+            // Calculate scores for all students in class to determine position
+            classStudentScores = await Promise.all(
+                classStudents.map(async (cs) => {
+                    // The same subjects the card lists, so a position is never decided by
+                    // a subject the student cannot see.
+                    const csSubjects = classSubjects.map((c) => ({ subject: { id: c.subject.id } }));
 
-                let csTotal = 0;
-                for (const subj of csSubjects) {
-                    const cas = await prisma.continuousAssessment.findMany({
-                        where: { classId: student.classId, subjectId: subj.subject.id },
-                        select: {
-                            caResults: {
-                                where: { studentId: cs.id, academicSessionId: sessionId, ...(termId ? { termId } : {}) },
-                                select: { score: true }
+                    let csTotal = 0;
+                    for (const subj of csSubjects) {
+                        const cas = await prisma.continuousAssessment.findMany({
+                            where: { classId: student.classId, subjectId: subj.subject.id },
+                            select: {
+                                caResults: {
+                                    where: { studentId: cs.id, academicSessionId: sessionId, ...(termId ? { termId } : {}) },
+                                    select: { score: true }
+                                }
                             }
-                        }
-                    });
-                    const exams = await prisma.exam.findMany({
-                        where: { classId: student.classId, subjectId: subj.subject.id },
-                        select: {
-                            examResults: {
-                                where: { studentId: cs.id, academicSessionId: sessionId, ...(termId ? { termId } : {}) },
-                                select: { score: true }
+                        });
+                        const exams = await prisma.exam.findMany({
+                            where: { classId: student.classId, subjectId: subj.subject.id },
+                            select: {
+                                examResults: {
+                                    where: { studentId: cs.id, academicSessionId: sessionId, ...(termId ? { termId } : {}) },
+                                    select: { score: true }
+                                }
                             }
-                        }
-                    });
+                        });
 
-                    const caTotal = cas.reduce((sum, ca) => sum + Number(ca.caResults[0]?.score ?? 0), 0);
-                    const examTotal = exams.reduce((sum, exam) => sum + Number(exam.examResults[0]?.score ?? 0), 0);
-                    csTotal += caTotal + examTotal;
-                }
+                        const caTotal = cas.reduce((sum, ca) => sum + Number(ca.caResults[0]?.score ?? 0), 0);
+                        const examTotal = exams.reduce((sum, exam) => sum + Number(exam.examResults[0]?.score ?? 0), 0);
+                        csTotal += caTotal + examTotal;
+                    }
 
-                return { studentId: cs.id, score: csTotal };
-            })
-        );
+                    return { studentId: cs.id, score: csTotal };
+                })
+            );
+
+
+        }
 
         // Sort by score descending and find position
         const sortedByScore = classStudentScores.sort((a, b) => b.score - a.score);
@@ -1715,11 +1831,16 @@ export class AssessmentService {
             select: { rules: { orderBy: { minScore: "desc" } } }
         });
 
-        const remarkTemplate = remarkScheme?.rules.find(r => averageScore >= r.minScore && averageScore <= r.maxScore)?.remark ?? "";
-
-        // Personalize remark with student name
+        // The automatic remark from the score ranges; one the class teacher wrote
+        // by hand for this student and term replaces it.
         const studentDisplayName = `${student.surname} ${student.name}`;
-        const personalizedRemark = remarkTemplate ? remarkTemplate.replace('{studentName}', studentDisplayName) : "";
+        const personalizedRemark = automaticRemark(remarkScheme?.rules ?? [], averageScore, studentDisplayName);
+        const handWritten = termId
+            ? await prisma.studentTermRemark.findUnique({
+                where: { studentId_academicSessionId_termId: { studentId, academicSessionId: sessionId, termId } },
+                select: { classTeacherRemark: true, principalRemark: true }
+            })
+            : null;
 
         // Get session and term names
         const session = await prisma.academicSession.findUnique({
@@ -1804,7 +1925,8 @@ export class AssessmentService {
             },
             sessionSummary,
             feeSummary: { outstanding: outstandingFees },
-            teacherRemark: personalizedRemark,
+            teacherRemark: effectiveRemark(handWritten?.classTeacherRemark, personalizedRemark),
+            principalRemark: handWritten?.principalRemark ?? null,
             schoolRecommendationDate
         };
     }

@@ -20,6 +20,7 @@ const {
 const { updateSchoolBranding } = require("../../controller/school/schoolController");
 const classLadderController = require("../../controller/admin/ClassLadderController");
 const promotionController = require("../../controller/admin/PromotionController");
+const classSubmissionController = require("../../controller/admin/ClassSubmissionController");
 
 const {
   getStudentDetails, createStudent,
@@ -315,7 +316,7 @@ router.delete("/classes/:classId", auth.authenticateSchoolLevelAdmin, auth.requi
 router.post("/class-groups/create", validate(classGroupSchema), auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, createClassGroup);
 router.get("/class-groups", auth.authenticateSchoolLevelAdmin, auth.requirePermission([PERMISSIONS.CLASSES_MANAGE, PERMISSIONS.STUDENTS_MANAGE]), auth.attachSchoolId, getClassGroups);
 router.patch("/class/update/:classId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClass);
-router.patch("/class-group/update/:groupId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), updateClassGroup);
+router.patch("/class-group/update/:groupId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, updateClassGroup);
 
 // Scheme of Work routes — sub-admins need PERMISSIONS.SCHEME_OF_WORK_MANAGE; head admins always pass.
 // Accepts one PDF or up to 10 page photos per upload (see uploadSchemeOfWork).
@@ -392,6 +393,7 @@ router.get("/class-subject/:classId", auth.authenticateSchoolLevelAdmin, auth.re
 router.delete("/class-subject/:classId/:subjectId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, assessmentController.deleteSubjectFromClass);
 
 // broadsheet + publishing — sub-admins need PERMISSIONS.RESULTS_GENERATE (the "Generate Result" page)
+router.get("/broadsheet.pdf", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, assessmentController.getAdminBroadsheetPdf);
 router.get("/broadsheet", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, assessmentController.getAdminBroadsheet);
 router.post("/results/publish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, assessmentController.publishResults);
 
@@ -403,8 +405,20 @@ router.delete("/results/submissions/:submissionId/reject", auth.authenticateScho
 router.put("/results/rejected/:submissionId/restore", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.restoreRejectedSubmission);
 router.delete("/results/published/:publishedResultId/unpublish", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.unpublishResults);
 
+// Class results compiled by class teachers: read with RESULTS_MANAGE, approve/return with RESULTS_GENERATE (approving publishes)
+router.get("/results/class-submissions", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, classSubmissionController.list);
+router.get("/results/classes-without-teacher", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, classSubmissionController.classesWithoutTeacher);
+router.get("/results/class-submissions/:id/report-cards.pdf", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, classSubmissionController.reportCardsPdf);
+router.get("/results/class-submissions/:id/broadsheet.pdf", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, classSubmissionController.broadsheetPdf);
+router.get("/results/class-submissions/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, classSubmissionController.get);
+router.post("/results/class-submissions/:id/approve", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, classSubmissionController.approve);
+router.post("/results/class-submissions/:id/return", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, classSubmissionController.returnToClassTeacher);
+
+router.put("/results/remarks", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, classSubmissionController.savePrincipalRemarks);
+
 router.get("/result/student", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getStudentResult);
 router.get("/result/teacher", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getTeacherResult);
+router.get("/result/student/:studentId/pdf", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getStudentCompleteResultPdf);
 router.get("/result/student/:studentId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getStudentCompleteResult);
 
 // Academic term / session / exam-schedule routes: intentionally head-admin-only

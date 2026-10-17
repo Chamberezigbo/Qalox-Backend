@@ -23,6 +23,7 @@ router.get("/student/metrics", studentAuthMiddleware, studentDashboardController
 router.get("/student/sessions", studentAuthMiddleware, studentResultController.getSessions);
 router.get("/student/results",  studentAuthMiddleware, studentResultController.getResults);
 router.get("/student/report-card", studentAuthMiddleware, studentResultController.getReportCard);
+router.get("/student/report-card.pdf", studentAuthMiddleware, studentResultController.getReportCardPdf);
 router.get("/student/assignments", studentAuthMiddleware, studentAssignmentController.list);
 router.get("/student/fees", studentAuthMiddleware, studentFeeController.getFees);
 router.get("/student/bank-accounts", studentAuthMiddleware, studentFeeController.getBankAccounts);

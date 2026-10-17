@@ -2,6 +2,12 @@
 import prisma from "../../util/prisma";
 import { AppError } from "../../util/AppError";
 import { schoolMediaUrl } from "../../controller/public/publicController";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { LOCKING_STATUSES } = require("../../util/resultWorkflowRules");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { createNotification } = require("../../util/notify");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { scopesOfClass, classTeacherOfScope, studentScopeWhere, scopeLabel, parseScope } = require("../../util/resultScope");
 
 type GetStudentsForGradingInput = {
     staffId: number;
@@ -22,8 +28,7 @@ export type SubmissionReadiness =
     | { state: "ready" }
     | { state: "already_submitted" }
     | { state: "already_published" }
-    | { state: "no_scores"; message: string }
-    | { state: "incomplete"; message: string; groups: string[] };
+    | { state: "no_scores"; message: string };
 
 export class TeacherService {
     async getStudentsForGrading(input: GetStudentsForGradingInput) {
@@ -173,6 +178,49 @@ export class TeacherService {
         return term.id;
     }
 
+    /**
+     * Refuses a score that can no longer be changed.
+     *
+     * It is locked while the student's scope (their class group, or the class
+     * itself when they have none) has the subject with its class teacher or
+     * accepted by them, and permanently once the student's result is published.
+     * A group's scores stay editable while another group's are approved. A legacy
+     * submission from before class teachers (PENDING, no group) locks everyone, as
+     * it always did.
+     */
+    private async assertScoreUnlocked(
+        tx: any,
+        input: { classId: number; subjectId: number; studentId: number; academicSessionId: number; termId: number }
+    ) {
+        const { classId, subjectId, studentId, academicSessionId, termId } = input;
+
+        const student = await tx.student.findUnique({ where: { id: studentId }, select: { classGroupId: true } });
+        const scope = student?.classGroupId ?? 0;
+
+        const isSubmitted = await tx.resultSubmission.findFirst({
+            where: {
+                classId,
+                subjectId,
+                academicSessionId,
+                termId,
+                status: { in: LOCKING_STATUSES },
+                OR: [{ classGroupId: scope }, { status: "PENDING", classGroupId: 0 }]
+            },
+            select: { id: true }
+        });
+        if (isSubmitted) {
+            throw new Error("Results have been submitted for review. Scores are locked.");
+        }
+
+        const isPublished = await tx.publishedResultRow.findFirst({
+            where: { studentId, publishedResult: { classId, subjectId, academicSessionId, termId } },
+            select: { id: true }
+        });
+        if (isPublished) {
+            throw new Error("Results have been published and are permanently locked.");
+        }
+    }
+
     async upsertCAScores(input: {
         staffId: number;
         schoolId: number;
@@ -197,36 +245,13 @@ export class TeacherService {
                 if (ca.class.schoolId !== schoolId) throw new Error("CA does not belong to your school");
 
                 if (ca.subjectId) {
-                    // Check submission lock
-                    const isSubmitted = await tx.resultSubmission.findFirst({
-                        where: {
-                            classId: ca.classId,
-                            subjectId: ca.subjectId,
-                            academicSessionId,
-                            termId: effectiveTermId,
-                            status: "PENDING"
-                        },
-                        select: { id: true }
+                    await this.assertScoreUnlocked(tx, {
+                        classId: ca.classId,
+                        subjectId: ca.subjectId,
+                        studentId: e.studentId,
+                        academicSessionId,
+                        termId: effectiveTermId
                     });
-
-                    if (isSubmitted) {
-                        throw new Error("Results have been submitted for review. Scores are locked.");
-                    }
-
-                    // Check publication lock
-                    const isPublished = await tx.publishedResult.findFirst({
-                        where: {
-                            classId: ca.classId,
-                            subjectId: ca.subjectId,
-                            academicSessionId,
-                            termId: effectiveTermId
-                        },
-                        select: { id: true }
-                    });
-
-                    if (isPublished) {
-                        throw new Error("Results have been published and are permanently locked.");
-                    }
                 }
 
 
@@ -288,34 +313,13 @@ export class TeacherService {
 
                 // Add this lock check:
                 if (exam.subjectId) {
-                    const isSubmitted = await tx.resultSubmission.findFirst({
-                        where: {
-                            classId: exam.classId,
-                            subjectId: exam.subjectId,
-                            academicSessionId,
-                            termId: effectiveTermId,
-                            status: "PENDING"
-                        },
-                        select: { id: true }
+                    await this.assertScoreUnlocked(tx, {
+                        classId: exam.classId,
+                        subjectId: exam.subjectId,
+                        studentId: e.studentId,
+                        academicSessionId,
+                        termId: effectiveTermId
                     });
-
-                    if (isSubmitted) {
-                        throw new Error("Results have been submitted for review. Scores are locked.");
-                    }
-
-                    const isPublished = await tx.publishedResult.findFirst({
-                        where: {
-                            classId: exam.classId,
-                            subjectId: exam.subjectId,
-                            academicSessionId,
-                            termId: effectiveTermId
-                        },
-                        select: { id: true }
-                    });
-
-                    if (isPublished) {
-                        throw new Error("Results have been published and are permanently locked.");
-                    }
                 }
 
 
@@ -615,6 +619,8 @@ export class TeacherService {
         subjectId: number;
         termId?: number;
         academicSessionId: number;
+        /** The group being submitted (a class with groups has a class teacher per group). */
+        classGroupId?: number;
         /** Submit even though scores look missing. Never overrides submitted/published. */
         force?: boolean;
     }) {
@@ -626,9 +632,26 @@ export class TeacherService {
         // A submission locks one term's scores, so it is always for a known term.
         const effectiveTermId = await this.resolveTermId(schoolId, academicSessionId, termId);
 
+        // Which group's results these are. A class with several groups has a class
+        // teacher for each, so the teacher has to say which one is being submitted.
+        const scope = await this.resolveSubmissionScope({ schoolId, classId, academicSessionId, classGroupId: input.classGroupId });
+
+        // Nobody to send it to is the first thing to say: there is no point
+        // checking scores for a group that has no class teacher.
+        const recipient = await classTeacherOfScope(prisma, { schoolId, classId, scope });
+        if (recipient.cls && recipient.valid && !recipient.staffId) {
+            throw Object.assign(
+                new AppError(
+                    `${scopeLabel(recipient.cls.name, recipient.groupName)} has no class teacher yet, so there is nobody to review your results. Ask the admin to assign one.`,
+                    409
+                ),
+                { code: "NO_CLASS_TEACHER" }
+            );
+        }
+
         // 2. The same readiness rules bulk submission uses
         const readiness = await this.assessSubmissionReadiness({
-            staffId, classId, subjectId, academicSessionId, termId: effectiveTermId
+            classId, subjectId, academicSessionId, termId: effectiveTermId, scope
         });
 
         // Not overridable: submitted work cannot be submitted twice, and
@@ -641,143 +664,263 @@ export class TeacherService {
         }
 
         // Missing scores are refused by default but can be overridden on
-        // purpose: a group may be away, or a subject may have had no
-        // assessments this term. A teacher who confirms is different from one
-        // who did not realise — and an admin can reopen a submission either way.
-        if ((readiness.state === "no_scores" || readiness.state === "incomplete") && !force) {
+        // purpose: the group may have had no assessments this term. A teacher who
+        // confirms is different from one who did not realise.
+        if (readiness.state === "no_scores" && !force) {
             throw Object.assign(new AppError(`${readiness.message}.`, 409), {
                 code: "SUBMISSION_NOT_READY",
-                details: {
-                    reason: readiness.state,
-                    ...(readiness.state === "incomplete" && { groups: readiness.groups })
-                }
+                details: { reason: readiness.state }
             });
         }
 
-        // 3. Create submission record
-        const submission = await prisma.resultSubmission.create({
-            data: { classId, subjectId, academicSessionId, staffId, termId: effectiveTermId },
-            select: {
-                id: true,
-                classId: true,
-                subjectId: true,
-                academicSessionId: true,
-                status: true,
-                termId: true,
-                submittedAt: true
-            }
+        // 3. Hand it to the class teacher (or, when the submitter IS the class
+        //    teacher, nothing to hand over).
+        return this.handToClassTeacher({
+            staffId, schoolId, classId, subjectId, academicSessionId, termId: effectiveTermId, scope
         });
-
-        return submission;
     }
 
     /**
-     * Everything that decides whether a subject can be submitted: not already
-     * submitted, not already published, some scores entered, and no class group
-     * left entirely unscored. Returns the first thing in the way.
+     * Which group a single submission is for.
+     *
+     * A class with no groups, or whose students are all in one scope, needs no
+     * choice. A class with several groups must be told which: each has its own
+     * class teacher, so "the class" is not a single place to send results.
      */
-    private async assessSubmissionReadiness(input: {
+    private async resolveSubmissionScope(input: {
+        schoolId: number;
+        classId: number;
+        academicSessionId: number;
+        classGroupId?: number;
+    }): Promise<number> {
+        const { schoolId, classId, academicSessionId, classGroupId } = input;
+        const scopes = await scopesOfClass(prisma, { schoolId, classId, sessionId: academicSessionId });
+
+        if (classGroupId !== undefined && classGroupId !== null) {
+            const wanted = parseScope(classGroupId);
+            const group = await prisma.classGroup.findFirst({ where: { id: wanted, classId }, select: { id: true } });
+            if (wanted !== 0 && !group) throw new Error("That group is not in this class");
+            return wanted;
+        }
+
+        if (scopes.length <= 1) return scopes[0]?.classGroupId ?? 0;
+
+        throw Object.assign(
+            new AppError(
+                "This class has groups, and each group has its own class teacher. Choose the group to submit, or use All my subjects to submit every group.",
+                400
+            ),
+            { code: "GROUP_REQUIRED" }
+        );
+    }
+
+    /**
+     * Sends one subject, for one group, to that group's class teacher.
+     *
+     * - No class teacher there: refused, because there is nobody to review it.
+     * - The submitter is that class teacher: nothing is submitted. Their own
+     *   subject is counted in the class compilation, and locked when they
+     *   submit that, so there is no self-submission and no second entry.
+     * - A RETURNED row (same teacher) is moved back to SUBMITTED, so the
+     *   history is one row with its events, not a pile of duplicates.
+     */
+    private async handToClassTeacher(input: {
         staffId: number;
+        schoolId: number;
         classId: number;
         subjectId: number;
         academicSessionId: number;
         termId: number;
+        scope: number;
+    }) {
+        const { staffId, schoolId, classId, subjectId, academicSessionId, termId, scope } = input;
+
+        const target = await classTeacherOfScope(prisma, { schoolId, classId, scope });
+        if (!target.cls) throw new Error("Class not found");
+        if (!target.valid) throw new Error("That group is not in this class");
+        const label = scopeLabel(target.cls.name, target.groupName);
+
+        if (!target.staffId) {
+            throw Object.assign(
+                new AppError(
+                    `${label} has no class teacher yet, so there is nobody to review your results. Ask the admin to assign one.`,
+                    409
+                ),
+                { code: "NO_CLASS_TEACHER" }
+            );
+        }
+
+        if (target.staffId === staffId) {
+            return { included: true as const, classId, subjectId, academicSessionId, termId, classGroupId: scope };
+        }
+
+        const submission = await prisma.$transaction(async (tx) => {
+            const previous = await tx.resultSubmission.findFirst({
+                where: { classId, subjectId, academicSessionId, termId, staffId, classGroupId: scope },
+                select: { id: true, status: true }
+            });
+
+            const row = previous
+                ? await tx.resultSubmission.update({
+                    where: { id: previous.id },
+                    data: {
+                        status: "SUBMITTED",
+                        submittedAt: new Date(),
+                        returnComment: null,
+                        reviewedAt: null,
+                        reviewedByStaffId: null
+                    }
+                })
+                : await tx.resultSubmission.create({
+                    data: { classId, subjectId, academicSessionId, staffId, termId, status: "SUBMITTED", classGroupId: scope }
+                });
+
+            await tx.resultWorkflowEvent.create({
+                data: {
+                    schoolId, classId, classGroupId: scope, subjectId, academicSessionId, termId, submissionId: row.id,
+                    action: previous ? "RESUBMITTED" : "SUBMITTED", actorType: "teacher", actorId: staffId
+                }
+            });
+            return row;
+        });
+
+        const [subject, teacher] = await Promise.all([
+            prisma.subject.findUnique({ where: { id: subjectId }, select: { name: true } }),
+            prisma.staff.findUnique({ where: { id: staffId }, select: { name: true } })
+        ]);
+        await createNotification({
+            recipientType: "teacher", recipientId: target.staffId, schoolId,
+            title: "Results to review",
+            message: `${teacher?.name ?? "A teacher"} submitted ${subject?.name ?? "a subject"} for ${label}.`,
+            type: "result_submitted", link: "/staff/class-results"
+        });
+
+        return {
+            id: submission.id,
+            classId: submission.classId,
+            subjectId: submission.subjectId,
+            academicSessionId: submission.academicSessionId,
+            status: submission.status,
+            termId: submission.termId,
+            submittedAt: submission.submittedAt,
+            classGroupId: scope
+        };
+    }
+
+    /**
+     * Everything that decides whether a subject can be submitted for a group:
+     * not already submitted, not already published for its students, and some
+     * scores entered for them. Returns the first thing in the way.
+     */
+    private async assessSubmissionReadiness(input: {
+        classId: number;
+        subjectId: number;
+        academicSessionId: number;
+        termId: number;
+        scope: number;
     }): Promise<SubmissionReadiness> {
-        const { staffId, classId, subjectId, academicSessionId, termId } = input;
+        const { classId, subjectId, academicSessionId, termId, scope } = input;
 
-        const existing = await prisma.resultSubmission.findFirst({
-            where: { classId, subjectId, academicSessionId, termId, staffId },
+        // A subject that was RETURNED to the teacher can be submitted again; anything
+        // else already on file for this group means it is with someone for review.
+        // A legacy PENDING row (no class teacher, no group) counts for everyone.
+        const onFile = await prisma.resultSubmission.findMany({
+            where: {
+                classId, subjectId, academicSessionId, termId,
+                OR: [{ classGroupId: scope }, { status: "PENDING", classGroupId: 0 }]
+            },
+            select: { id: true, staffId: true, status: true }
+        });
+        if (onFile.some((row) => row.status !== "RETURNED" && row.status !== "REJECTED")) {
+            return { state: "already_submitted" };
+        }
+
+        // Published for the group's students (a class's groups are approved one at a time).
+        const students = await prisma.student.findMany({
+            where: { classId, academicSessionId, status: "active", ...studentScopeWhere(scope) },
             select: { id: true }
         });
-        if (existing) return { state: "already_submitted" };
+        if (students.length > 0) {
+            const publishedFor = await prisma.publishedResultRow.count({
+                where: {
+                    studentId: { in: students.map((s) => s.id) },
+                    publishedResult: { classId, subjectId, academicSessionId, termId }
+                }
+            });
+            if (publishedFor >= students.length) return { state: "already_published" };
+        }
 
-        const published = await prisma.publishedResult.findFirst({
-            where: { classId, subjectId, academicSessionId, termId },
-            select: { id: true }
-        });
-        if (published) return { state: "already_published" };
-
-        // Scores are per term, so only this term's count: First Term scores must
-        // not make an untouched Second Term look ready to submit.
+        // Scores are per term, and per group: Group A being scored says nothing about B.
+        const studentFilter = { student: studentScopeWhere(scope) };
         const [caScores, examScores] = await Promise.all([
-            prisma.cAResult.count({ where: { academicSessionId, termId, ca: { classId, subjectId } } }),
-            prisma.examResult.count({ where: { academicSessionId, termId, exam: { classId, subjectId } } })
+            prisma.cAResult.count({ where: { academicSessionId, termId, ca: { classId, subjectId }, ...studentFilter } }),
+            prisma.examResult.count({ where: { academicSessionId, termId, exam: { classId, subjectId }, ...studentFilter } })
         ]);
         if (caScores + examScores === 0) {
             return { state: "no_scores", message: "No CA or exam scores have been entered" };
-        }
-
-        // Scores are entered a group at a time, so "some scores exist" is not
-        // enough: entering Group A and stopping would lock the whole subject
-        // with Group B blank.
-        const groups = await this.groupsWithoutScores(classId, subjectId, academicSessionId, termId);
-        if (groups.length > 0) {
-            return { state: "incomplete", message: `No scores entered yet for ${groups.join(", ")}`, groups };
         }
 
         return { state: "ready" };
     }
 
     /**
-     * Names of the class's groups in which nobody has a score for this subject.
-     *
-     * A group is a filter on who the teacher sees while entering scores — a
-     * submission and a teaching assignment have no group — so a class with
-     * Group A and Group B can end up with Group A fully scored and Group B
-     * untouched. Only a group with no scores at all counts: a student who was
-     * absent has no score too, and holding a whole subject back over one child
-     * would make bulk submission unusable.
-     *
-     * Students without a group are deliberately not treated as a group of their
-     * own. In a class that uses groups a few are usually just not yet placed,
-     * and flagging them would block the subject for good.
+     * The teacher's own submissions for a term, with the class teacher's decision.
+     * A subject the admin has published reads as PUBLISHED whatever its row says.
      */
-    private async groupsWithoutScores(
-        classId: number,
-        subjectId: number,
-        academicSessionId: number,
-        termId: number
-    ): Promise<string[]> {
-        const groups = await prisma.classGroup.findMany({
-            where: { classId },
-            select: { id: true, name: true }
+    async getMySubmissions(input: { staffId: number; schoolId: number; classId?: number; termId?: number }) {
+        const { staffId, schoolId, classId, termId } = input;
+
+        const term = termId
+            ? await prisma.academicTerm.findFirst({ where: { id: termId, schoolId }, select: { id: true, sessionId: true } })
+            : await prisma.academicTerm.findFirst({ where: { schoolId, isActive: true }, select: { id: true, sessionId: true } });
+        if (!term) return [];
+
+        const rows = await prisma.resultSubmission.findMany({
+            where: {
+                staffId,
+                academicSessionId: term.sessionId,
+                termId: term.id,
+                autoAccepted: false,
+                class: { schoolId },
+                ...(classId ? { classId } : {})
+            },
+            select: {
+                id: true, classId: true, subjectId: true, status: true, returnComment: true,
+                submittedAt: true, reviewedAt: true, classGroupId: true,
+                class: { select: { name: true, customName: true } },
+                subject: { select: { name: true } }
+            },
+            orderBy: { submittedAt: "desc" }
         });
-        if (groups.length === 0) return [];
+        if (rows.length === 0) return [];
 
-        const students = await prisma.student.findMany({
-            where: { classId, classGroupId: { not: null }, status: "active" },
-            select: { id: true, classGroupId: true }
+        const published = await prisma.publishedResult.findMany({
+            where: {
+                academicSessionId: term.sessionId, termId: term.id,
+                OR: rows.map((r) => ({ classId: r.classId, subjectId: r.subjectId }))
+            },
+            select: { classId: true, subjectId: true }
         });
+        const isPublished = new Set(published.map((p) => `${p.classId}:${p.subjectId}`));
+        const groupIds = [...new Set(rows.map((r) => r.classGroupId).filter((g) => g > 0))];
+        const groups = groupIds.length
+            ? await prisma.classGroup.findMany({ where: { id: { in: groupIds } }, select: { id: true, name: true } })
+            : [];
+        const groupNames = new Map(groups.map((g) => [g.id, g.name]));
 
-        const [caRows, examRows] = await Promise.all([
-            prisma.cAResult.findMany({
-                where: { academicSessionId, termId, studentId: { not: null }, ca: { classId, subjectId } },
-                select: { studentId: true },
-                distinct: ["studentId"]
-            }),
-            prisma.examResult.findMany({
-                where: { academicSessionId, termId, studentId: { not: null }, exam: { classId, subjectId } },
-                select: { studentId: true },
-                distinct: ["studentId"]
-            })
-        ]);
-        const scored = new Set<number>([...caRows, ...examRows].map((r) => r.studentId as number));
-
-        const members = new Map<number, { total: number; scored: number }>();
-        for (const student of students) {
-            const bucket = members.get(student.classGroupId as number) ?? { total: 0, scored: 0 };
-            bucket.total += 1;
-            if (scored.has(student.id)) bucket.scored += 1;
-            members.set(student.classGroupId as number, bucket);
-        }
-
-        return groups
-            .filter((group) => {
-                const bucket = members.get(group.id);
-                // An empty group has nobody to score, so it cannot be "missing" scores.
-                return bucket !== undefined && bucket.total > 0 && bucket.scored === 0;
-            })
-            .map((group) => group.name);
+        return rows.map((r) => ({
+            id: r.id,
+            classId: r.classId,
+            className: r.class.customName ? `${r.class.name} — ${r.class.customName}` : r.class.name,
+            classGroupId: r.classGroupId,
+            groupName: r.classGroupId ? (groupNames.get(r.classGroupId) ?? null) : null,
+            subjectId: r.subjectId,
+            subjectName: r.subject.name,
+            status: isPublished.has(`${r.classId}:${r.subjectId}`) ? "PUBLISHED" : r.status,
+            returnComment: r.status === "RETURNED" ? r.returnComment : null,
+            submittedAt: r.submittedAt,
+            reviewedAt: r.reviewedAt
+        }));
     }
 
     /**
@@ -802,14 +945,37 @@ export class TeacherService {
         classId: number;
         termId?: number;
         academicSessionId: number;
+        /** One group only. Left out, every group of the class is submitted. */
+        classGroupId?: number;
     }) {
         const { staffId, schoolId, classId, termId, academicSessionId } = input;
 
         const cls = await prisma.class.findFirst({
             where: { id: classId, schoolId },
-            select: { id: true }
+            select: { id: true, name: true, staffId: true }
         });
         if (!cls) throw new Error("Class not found");
+
+        // The groups being submitted: the one named, or every group that has students.
+        const allScopes = await scopesOfClass(prisma, { schoolId, classId, sessionId: academicSessionId });
+        let scopes = allScopes;
+        if (input.classGroupId !== undefined && input.classGroupId !== null) {
+            const wanted = parseScope(input.classGroupId);
+            const found = allScopes.find((sc) => sc.classGroupId === wanted);
+            if (!found) throw new Error("That group is not in this class");
+            scopes = [found];
+        }
+
+        // Nobody to send to anywhere: say so once, rather than a list of refusals.
+        if (scopes.length > 0 && scopes.every((sc) => !sc.staffId)) {
+            throw Object.assign(
+                new AppError(
+                    `${cls.name} has no class teacher yet, so there is nobody to review your results. Ask the admin to assign one.`,
+                    409
+                ),
+                { code: "NO_CLASS_TEACHER" }
+            );
+        }
 
         // Resolved once for the whole batch: every subject is submitted for the
         // same term.
@@ -830,42 +996,62 @@ export class TeacherService {
             throw new Error("Forbidden: teacher not assigned to any subject in this class");
         }
 
-        type Outcome = "submitted" | "already_submitted" | "already_published" | "no_scores" | "incomplete" | "failed";
+        type Outcome =
+            | "submitted"
+            | "included_automatically"
+            | "already_submitted"
+            | "already_published"
+            | "no_scores"
+            | "no_class_teacher"
+            | "failed";
         const results: Array<{
             subjectId: number;
             subjectName: string;
+            classGroupId: number;
+            groupName: string | null;
             outcome: Outcome;
             message?: string;
         }> = [];
 
         const ordered = [...subjects.entries()].sort((a, b) => a[1].localeCompare(b[1]));
 
-        for (const [subjectId, subjectName] of ordered) {
-            const record = (outcome: Outcome, message?: string) =>
-                results.push({ subjectId, subjectName, outcome, ...(message && { message }) });
+        for (const scope of scopes) {
+            for (const [subjectId, subjectName] of ordered) {
+                const record = (outcome: Outcome, message?: string) =>
+                    results.push({
+                        subjectId, subjectName, classGroupId: scope.classGroupId, groupName: scope.groupName,
+                        outcome, ...(message && { message })
+                    });
 
-            try {
-                const readiness = await this.assessSubmissionReadiness({
-                    staffId, classId, subjectId, academicSessionId, termId: effectiveTermId
-                });
+                try {
+                    if (!scope.staffId) {
+                        record("no_class_teacher", `${scopeLabel(cls.name, scope.groupName)} has no class teacher yet`);
+                        continue;
+                    }
 
-                // Bulk submission only ever skips; it never forces. Locking
-                // several subjects past a warning is the mistake it exists to
-                // prevent, so overriding is a single-subject decision.
-                if (readiness.state !== "ready") {
-                    record(readiness.state, "message" in readiness ? readiness.message : undefined);
-                    continue;
+                    const readiness = await this.assessSubmissionReadiness({
+                        classId, subjectId, academicSessionId, termId: effectiveTermId, scope: scope.classGroupId
+                    });
+
+                    // Bulk submission only ever skips; it never forces. Locking
+                    // several subjects past a warning is the mistake it exists to
+                    // prevent, so overriding is a single-subject decision.
+                    if (readiness.state !== "ready") {
+                        record(readiness.state, "message" in readiness ? readiness.message : undefined);
+                        continue;
+                    }
+
+                    const handed = await this.handToClassTeacher({
+                        staffId, schoolId, classId, subjectId, academicSessionId,
+                        termId: effectiveTermId, scope: scope.classGroupId
+                    });
+                    record("included" in handed ? "included_automatically" : "submitted");
+                } catch (error: any) {
+                    // Two requests racing past the check above: the unique key on a
+                    // submission turns the loser into "already submitted", not a fault.
+                    if (error?.code === "P2002") record("already_submitted");
+                    else record("failed", error?.message ?? "Could not submit");
                 }
-
-                await prisma.resultSubmission.create({
-                    data: { classId, subjectId, academicSessionId, staffId, termId: effectiveTermId }
-                });
-                record("submitted");
-            } catch (error: any) {
-                // Two requests racing past the check above: the unique key on a
-                // submission turns the loser into "already submitted", not a fault.
-                if (error?.code === "P2002") record("already_submitted");
-                else record("failed", error?.message ?? "Could not submit");
             }
         }
 
@@ -877,7 +1063,10 @@ export class TeacherService {
             results,
             counts: {
                 submitted: count("submitted"),
-                skipped: results.filter((r) => r.outcome !== "submitted" && r.outcome !== "failed").length,
+                included: count("included_automatically"),
+                skipped: results.filter(
+                    (r) => r.outcome !== "submitted" && r.outcome !== "failed" && r.outcome !== "included_automatically"
+                ).length,
                 failed: count("failed")
             }
         };

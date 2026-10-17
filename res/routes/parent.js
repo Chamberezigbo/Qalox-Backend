@@ -16,6 +16,7 @@ router.post("/link-child", parentAuthMiddleware, parentAuthController.linkChild)
 router.get("/children", parentAuthMiddleware, parentController.getChildren);
 router.get("/children/:studentId/results", parentAuthMiddleware, parentController.getChildResults);
 router.get("/children/:studentId/report-card", parentAuthMiddleware, parentController.getChildReportCard);
+router.get("/children/:studentId/report-card.pdf", parentAuthMiddleware, parentController.getChildReportCardPdf);
 router.get("/children/:studentId/report-card/sessions", parentAuthMiddleware, parentController.getChildReportCardSessions);
 router.get("/children/:studentId/attendance", parentAuthMiddleware, parentController.getChildAttendance);
 router.get("/children/:studentId/fees", parentAuthMiddleware, parentController.getChildFees);

@@ -345,6 +345,10 @@ model ClassGroup {
   id        Int      @id @default(autoincrement())
   classId   Int
   name      String
+  // The group's class teacher: receives the group's results from the subject
+  // teachers and compiles them for the admin. Plain id (like Class.staffId's
+  // meaning for students with no group); checked on save.
+  staffId   Int?
   createdAt DateTime @default(now())
   class     Class    @relation(fields: [classId], references: [id])
 
@@ -870,8 +874,11 @@ model PublishedResultRow {
 
 
 enum SubmissionStatus {
-  PENDING    // submitted, awaiting admin review
-  REJECTED   // admin rejected, teacher can re-enter
+  PENDING    // legacy: submitted straight to the admin, awaiting review
+  REJECTED   // legacy: admin rejected, teacher can re-enter
+  SUBMITTED  // with the class teacher for review
+  ACCEPTED   // class teacher accepted it into the class compilation
+  RETURNED   // class teacher sent it back with a comment; scores are unlocked
 }
 
 model ResultSubmission {
@@ -883,6 +890,17 @@ model ResultSubmission {
   staffId           Int
   status            SubmissionStatus @default(PENDING)
   submittedAt       DateTime         @default(now())
+  // Set when the class teacher accepts or returns it.
+  reviewedByStaffId Int?
+  reviewedAt        DateTime?
+  returnComment     String?          @db.VarChar(1000)
+  // The class teacher's own subject: counted in their class compilation without
+  // a submission, and written (locked) when they submit the compilation.
+  autoAccepted      Boolean          @default(false)
+  // The scope: a class group's id, or 0 for students with no group (and for every
+  // student of a class that has no groups). Each scope has its own class teacher.
+  // A plain 0 rather than NULL, because MySQL unique indexes allow duplicate NULLs.
+  classGroupId      Int              @default(0)
 
   class           Class           @relation(fields: [classId], references: [id])
   subject         Subject         @relation(fields: [subjectId], references: [id])
@@ -891,8 +909,84 @@ model ResultSubmission {
   staff           Staff           @relation(fields: [staffId], references: [id])
 
   // Per term: each term's scores are submitted, and locked, on their own.
-  @@unique([classId, subjectId, academicSessionId, termId, staffId])
+  @@unique([classId, subjectId, academicSessionId, termId, staffId, classGroupId])
   @@map("result_submissions")
+}
+
+// A whole class's results for one term, compiled by the class teacher and sent to
+// the admin. One per class, session and term; resubmission raises `round`.
+// Plain ids (no relations): it is a ledger of a workflow, like PromotionRun.
+model ClassCompilation {
+  id                  Int       @id @default(autoincrement())
+  schoolId            Int
+  classId             Int
+  academicSessionId   Int
+  termId              Int
+  // The scope (see ResultSubmission.classGroupId).
+  classGroupId        Int       @default(0)
+  submittedByStaffId  Int
+  // SUBMITTED | RETURNED | APPROVED
+  status              String    @default("SUBMITTED") @db.VarChar(16)
+  round               Int       @default(1)
+  submittedAt         DateTime  @default(now())
+  reviewedByAdminId   Int?
+  reviewedAt          DateTime?
+  returnComment       String?   @db.VarChar(1000)
+  // Subjects and students the class teacher acknowledged as missing at submit.
+  missingJson         String?   @db.Text
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([classId, academicSessionId, termId, classGroupId])
+  @@index([schoolId, status])
+  @@map("class_compilations")
+}
+
+// What the class teacher (and the principal) wrote about one student for one term.
+// The class teacher's remark replaces the automatic one on the report card; blank
+// falls back to it. Never used in any calculation.
+model StudentTermRemark {
+  id                 Int      @id @default(autoincrement())
+  schoolId           Int
+  studentId          Int
+  academicSessionId  Int
+  termId             Int
+  classTeacherRemark String?  @db.VarChar(500)
+  classTeacherStaffId Int?
+  principalRemark    String?  @db.VarChar(500)
+  principalAdminId   Int?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([studentId, academicSessionId, termId])
+  @@index([schoolId, termId])
+  @@map("student_term_remarks")
+}
+
+// Append-only history of the result workflow. Nothing here is ever updated or
+// deleted, so every submission, return and approval survives resubmission.
+model ResultWorkflowEvent {
+  id                Int      @id @default(autoincrement())
+  schoolId          Int
+  classId           Int
+  classGroupId      Int      @default(0)
+  subjectId         Int?
+  academicSessionId Int
+  termId            Int?
+  submissionId      Int?
+  compilationId     Int?
+  // SUBMITTED, RESUBMITTED, ACCEPTED, AUTO_ACCEPTED, RETURNED, COMPILATION_SUBMITTED,
+  // COMPILATION_RESUBMITTED, APPROVED, ADMIN_RETURNED, UNPUBLISHED
+  action            String   @db.VarChar(32)
+  // teacher | admin
+  actorType         String   @db.VarChar(10)
+  actorId           Int
+  comment           String?  @db.VarChar(1000)
+  createdAt         DateTime @default(now())
+
+  @@index([schoolId, classId, academicSessionId, termId])
+  @@index([compilationId])
+  @@map("result_workflow_events")
 }
 
 

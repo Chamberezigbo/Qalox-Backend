@@ -1,5 +1,9 @@
 import type { Request, Response, NextFunction } from "express";
 import { AssessmentService } from "../../Services/AssessmentService";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { sendPdf } = require("../../util/sendPdf");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { buildReportCardsPdf, buildBroadsheetsPdf } = require("../../util/reportCardPdf");
 
 interface AuthenticatedRequest extends Request {
     schoolId?: string;
@@ -269,6 +273,34 @@ export class AssessmentController {
         }
     };
 
+    /** The admin broadsheet (every class asked for) as a landscape PDF. */
+    getAdminBroadsheetPdf = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.schoolId) throw new Error("Missing schoolId");
+
+            const result = await this.service.getAdminBroadsheet({
+                classId: req.query.classId ? Number(req.query.classId) : undefined,
+                academicSessionId: req.query.academicSessionId ? Number(req.query.academicSessionId) : undefined,
+                schoolId: Number(req.schoolId),
+                classGroupId: req.query.classGroupId ? Number(req.query.classGroupId) : undefined,
+                termId: req.query.termId ? Number(req.query.termId) : undefined
+            });
+            const sheets = (Array.isArray(result) ? result : [result]) as any[];
+            const pdf = await buildBroadsheetsPdf(
+                sheets.map((sheet) => ({
+                    heading: {
+                        title: `Class Broadsheet — ${sheet.className ?? ""}`,
+                        subtitle: [sheet.sessionName, sheet.classTeacher ? `Class teacher: ${sheet.classTeacher}` : null].filter(Boolean).join(" · ")
+                    },
+                    sheet
+                }))
+            );
+            sendPdf(res, pdf, `broadsheet-${sheets[0]?.className ?? "class"}`, { inline: req.query.inline === "1" });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     getStudentResult = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.schoolId) throw new Error("Missing schoolId");
@@ -377,6 +409,26 @@ export class AssessmentController {
         }
     };
 
+    /** The same report card the admin sees on screen, as a PDF. */
+    getStudentCompleteResultPdf = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.schoolId) return res.status(401).json({ message: "Unauthorized" });
+            const studentId = Number(req.params.studentId);
+            if (Number.isNaN(studentId)) return res.status(400).json({ message: "Invalid studentId" });
+
+            const card = await this.service.getStudentCompleteResult({
+                studentId,
+                schoolId: Number(req.schoolId),
+                academicSessionId: req.query.academicSessionId ? Number(req.query.academicSessionId) : undefined,
+                termId: req.query.termId ? Number(req.query.termId) : undefined
+            });
+            const pdf = await buildReportCardsPdf([card]);
+            sendPdf(res, pdf, `report-card-${card.studentInformation.surname}-${card.studentInformation.name}`, { inline: req.query.inline === "1" });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     unpublishResults = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.schoolId) {
@@ -388,7 +440,7 @@ export class AssessmentController {
                 return res.status(400).json({ message: "Invalid publishedResultId" });
             }
 
-            const result = await this.service.unpublishResults(publishedResultId, Number(req.schoolId));
+            const result = await this.service.unpublishResults(publishedResultId, Number(req.schoolId), Number((req as any).user?.id) || undefined);
 
             return res.status(200).json({
                 success: true,

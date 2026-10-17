@@ -5,13 +5,19 @@
 jest.mock("../util/prisma", () => ({
   class: { findFirst: jest.fn() },
   teacherAssignment: { findMany: jest.fn(), findFirst: jest.fn() },
-  resultSubmission: { findFirst: jest.fn(), create: jest.fn() },
+  resultSubmission: { findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn(), update: jest.fn() },
+  resultWorkflowEvent: { create: jest.fn() },
   publishedResult: { findFirst: jest.fn() },
+  publishedResultRow: { count: jest.fn() },
   academicTerm: { findFirst: jest.fn() },
   cAResult: { count: jest.fn(), findMany: jest.fn() },
   examResult: { count: jest.fn(), findMany: jest.fn() },
-  classGroup: { findMany: jest.fn() },
-  student: { findMany: jest.fn() },
+  classGroup: { findMany: jest.fn(), findFirst: jest.fn() },
+  student: { findMany: jest.fn(), groupBy: jest.fn() },
+  subject: { findUnique: jest.fn() },
+  staff: { findUnique: jest.fn() },
+  userNotification: { create: jest.fn() },
+  $transaction: jest.fn(),
 }));
 
 import prisma from "../util/prisma";
@@ -20,13 +26,19 @@ import { TeacherService } from "../Services/teacher/TeacherService";
 const db = prisma as unknown as {
   class: { findFirst: jest.Mock };
   teacherAssignment: { findMany: jest.Mock; findFirst: jest.Mock };
-  resultSubmission: { findFirst: jest.Mock; create: jest.Mock };
+  resultSubmission: { findFirst: jest.Mock; findMany: jest.Mock; create: jest.Mock; update: jest.Mock };
+  resultWorkflowEvent: { create: jest.Mock };
+  subject: { findUnique: jest.Mock };
+  staff: { findUnique: jest.Mock };
+  userNotification: { create: jest.Mock };
+  $transaction: jest.Mock;
   publishedResult: { findFirst: jest.Mock };
+  publishedResultRow: { count: jest.Mock };
   academicTerm: { findFirst: jest.Mock };
   cAResult: { count: jest.Mock; findMany: jest.Mock };
   examResult: { count: jest.Mock; findMany: jest.Mock };
-  classGroup: { findMany: jest.Mock };
-  student: { findMany: jest.Mock };
+  classGroup: { findMany: jest.Mock; findFirst: jest.Mock };
+  student: { findMany: jest.Mock; groupBy: jest.Mock };
 };
 
 const INPUT = { staffId: 6, schoolId: 5, classId: 9, academicSessionId: 2, termId: 3 };
@@ -42,9 +54,17 @@ const outcomes = (result: { results: Array<{ subjectName: string; outcome: strin
 
 beforeEach(() => {
   jest.clearAllMocks();
-  db.class.findFirst.mockResolvedValue({ id: 9 });
+  // SS 1 has a class teacher (staff 99), who is not the submitting teacher (6).
+  db.class.findFirst.mockResolvedValue({ id: 9, name: "SS 1", staffId: 99 });
   assigned();
   db.resultSubmission.findFirst.mockResolvedValue(null);
+  db.resultSubmission.findMany.mockResolvedValue([]);
+  db.resultSubmission.update.mockResolvedValue({ id: 1 });
+  db.resultWorkflowEvent.create.mockResolvedValue({});
+  db.subject.findUnique.mockResolvedValue({ name: "Mathematics" });
+  db.staff.findUnique.mockResolvedValue({ name: "Teacher" });
+  db.userNotification.create.mockResolvedValue({});
+  db.$transaction.mockImplementation(async (fn: any) => fn(db));
   db.publishedResult.findFirst.mockResolvedValue(null);
   // Every submission is for a known term; the one INPUT names exists.
   db.academicTerm.findFirst.mockResolvedValue({ id: 3 });
@@ -52,8 +72,12 @@ beforeEach(() => {
   db.examResult.count.mockResolvedValue(10);
   db.resultSubmission.create.mockResolvedValue({ id: 1 });
   // Most classes have no groups, which is the case every test above assumes.
+  // A class with no groups: one scope (the class itself), two active students in it.
   db.classGroup.findMany.mockResolvedValue([]);
-  db.student.findMany.mockResolvedValue([]);
+  db.classGroup.findFirst.mockResolvedValue(null);
+  db.student.groupBy.mockResolvedValue([{ classGroupId: null, _count: { _all: 2 } }]);
+  db.student.findMany.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+  db.publishedResultRow.count.mockResolvedValue(0);
   db.cAResult.findMany.mockResolvedValue([]);
   db.examResult.findMany.mockResolvedValue([]);
 });
@@ -65,7 +89,7 @@ describe("submitAllResults", () => {
     const result = await service().submitAllResults(INPUT);
 
     expect(db.resultSubmission.create).toHaveBeenCalledTimes(3);
-    expect(result.counts).toEqual({ submitted: 3, skipped: 0, failed: 0 });
+    expect(result.counts).toEqual({ submitted: 3, included: 0, skipped: 0, failed: 0 });
     expect(outcomes(result)).toEqual({
       Mathematics: "submitted",
       "English Language": "submitted",
@@ -77,7 +101,7 @@ describe("submitAllResults", () => {
     await service().submitAllResults(INPUT);
 
     expect(db.resultSubmission.create).toHaveBeenCalledWith({
-      data: { classId: 9, subjectId: 5, academicSessionId: 2, staffId: 6, termId: 3 },
+      data: { classId: 9, subjectId: 5, academicSessionId: 2, staffId: 6, termId: 3, status: "SUBMITTED", classGroupId: 0 },
     });
   });
 
@@ -91,20 +115,21 @@ describe("submitAllResults", () => {
 
   it("skips a subject that was already submitted, rather than failing", async () => {
     // Pressing the button twice, or after a partial run, must be harmless.
-    db.resultSubmission.findFirst.mockImplementation(async ({ where }: any) =>
-      where.subjectId === 5 ? { id: 99 } : null
+    db.resultSubmission.findMany.mockImplementation(async ({ where }: any) =>
+      where.subjectId === 5 ? [{ id: 99, staffId: 6, status: "SUBMITTED" }] : []
     );
 
     const result = await service().submitAllResults(INPUT);
 
     expect(outcomes(result).Mathematics).toBe("already_submitted");
-    expect(result.counts).toEqual({ submitted: 2, skipped: 1, failed: 0 });
+    expect(result.counts).toEqual({ submitted: 2, included: 0, skipped: 1, failed: 0 });
     expect(db.resultSubmission.create).toHaveBeenCalledTimes(2);
   });
 
   it("skips a subject whose results were already published", async () => {
-    db.publishedResult.findFirst.mockImplementation(async ({ where }: any) =>
-      where.subjectId === 6 ? { id: 1 } : null
+    // Both of the group's students have a published row for English.
+    db.publishedResultRow.count.mockImplementation(async ({ where }: any) =>
+      where.publishedResult.subjectId === 6 ? 2 : 0
     );
 
     const result = await service().submitAllResults(INPUT);
@@ -144,7 +169,7 @@ describe("submitAllResults", () => {
 
     const result = await service().submitAllResults(INPUT);
 
-    expect(result.counts).toEqual({ submitted: 2, skipped: 0, failed: 1 });
+    expect(result.counts).toEqual({ submitted: 2, included: 0, skipped: 0, failed: 1 });
     expect(result.results.filter((r) => r.outcome === "failed")[0].message).toBe("database went away");
   });
 
@@ -187,128 +212,106 @@ describe("submitAllResults", () => {
     db.class.findFirst.mockResolvedValue(null);
 
     await expect(service().submitAllResults(INPUT)).rejects.toThrow("Class not found");
-    expect(db.class.findFirst).toHaveBeenCalledWith({ where: { id: 9, schoolId: 5 }, select: { id: true } });
+    expect(db.class.findFirst).toHaveBeenCalledWith({ where: { id: 9, schoolId: 5 }, select: { id: true, name: true, staffId: true } });
   });
 
   describe("when the class has groups", () => {
-    // A group only filters who the teacher sees while entering scores, so a
-    // class can end up with Group A scored and Group B untouched.
-    const groups = () =>
-      db.classGroup.findMany.mockResolvedValue([
-        { id: 1, name: "PINK CLASS" },
-        { id: 2, name: "yellow arms" },
+    // Each group has its own class teacher, so each is its own submission:
+    // Group A being scored says nothing about Group B.
+    const GROUPS = [
+      { id: 1, name: "A", staffId: 99 },
+      { id: 2, name: "B", staffId: 98 },
+    ];
+    const withGroups = () => {
+      db.classGroup.findMany.mockResolvedValue(GROUPS);
+      db.classGroup.findFirst.mockImplementation(async ({ where }: any) => GROUPS.find((g) => g.id === where.id) ?? null);
+      db.student.groupBy.mockResolvedValue([
+        { classGroupId: 1, _count: { _all: 10 } },
+        { classGroupId: 2, _count: { _all: 10 } },
       ]);
+    };
 
-    /** Students 1-2 in PINK, 3 in yellow, 4-9 not placed in any group. */
-    const students = () =>
-      db.student.findMany.mockResolvedValue([
-        { id: 1, classGroupId: 1 },
-        { id: 2, classGroupId: 1 },
-        { id: 3, classGroupId: 2 },
-      ]);
-
-    const scoredStudents = (...ids: number[]) =>
-      db.cAResult.findMany.mockResolvedValue(ids.map((studentId) => ({ studentId })));
-
-    it("holds a subject back when a whole group has no scores", async () => {
-      groups();
-      students();
-      scoredStudents(1, 2); // PINK CLASS entered, yellow arms not
+    it("submits every group separately, each to its own class teacher", async () => {
+      withGroups();
 
       const result = await service().submitAllResults(INPUT);
 
-      expect(outcomes(result).Mathematics).toBe("incomplete");
-      expect(result.results[0].message).toBe("No scores entered yet for yellow arms");
-      expect(db.resultSubmission.create).not.toHaveBeenCalled();
+      // 3 subjects x 2 groups
+      expect(db.resultSubmission.create).toHaveBeenCalledTimes(6);
+      const groupsUsed = db.resultSubmission.create.mock.calls.map((c: any) => c[0].data.classGroupId);
+      expect(groupsUsed.filter((g: number) => g === 1)).toHaveLength(3);
+      expect(groupsUsed.filter((g: number) => g === 2)).toHaveLength(3);
+      expect(result.counts).toEqual({ submitted: 6, included: 0, skipped: 0, failed: 0 });
+      expect(result.results.map((r) => r.groupName).sort()).toEqual(["A", "A", "A", "B", "B", "B"]);
     });
 
-    it("counts a held-back subject as skipped, not failed", async () => {
-      groups();
-      students();
-      scoredStudents(1, 2);
+    it("submits only the named group", async () => {
+      withGroups();
 
-      const result = await service().submitAllResults(INPUT);
+      const result = await service().submitAllResults({ ...INPUT, classGroupId: 2 });
 
-      expect(result.counts).toEqual({ submitted: 0, skipped: 3, failed: 0 });
+      expect(result.counts.submitted).toBe(3);
+      expect(db.resultSubmission.create.mock.calls.every((c: any) => c[0].data.classGroupId === 2)).toBe(true);
     });
 
-    it("names every group that is missing scores", async () => {
-      groups();
-      students();
-      db.cAResult.findMany.mockResolvedValue([{ studentId: 99 }]); // someone elsewhere
+    it("skips a group with no scores yet, without holding back the others", async () => {
+      withGroups();
+      // Scores exist for Group A's students only.
+      db.cAResult.count.mockImplementation(async ({ where }: any) => (where.student.classGroupId === 1 ? 10 : 0));
+      db.examResult.count.mockResolvedValue(0);
 
       const result = await service().submitAllResults(INPUT);
 
-      expect(result.results[0].message).toBe("No scores entered yet for PINK CLASS, yellow arms");
+      const byScope = (name: string) => result.results.filter((r) => r.groupName === name).map((r) => r.outcome);
+      expect(byScope("A")).toEqual(["submitted", "submitted", "submitted"]);
+      expect(byScope("B")).toEqual(["no_scores", "no_scores", "no_scores"]);
     });
 
-    it("submits once every group has at least one score", async () => {
-      groups();
-      students();
-      scoredStudents(1, 3);
+    it("skips only the group that has no class teacher, and says so", async () => {
+      withGroups();
+      db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "A", staffId: 99 }, { id: 2, name: "B", staffId: null }]);
 
       const result = await service().submitAllResults(INPUT);
 
+      expect(result.results.filter((r) => r.groupName === "B").every((r) => r.outcome === "no_class_teacher")).toBe(true);
       expect(result.counts.submitted).toBe(3);
     });
 
-    it("does not hold a subject back over one absent student", async () => {
-      // Student 2 has no score, but PINK CLASS is otherwise scored.
-      groups();
-      students();
-      scoredStudents(1, 3);
+    it("refuses the whole batch only when no group has a class teacher", async () => {
+      withGroups();
+      db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "A", staffId: null }, { id: 2, name: "B", staffId: null }]);
+      db.class.findFirst.mockResolvedValue({ id: 9, name: "SS 1", staffId: null });
+
+      await expect(service().submitAllResults(INPUT)).rejects.toMatchObject({ code: "NO_CLASS_TEACHER" });
+    });
+
+    it("includes the submitter's own group automatically and sends the others on", async () => {
+      withGroups();
+      db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "A", staffId: 6 }, { id: 2, name: "B", staffId: 98 }]);
+      db.classGroup.findFirst.mockImplementation(async ({ where }: any) => ({ id: where.id, name: where.id === 1 ? "A" : "B", staffId: where.id === 1 ? 6 : 98 }));
 
       const result = await service().submitAllResults(INPUT);
 
-      expect(outcomes(result).Mathematics).toBe("submitted");
+      expect(result.counts).toEqual({ submitted: 3, included: 3, skipped: 0, failed: 0 });
     });
 
-    it("counts a score from either the CA or the exam side", async () => {
-      groups();
-      students();
-      db.cAResult.findMany.mockResolvedValue([{ studentId: 1 }]);
-      db.examResult.findMany.mockResolvedValue([{ studentId: 3 }]);
-
-      const result = await service().submitAllResults(INPUT);
-
-      expect(outcomes(result).Mathematics).toBe("submitted");
-    });
-
-    it("ignores students who are not in any group", async () => {
-      // Real data: SS 1 has 6 of its 9 students unplaced. Treating them as a
-      // group that needs scores would block bulk submission there for good.
-      groups();
-      students();
-      scoredStudents(1, 3); // the six unplaced students have no scores
-
-      const result = await service().submitAllResults(INPUT);
-
-      expect(outcomes(result).Mathematics).toBe("submitted");
-      expect(db.student.findMany).toHaveBeenCalledWith(
-        // Withdrawn students are left out as well: they have no new scores to wait for.
-        expect.objectContaining({ where: { classId: 9, classGroupId: { not: null }, status: "active" } })
-      );
-    });
-
-    it("ignores a group nobody is in", async () => {
-      db.classGroup.findMany.mockResolvedValue([
-        { id: 1, name: "PINK CLASS" },
-        { id: 2, name: "yellow arms" },
-        { id: 3, name: "empty group" },
+    it("includes students in no group as their own scope when the class has groups", async () => {
+      withGroups();
+      db.student.groupBy.mockResolvedValue([
+        { classGroupId: 1, _count: { _all: 10 } },
+        { classGroupId: 2, _count: { _all: 10 } },
+        { classGroupId: null, _count: { _all: 3 } },
       ]);
-      students();
-      scoredStudents(1, 3);
 
       const result = await service().submitAllResults(INPUT);
 
-      expect(outcomes(result).Mathematics).toBe("submitted");
+      expect(result.results.filter((r) => r.groupName === null)).toHaveLength(3);
+      expect(db.resultSubmission.create.mock.calls.filter((c: any) => c[0].data.classGroupId === 0)).toHaveLength(3);
     });
 
-    it("never looks at students or scores when the class has no groups", async () => {
-      await service().submitAllResults(INPUT);
-
-      expect(db.student.findMany).not.toHaveBeenCalled();
-      expect(db.cAResult.findMany).not.toHaveBeenCalled();
+    it("refuses a group that is not in the class", async () => {
+      withGroups();
+      await expect(service().submitAllResults({ ...INPUT, classGroupId: 77 })).rejects.toThrow(/not in this class/i);
     });
   });
 });
@@ -342,17 +345,41 @@ describe("submitResults — one subject, with the same readiness rules", () => {
     expect(db.resultSubmission.create).not.toHaveBeenCalled();
   });
 
-  it("refuses when a group has no scores, naming it", async () => {
-    db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "PINK CLASS" }, { id: 2, name: "yellow arms" }]);
-    db.student.findMany.mockResolvedValue([{ id: 1, classGroupId: 1 }, { id: 3, classGroupId: 2 }]);
-    db.cAResult.findMany.mockResolvedValue([{ studentId: 1 }]);
+  it("needs a group when the class has several, since each has its own class teacher", async () => {
+    db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "A", staffId: 99 }, { id: 2, name: "B", staffId: 98 }]);
+    db.student.groupBy.mockResolvedValue([
+      { classGroupId: 1, _count: { _all: 10 } },
+      { classGroupId: 2, _count: { _all: 10 } },
+    ]);
 
-    await expect(service().submitResults(ONE)).rejects.toMatchObject({
-      statusCode: 409,
-      code: "SUBMISSION_NOT_READY",
-      message: "No scores entered yet for yellow arms.",
-      details: { reason: "incomplete", groups: ["yellow arms"] },
+    await expect(service().submitResults(ONE)).rejects.toMatchObject({ statusCode: 400, code: "GROUP_REQUIRED" });
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+  });
+
+  it("submits one named group to that group's class teacher", async () => {
+    db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "A", staffId: 99 }, { id: 2, name: "B", staffId: 98 }]);
+    db.student.groupBy.mockResolvedValue([
+      { classGroupId: 1, _count: { _all: 10 } },
+      { classGroupId: 2, _count: { _all: 10 } },
+    ]);
+    db.classGroup.findFirst.mockResolvedValue({ id: 2, name: "B", staffId: 98 });
+
+    await service().submitResults({ ...ONE, classGroupId: 2 });
+
+    expect(db.resultSubmission.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ classGroupId: 2, status: "SUBMITTED" }),
     });
+    expect(db.userNotification.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ recipientId: 98 }),
+    });
+  });
+
+  it("says a group has no class teacher before looking at its scores", async () => {
+    db.classGroup.findFirst.mockResolvedValue({ id: 2, name: "B", staffId: null });
+    db.cAResult.count.mockResolvedValue(0);
+    db.examResult.count.mockResolvedValue(0);
+
+    await expect(service().submitResults({ ...ONE, classGroupId: 2 })).rejects.toMatchObject({ code: "NO_CLASS_TEACHER" });
   });
 
   it("submits anyway when the teacher forces it", async () => {
@@ -364,25 +391,15 @@ describe("submitResults — one subject, with the same readiness rules", () => {
     expect(db.resultSubmission.create).toHaveBeenCalledTimes(1);
   });
 
-  it("forces past an unscored group too", async () => {
-    db.classGroup.findMany.mockResolvedValue([{ id: 1, name: "PINK CLASS" }, { id: 2, name: "yellow arms" }]);
-    db.student.findMany.mockResolvedValue([{ id: 1, classGroupId: 1 }, { id: 3, classGroupId: 2 }]);
-    db.cAResult.findMany.mockResolvedValue([{ studentId: 1 }]);
-
-    await service().submitResults({ ...ONE, force: true });
-
-    expect(db.resultSubmission.create).toHaveBeenCalledTimes(1);
-  });
-
   it("never forces past a subject that was already submitted", async () => {
-    db.resultSubmission.findFirst.mockResolvedValue({ id: 99 });
+    db.resultSubmission.findMany.mockResolvedValue([{ id: 99, staffId: 6, status: "SUBMITTED" }]);
 
     await expect(service().submitResults({ ...ONE, force: true })).rejects.toThrow(/already submitted/i);
     expect(db.resultSubmission.create).not.toHaveBeenCalled();
   });
 
   it("never forces past results that are already published", async () => {
-    db.publishedResult.findFirst.mockResolvedValue({ id: 1 });
+    db.publishedResultRow.count.mockResolvedValue(2);
 
     await expect(service().submitResults({ ...ONE, force: true })).rejects.toThrow(/already been published/i);
     expect(db.resultSubmission.create).not.toHaveBeenCalled();
@@ -395,3 +412,65 @@ describe("submitResults — one subject, with the same readiness rules", () => {
     expect(db.resultSubmission.create).not.toHaveBeenCalled();
   });
 });
+
+describe("handing results to the class teacher", () => {
+  beforeEach(() => db.teacherAssignment.findFirst.mockResolvedValue({ id: 1 }));
+
+  it("refuses everything when the class has no class teacher, and writes nothing", async () => {
+    db.class.findFirst.mockResolvedValue({ id: 9, name: "SS 1", staffId: null });
+
+    await expect(service().submitAllResults(INPUT)).rejects.toMatchObject({ code: "NO_CLASS_TEACHER", statusCode: 409 });
+    await expect(
+      service().submitResults({ ...INPUT, subjectId: 5 })
+    ).rejects.toMatchObject({ code: "NO_CLASS_TEACHER" });
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+  });
+
+  it("does not submit the class teacher's own subjects: they are included automatically", async () => {
+    db.class.findFirst.mockResolvedValue({ id: 9, name: "SS 1", staffId: 6 }); // the submitter IS the class teacher
+
+    const bulk = await service().submitAllResults(INPUT);
+    expect(bulk.counts).toEqual({ submitted: 0, included: 3, skipped: 0, failed: 0 });
+    expect(outcomes(bulk).Mathematics).toBe("included_automatically");
+
+    const single = await service().submitResults({ ...INPUT, subjectId: 5 });
+    expect(single).toMatchObject({ included: true });
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+    expect(db.userNotification.create).not.toHaveBeenCalled();
+  });
+
+  it("sends a submission to the class's own teacher, and tells them", async () => {
+    await service().submitResults({ ...INPUT, subjectId: 5 });
+
+    expect(db.userNotification.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ recipientType: "teacher", recipientId: 99, type: "result_submitted" }),
+    });
+    expect(db.resultWorkflowEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ action: "SUBMITTED", actorType: "teacher", actorId: 6 }),
+    });
+  });
+
+  it("lets a RETURNED subject be submitted again, on the same row", async () => {
+    db.resultSubmission.findMany.mockResolvedValue([{ id: 40, staffId: 6, status: "RETURNED" }]);
+    db.resultSubmission.findFirst.mockResolvedValue({ id: 40, status: "RETURNED" });
+
+    await service().submitResults({ ...INPUT, subjectId: 5 });
+
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+    expect(db.resultSubmission.update).toHaveBeenCalledWith({
+      where: { id: 40 },
+      data: expect.objectContaining({ status: "SUBMITTED", returnComment: null }),
+    });
+    expect(db.resultWorkflowEvent.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: "RESUBMITTED" }) });
+  });
+
+  it("treats a subject already with the class teacher or accepted as submitted", async () => {
+    for (const status of ["SUBMITTED", "ACCEPTED", "PENDING"]) {
+      db.resultSubmission.findMany.mockResolvedValue([{ id: 1, staffId: 77, status }]); // even another teacher's row
+      await expect(service().submitResults({ ...INPUT, subjectId: 5 })).rejects.toThrow("already submitted");
+    }
+    expect(db.resultSubmission.create).not.toHaveBeenCalled();
+  });
+});
+
+export {};

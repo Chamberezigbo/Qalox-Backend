@@ -15,7 +15,7 @@ jest.mock("../util/prisma", () => ({
   examResult: { findFirst: jest.fn(), update: jest.fn(), create: jest.fn() },
   resultSubmission: { findFirst: jest.fn(), deleteMany: jest.fn() },
   publishedResult: { findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn() },
-  publishedResultRow: { createMany: jest.fn() },
+  publishedResultRow: { createMany: jest.fn(), findFirst: jest.fn(), findMany: jest.fn() },
   userNotification: { createMany: jest.fn() },
   parentAlert: { createMany: jest.fn() },
   class: { findFirst: jest.fn() },
@@ -59,6 +59,8 @@ describe("saving CA scores in a second term", () => {
     db.teacherAssignment.findFirst.mockResolvedValue({ id: 1 });
     db.resultSubmission.findFirst.mockResolvedValue(null);
     db.publishedResult.findFirst.mockResolvedValue(null);
+    db.publishedResultRow.findFirst.mockResolvedValue(null);
+    db.student.findUnique.mockResolvedValue({ classGroupId: null });
     db.cAResult.findFirst.mockResolvedValue(null);
     db.cAResult.create.mockResolvedValue({});
   });
@@ -98,8 +100,8 @@ describe("saving CA scores in a second term", () => {
     db.resultSubmission.findFirst.mockImplementation(async ({ where }: any) =>
       where.termId === TERM_1 ? { id: 1 } : null
     );
-    db.publishedResult.findFirst.mockImplementation(async ({ where }: any) =>
-      where.termId === TERM_1 ? { id: 1 } : null
+    db.publishedResultRow.findFirst.mockImplementation(async ({ where }: any) =>
+      where.publishedResult.termId === TERM_1 ? { id: 1 } : null
     );
 
     await expect(save(TERM_2)).resolves.toMatchObject({ updated: 1 });
@@ -114,8 +116,8 @@ describe("saving CA scores in a second term", () => {
   });
 
   it("is still locked by a publication for the same term", async () => {
-    db.publishedResult.findFirst.mockImplementation(async ({ where }: any) =>
-      where.termId === TERM_2 ? { id: 1 } : null
+    db.publishedResultRow.findFirst.mockImplementation(async ({ where }: any) =>
+      where.publishedResult.termId === TERM_2 ? { id: 1 } : null
     );
 
     await expect(save(TERM_2)).rejects.toThrow(/permanently locked/i);
@@ -157,6 +159,8 @@ describe("saving exam scores in a second term", () => {
     db.teacherAssignment.findFirst.mockResolvedValue({ id: 1 });
     db.resultSubmission.findFirst.mockResolvedValue(null);
     db.publishedResult.findFirst.mockResolvedValue(null);
+    db.publishedResultRow.findFirst.mockResolvedValue(null);
+    db.student.findUnique.mockResolvedValue({ classGroupId: null });
     db.examResult.findFirst.mockResolvedValue(null);
     db.examResult.create.mockResolvedValue({});
   });
@@ -175,8 +179,8 @@ describe("saving exam scores in a second term", () => {
   });
 
   it("is not blocked by a First Term publication", async () => {
-    db.publishedResult.findFirst.mockImplementation(async ({ where }: any) =>
-      where.termId === TERM_1 ? { id: 1 } : null
+    db.publishedResultRow.findFirst.mockImplementation(async ({ where }: any) =>
+      where.publishedResult.termId === TERM_1 ? { id: 1 } : null
     );
 
     await expect(save(TERM_2)).resolves.toMatchObject({ updated: 1 });
@@ -306,7 +310,7 @@ describe("a student's results across terms", () => {
 
   beforeEach(() => {
     db.student.findUnique.mockResolvedValue({ classId: 9, school: { id: SCHOOL } });
-    db.publishedResult.findMany.mockResolvedValue([]);
+    db.publishedResultRow.findMany.mockResolvedValue([]);
     db.classSubject.findMany.mockResolvedValue([]);
   });
 
@@ -318,8 +322,8 @@ describe("a student's results across terms", () => {
     expect(db.publishedResult.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({ orderBy: { publishedAt: "desc" } })
     );
-    expect(db.publishedResult.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ termId: TERM_2 }) })
+    expect(db.publishedResultRow.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ publishedResult: expect.objectContaining({ termId: TERM_2 }) }) })
     );
   });
 
@@ -327,8 +331,8 @@ describe("a student's results across terms", () => {
     await view(TERM_1);
 
     expect(db.publishedResult.findFirst).not.toHaveBeenCalled();
-    expect(db.publishedResult.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ termId: TERM_1 }) })
+    expect(db.publishedResultRow.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ publishedResult: expect.objectContaining({ termId: TERM_1 }) }) })
     );
   });
 
@@ -337,7 +341,7 @@ describe("a student's results across terms", () => {
 
     await view();
 
-    const where = db.publishedResult.findMany.mock.calls[0][0].where;
-    expect(where).not.toHaveProperty("termId");
+    const where = db.publishedResultRow.findMany.mock.calls[0][0].where;
+    expect(where.publishedResult).not.toHaveProperty("termId");
   });
 });

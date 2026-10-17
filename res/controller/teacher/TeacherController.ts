@@ -3,6 +3,7 @@ import { Response, NextFunction } from "express";
 import { TeacherRequest } from "../../middleware/teacherMiddleware";
 import { TeacherService } from "../../Services/teacher/TeacherService";
 import { AcademicTermService } from "../../Services/AcademicTermService";
+import { StudentResultService } from "../../Services/student/StudentResultService";
 import prisma from "../../util/prisma";
 
 
@@ -131,16 +132,47 @@ export class TeacherController {
                 subjectId: Number(subjectId),
                 academicSessionId: Number(academicSessionId),
                 termId: req.body.termId ? Number(req.body.termId) : undefined,
+                classGroupId: req.body.classGroupId ? Number(req.body.classGroupId) : undefined,
                 // Strictly `true`: anything else (a string, a missing field) must
                 // not switch off the missing-scores check by accident.
                 force: req.body.force === true
             });
 
-            return res.status(201).json({
+            const included = "included" in result;
+            return res.status(included ? 200 : 201).json({
                 success: true,
-                message: "Results submitted successfully. Scores are now locked pending admin review.",
+                message: included
+                    ? "You are this class's teacher, so this subject is included in your class results automatically. Nothing to submit."
+                    : "Results submitted to your class teacher. Scores are now locked until they are reviewed.",
                 data: result
             });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    /** Every session with its terms, for the term pickers (the class teacher can look at past terms). */
+    getSessionsWithTerms = async (req: TeacherRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.schoolId) return res.status(401).json({ message: "Unauthorized" });
+            const data = await new StudentResultService().getSessions(req.schoolId);
+            return res.json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    /** The teacher's own submissions and what became of them (accepted, returned with a comment). */
+    getMySubmissions = async (req: TeacherRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.staffId || !req.schoolId) return res.status(401).json({ message: "Unauthorized" });
+            const data = await this.service.getMySubmissions({
+                staffId: req.staffId,
+                schoolId: req.schoolId,
+                classId: req.query.classId ? Number(req.query.classId) : undefined,
+                termId: req.query.termId ? Number(req.query.termId) : undefined
+            });
+            return res.json({ success: true, data });
         } catch (err) {
             next(err);
         }
@@ -161,13 +193,16 @@ export class TeacherController {
                 schoolId: req.schoolId,
                 classId: Number(classId),
                 academicSessionId: Number(academicSessionId),
-                termId: req.body.termId ? Number(req.body.termId) : undefined
+                termId: req.body.termId ? Number(req.body.termId) : undefined,
+                classGroupId: req.body.classGroupId ? Number(req.body.classGroupId) : undefined
             });
 
-            const { submitted, skipped, failed } = data.counts;
+            const { submitted, included, skipped, failed } = data.counts;
             const message =
                 submitted > 0
-                    ? `Submitted ${submitted} subject${submitted === 1 ? "" : "s"}. Scores are now locked pending admin review.`
+                    ? `Submitted ${submitted} subject${submitted === 1 ? "" : "s"} to your class teacher. Scores are now locked until they are reviewed.`
+                    : included > 0
+                        ? "Your own subjects in this class are included in your class results automatically. Nothing to submit."
                     : failed > 0
                         ? "No subjects could be submitted."
                         : "Nothing new to submit — every subject was already submitted or has no scores yet.";

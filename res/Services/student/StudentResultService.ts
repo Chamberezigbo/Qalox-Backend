@@ -64,16 +64,20 @@ export class StudentResultService {
         }
 
         // Get published results for this student's class and session
-        const publishedResults = await prisma.publishedResult.findMany({
+        // Published for THIS student: a class's groups are approved one at a time.
+        const publishedRows = await prisma.publishedResultRow.findMany({
             where: {
-                classId: classId,
-                academicSessionId: sessionId,
-                ...(termId ? { termId } : {})
+                studentId,
+                publishedResult: {
+                    classId: classId,
+                    academicSessionId: sessionId,
+                    ...(termId ? { termId } : {})
+                }
             },
-            select: { subjectId: true }
+            select: { publishedResult: { select: { subjectId: true } } }
         });
 
-        const publishedSubjectIds = new Set(publishedResults.map(pr => pr.subjectId));
+        const publishedSubjectIds = new Set(publishedRows.map(pr => pr.publishedResult.subjectId));
 
         // Get all subjects for the student's class
         const classSubjects = await prisma.classSubject.findMany({

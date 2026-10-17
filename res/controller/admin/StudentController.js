@@ -10,6 +10,7 @@ const { getActivePlanForSchool } = require("../../util/getActivePlanForSchool");
 const { createNotification } = require("../../util/notify");
 const { syncStudentFeeInvoices } = require("../../util/studentFeeSync");
 const { buildStudentUpdate } = require("../../util/studentUpdate");
+const { groupChangeBlockedReason } = require("../../util/resultScope");
 const { recordEnrollment, syncEnrollments } = require("../../util/studentEnrollment");
 const logger = require("../../config/logger");
 const {
@@ -572,6 +573,15 @@ exports.updateStudent = async (req, res, next) => {
       data.classGroupId = null;
     }
 
+    // A student whose group's results are with the admin cannot change group or class.
+    const groupChanged = "classGroupId" in data && (data.classGroupId ?? null) !== (studentExist.classGroupId ?? null);
+    if (classChanged || groupChanged) {
+      const blocked = await groupChangeBlockedReason(prisma, {
+        schoolId, classId: studentExist.classId, classGroupId: studentExist.classGroupId,
+      });
+      if (blocked) return res.status(409).json({ success: false, message: blocked });
+    }
+
     // Upload new passport if provided
     if (req.file) {
       data.passportUrl = await processImage(
@@ -747,7 +757,7 @@ exports.changeStudentClass = async (req, res, next) => {
     // is changed.
     const students = await prisma.student.findMany({
       where: { id: { in: ids }, schoolId },
-      select: { id: true, classId: true },
+      select: { id: true, classId: true, classGroupId: true },
     });
     const foundIds = new Set(students.map((student) => student.id));
     const missing = ids.filter((id) => !foundIds.has(id));
@@ -757,6 +767,19 @@ exports.changeStudentClass = async (req, res, next) => {
         message: "Some students could not be updated. No changes were made.",
         errors: missing.map((id) => ({ studentId: id, message: `Student with ID ${id} not found` })),
       });
+    }
+
+    // Students whose group's results are already with the admin cannot be moved.
+    const toCheck = students.filter(
+      (st) => st.classId !== classExist.id || (targetGroupId && st.classGroupId !== targetGroupId)
+    );
+    const seen = new Set();
+    for (const st of toCheck) {
+      const key = `${st.classId}:${st.classGroupId ?? 0}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const blocked = await groupChangeBlockedReason(prisma, { schoolId, classId: st.classId, classGroupId: st.classGroupId });
+      if (blocked) return res.status(409).json({ success: false, message: blocked });
     }
 
     // 5️⃣ Apply, in one transaction and two statements rather than one per student.

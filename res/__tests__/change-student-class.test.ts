@@ -14,6 +14,9 @@ jest.mock("../util/prisma", () => ({
 
 jest.mock("../util/studentFeeSync", () => ({ syncStudentFeeInvoices: jest.fn() }));
 jest.mock("../util/notify", () => ({ createNotification: jest.fn() }));
+// Whether a group's results are already with the admin is the workflow's business,
+// and is tested there; here a move is allowed unless a test says otherwise.
+jest.mock("../util/resultScope", () => ({ groupChangeBlockedReason: jest.fn() }));
 jest.mock("../Models/generateUniqueIdentifier", () => ({ generateUniqueIdentifier: jest.fn() }));
 
 import prisma from "../util/prisma";
@@ -21,6 +24,8 @@ import { syncStudentFeeInvoices } from "../util/studentFeeSync";
 
 const db = prisma as unknown as Record<string, Record<string, jest.Mock>> & { $transaction: jest.Mock };
 const fees = syncStudentFeeInvoices as jest.Mock;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const blockedReason = require("../util/resultScope").groupChangeBlockedReason as jest.Mock;
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { changeStudentClass } = require("../controller/admin/StudentController");
@@ -53,6 +58,7 @@ beforeEach(() => {
     where.id.in.map((id: number) => ({ id, classId: 10 }))
   );
   db.student.updateMany.mockResolvedValue({ count: 1 });
+  blockedReason.mockResolvedValue(null);
 });
 
 describe("changeStudentClass — staying within the admin's school", () => {
@@ -262,5 +268,16 @@ describe("changeStudentClass — the batch", () => {
     expect(status).toBe(200);
     expect(body.success).toBe(true);
     expect(body.message).toMatch(/moved to class SS 2/);
+  });
+});
+
+describe("changeStudentClass — students whose group's results are with the admin", () => {
+  it("moves nobody, and says why, when a student's group has been sent for approval", async () => {
+    blockedReason.mockResolvedValue("This student's class results have already been sent to the admin for this term.");
+    const { status, body } = await run({ studentIds: [1], classId: 20 });
+
+    expect(status).toBe(409);
+    expect(body.message).toContain("sent to the admin");
+    expect(db.student.updateMany).not.toHaveBeenCalled();
   });
 });
