@@ -103,10 +103,10 @@ describe("students", () => {
 });
 
 describe("staff", () => {
-  it("lists staff of their campuses and school-wide staff, never another campus", async () => {
+  it("lists only staff of their campuses, never another campus or untagged staff", async () => {
     await call(staff.getAllStaff, restricted());
     const where = json(mockPrisma.staff.findMany.mock.calls[0][0].where);
-    expect(where).toContain('"campusId":null');
+    expect(where).not.toContain('"campusId":null');
     expect(where).toContain('"in":[1,2]');
   });
 
@@ -128,11 +128,11 @@ describe("staff", () => {
 });
 
 describe("classes and subjects", () => {
-  it("lists only classes of their campuses (and school-wide ones)", async () => {
+  it("lists only classes of their campuses", async () => {
     await call(classes.getAllClasses, restricted());
     const where = json(mockPrisma.class.findMany.mock.calls[0][0].where);
     expect(where).toContain('"in":[1,2]');
-    expect(where).toContain('"campusId":null');
+    expect(where).not.toContain('"campusId":null');
   });
 
   it("will not let a restricted admin create a class with no campus", async () => {

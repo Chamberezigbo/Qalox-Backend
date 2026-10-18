@@ -6,6 +6,8 @@ import { generateReceiptNo } from "../util/receiptNo";
 import { loadStudentFeeForReceipt, buildReceiptData } from "../util/receiptData";
 import { schoolMediaUrl } from "../controller/public/publicController";
 import { StudentResultService } from "./student/StudentResultService";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { resolveBranding } = require("../util/campusBranding");
 
 export class ParentService {
     /** Confirms the requesting parent actually owns this child before any read. */
@@ -47,7 +49,8 @@ export class ParentService {
                 passportUrl: true,
                 schoolId: true,
                 classId: true,
-                class: { select: { id: true, name: true, customName: true } },
+                class: { select: { id: true, name: true, customName: true, campusId: true } },
+                campusId: true,
             },
             orderBy: { surname: "asc" },
         });
@@ -59,7 +62,7 @@ export class ParentService {
                 const [subjectCount, currentTerm, school] = await Promise.all([
                     prisma.classSubject.count({ where: { classId: c.classId } }),
                     this.getActiveTermName(c.schoolId),
-                    prisma.school.findUnique({ where: { id: c.schoolId }, select: { name: true, logoUrl: true, brandColor: true } }),
+                    resolveBranding(prisma, { schoolId: c.schoolId, campusId: c.campusId ?? c.class.campusId ?? null }),
                 ]);
                 const schoolLogo = await schoolMediaUrl(school?.logoUrl ?? null);
 

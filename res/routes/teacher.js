@@ -64,6 +64,8 @@ router.get("/broadsheet", teacherAuthMiddleware, teacherController.getTeacherBro
 router.post("/results/submit", teacherAuthMiddleware, teacherController.submitResults);
 // Every subject the teacher is assigned in one class, in a single request.
 router.post("/results/submit-all", teacherAuthMiddleware, teacherController.submitAllResults);
+// Who a subject teacher can send a class's results to (the class teacher is flagged).
+router.get("/results/recipients", teacherAuthMiddleware, teacherController.getResultRecipients);
 router.get("/results/my-submissions", teacherAuthMiddleware, teacherController.getMySubmissions);
 
 // Class teacher: review subject submissions, compile the class, send it to the admin.

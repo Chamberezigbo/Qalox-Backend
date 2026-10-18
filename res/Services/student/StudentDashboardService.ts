@@ -1,5 +1,7 @@
 import prisma from "../../util/prisma";
 import { schoolMediaUrl } from "../../controller/public/publicController";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { resolveBranding } = require("../../util/campusBranding");
 
 export class StudentDashboardService {
 
@@ -10,7 +12,7 @@ export class StudentDashboardService {
             include: {
                 school: { select: { id: true, name: true, logoUrl: true, brandColor: true } },
                 campus: { select: { id: true, name: true } },
-                class:  { select: { id: true, name: true } }
+                class:  { select: { id: true, name: true, campusId: true } }
             }
         });
 
@@ -78,14 +80,16 @@ export class StudentDashboardService {
         const totalSchoolFee = currentTermFee?.totalFee ?? 0;
         const pendingDebt = fees.reduce((sum, f) => sum + Math.max(f.totalFee - f.amountPaid, 0), 0);
 
-        const schoolLogoUrl = await schoolMediaUrl(student.school.logoUrl);
+        // The student's campus logo/colour when the campus has its own, else the school's.
+        const branding = await resolveBranding(prisma, { schoolId: student.school.id, campusId: student.campusId ?? student.class.campusId ?? null });
+        const schoolLogoUrl = await schoolMediaUrl(branding.logoUrl);
 
         return {
             student: {
                 name: `${student.name} ${student.surname}`,
                 registrationNumber: student.registrationNumber,
                 class: student.class.name,
-                school: { id: student.school.id, name: student.school.name, logoUrl: schoolLogoUrl, brandColor: student.school.brandColor }
+                school: { id: student.school.id, name: branding.name ?? student.school.name, logoUrl: schoolLogoUrl, brandColor: branding.brandColor ?? student.school.brandColor }
             },
             currentTerm,
             stats: {

@@ -10,7 +10,8 @@ const { parsePermissions } = require("./permissions");
  * has. A restricted sub-admin has `req.campusIds`, the list of campus ids they were
  * assigned, set by attachSchoolId from the database on every request.
  *
- * A record with NO campus recorded is school-wide and in scope for everyone. A
+ * A record with NO campus recorded belongs to no campus, so only the owner (and
+ * unrestricted admins) see it; the owner tags old records with a campus. A
  * student's campus is their own, else their class's.
  *
  * Out-of-scope ids answer 404, so a restricted admin cannot even confirm that a
@@ -69,7 +70,7 @@ function holdsPermission(admin, rows, requiredKeys) {
 const isRestricted = (req) => Array.isArray(req?.campusIds);
 
 /** A campus id (or null = school-wide) the request's admin may work in. */
-const inScope = (req, campusId) => !isRestricted(req) || campusId == null || req.campusIds.includes(campusId);
+const inScope = (req, campusId) => !isRestricted(req) || (campusId != null && req.campusIds.includes(campusId));
 
 /** The campus ids as a prisma filter, or undefined for an unrestricted admin. */
 const campusIn = (req) => (isRestricted(req) ? { in: req.campusIds } : undefined);
@@ -78,8 +79,8 @@ const campusIn = (req) => (isRestricted(req) ? { in: req.campusIds } : undefined
 // Prisma `where` fragments. Each is `{}` for an unrestricted admin.
 // ---------------------------------------------------------------------------
 
-/** A model with its own nullable campusId: Class, Staff, Subject. School-wide (null) stays visible. */
-const ownCampusWhere = (req) => (isRestricted(req) ? { OR: [{ campusId: null }, { campusId: { in: req.campusIds } }] } : {});
+/** A model with its own nullable campusId: Class, Staff, Subject. A record with no campus is the owner's only. */
+const ownCampusWhere = (req) => (isRestricted(req) ? { campusId: { in: req.campusIds } } : {});
 
 const classWhere = ownCampusWhere;
 const staffWhere = ownCampusWhere;
@@ -91,7 +92,7 @@ const studentWhere = (req) =>
     ? {
         OR: [
           { campusId: { in: req.campusIds } },
-          { campusId: null, class: { OR: [{ campusId: null }, { campusId: { in: req.campusIds } }] } },
+          { campusId: null, class: { campusId: { in: req.campusIds } } },
         ],
       }
     : {};
@@ -182,6 +183,22 @@ async function assertSubjectInScope(req, subjectId, client) {
  * Ids of the school's campuses a restricted admin can work in, as a Set; null for
  * an unrestricted admin. For code that tests many rows (bulk import, analytics).
  */
+/**
+ * The campus a new record gets. A restricted admin's record must belong to one of their
+ * campuses (else they could never see it again): the one named, or their only campus.
+ * Unrestricted admins keep whatever they sent (possibly none).
+ */
+function campusForNewRecord(req, requested) {
+  const named = requested === undefined || requested === null || requested === "" ? null : Number(requested);
+  if (!isRestricted(req)) return named;
+  if (named != null) {
+    assertCampusAllowed(req, named);
+    return named;
+  }
+  if (req.campusIds.length === 1) return req.campusIds[0];
+  throw new AppError("Choose which of your campuses this belongs to", 400);
+}
+
 const allowedCampusSet = (req) => (isRestricted(req) ? new Set(req.campusIds) : null);
 
 /**
@@ -202,7 +219,9 @@ async function adminIdsWhoCanSee(client, schoolId, campusId, roles = ["school_ad
     select: { id: true, role: true, allCampuses: true },
   });
   const restricted = admins.filter(isRestrictedAdmin);
-  if (campusId == null || restricted.length === 0) return admins.map((a) => a.id);
+  if (restricted.length === 0) return admins.map((a) => a.id);
+  // A record with no campus is the owner's: restricted sub-admins are not told about it.
+  if (campusId == null) return admins.filter((a) => !isRestrictedAdmin(a)).map((a) => a.id);
 
   const access = await client.adminCampusAccess.findMany({
     where: { campusId, adminId: { in: restricted.map((a) => a.id) } },
@@ -216,6 +235,7 @@ module.exports = {
   effectivePermissions,
   campusIdsFor,
   holdsPermission,
+  campusForNewRecord,
   adminIdsWhoCanSee,
   isRestrictedAdmin,
   loadCampusScope,

@@ -26,7 +26,7 @@ describe("who is restricted", () => {
     expect(client.adminCampusAccess.findMany).toHaveBeenCalledWith({ where: { adminId: 1 }, select: { campusId: true, permissions: true } });
   });
 
-  it("is restricted with no campuses at all when none were assigned, so they see only school-wide records", async () => {
+  it("is restricted with no campuses at all when none were assigned, so they see nothing", async () => {
     const client = { adminCampusAccess: { findMany: jest.fn().mockResolvedValue([]) } };
     expect(await scope.loadCampusScope(client, { id: 1, role: "sub_admin", allCampuses: false })).toEqual([]);
   });
@@ -38,12 +38,12 @@ describe("inScope", () => {
     expect(scope.inScope(open(), null)).toBe(true);
   });
 
-  it("lets a restricted admin see their campuses and school-wide records, nothing else", () => {
+  it("lets a restricted admin see their campuses only: a record with no campus is the owner's", () => {
     const req = restricted([1, 2]);
     expect(scope.inScope(req, 1)).toBe(true);
     expect(scope.inScope(req, 2)).toBe(true);
-    expect(scope.inScope(req, null)).toBe(true);
-    expect(scope.inScope(req, undefined)).toBe(true);
+    expect(scope.inScope(req, null)).toBe(false);
+    expect(scope.inScope(req, undefined)).toBe(false);
     expect(scope.inScope(req, 3)).toBe(false);
   });
 });
@@ -58,8 +58,8 @@ describe("where fragments", () => {
     expect(scope.withScope({ schoolId: 7 }, scope.classWhere(req))).toEqual({ schoolId: 7 });
   });
 
-  it("keeps school-wide rows visible for a restricted admin's own-campus models", () => {
-    const expected = { OR: [{ campusId: null }, { campusId: { in: [1, 2] } }] };
+  it("hides rows with no campus from a restricted admin's own-campus models", () => {
+    const expected = { campusId: { in: [1, 2] } };
     expect(scope.classWhere(restricted([1, 2]))).toEqual(expected);
     expect(scope.staffWhere(restricted([1, 2]))).toEqual(expected);
     expect(scope.subjectWhere(restricted([1, 2]))).toEqual(expected);
@@ -69,7 +69,7 @@ describe("where fragments", () => {
     expect(scope.studentWhere(restricted([4]))).toEqual({
       OR: [
         { campusId: { in: [4] } },
-        { campusId: null, class: { OR: [{ campusId: null }, { campusId: { in: [4] } }] } },
+        { campusId: null, class: { campusId: { in: [4] } } },
       ],
     });
   });
@@ -85,7 +85,7 @@ describe("where fragments", () => {
 
   it("joins a where and a scope with AND, and never loosens the original", () => {
     const joined = scope.withScope({ schoolId: 7, id: 3 }, scope.classWhere(restricted([1])));
-    expect(joined).toEqual({ AND: [{ schoolId: 7, id: 3 }, { OR: [{ campusId: null }, { campusId: { in: [1] } }] }] });
+    expect(joined).toEqual({ AND: [{ schoolId: 7, id: 3 }, { campusId: { in: [1] } }] });
   });
 });
 
@@ -122,7 +122,7 @@ describe("asserting a record is in scope", () => {
     const c = client(null);
     await expect(scope.assertClassInScope(restricted([1]), 9, c)).rejects.toMatchObject({ statusCode: 404, message: "Class not found" });
     expect(c.class.findFirst).toHaveBeenCalledWith({
-      where: { AND: [{ id: 9, schoolId: 7 }, { OR: [{ campusId: null }, { campusId: { in: [1] } }] }] },
+      where: { AND: [{ id: 9, schoolId: 7 }, { campusId: { in: [1] } }] },
       select: { id: true, campusId: true },
     });
   });

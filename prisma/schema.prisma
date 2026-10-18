@@ -282,6 +282,10 @@ model Campus {
   phoneNumber   String?  @db.VarChar(50)
   email         String?  @db.VarChar(255)
   revenueTarget Float? // optional, admin-set monthly revenue target for analytics
+  // This campus's own branding on report cards, receipts and emails; NULL = the school's.
+  logoUrl       String?  @db.VarChar(255)
+  stampUrl      String?  @db.VarChar(255)
+  brandColor    String?  @db.VarChar(7)
   createdAt     DateTime @default(now())
 
   school             School              @relation(fields: [schoolId], references: [id])
@@ -577,7 +581,8 @@ model Attendance {
 model CATemplate {
   id       Int     @id @default(autoincrement())
   schoolId Int
-  classId  Int?    // NULL = applies to whole school, set = class override
+  classId  Int?    // NULL = applies to whole school (or the campus below), set = class override
+  campusId Int?    // set (with classId NULL) = that campus's default template; NULL = school-wide
   name     String  // e.g. "CA1", "CA2", "Exam"
   maxScore Int
   isExam   Boolean @default(false) // true = this is an exam, false = CA
@@ -585,7 +590,7 @@ model CATemplate {
   school School  @relation(fields: [schoolId], references: [id])
   class  Class?  @relation(fields: [classId], references: [id])
 
-  @@unique([schoolId, classId, name])
+  @@unique([schoolId, campusId, classId, name])
   @@map("ca_templates")
 }
 

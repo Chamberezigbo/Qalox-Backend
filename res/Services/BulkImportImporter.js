@@ -178,7 +178,7 @@ class BulkImportImporter {
     // A campus-restricted admin imports only into their own campuses (and classes with none).
     const campusFilter = Array.isArray(campusIds) ? { id: { in: campusIds } } : {};
     const classCampusFilter = Array.isArray(campusIds)
-      ? { OR: [{ campusId: null }, { campusId: { in: campusIds } }] }
+      ? { campusId: { in: campusIds } }
       : {};
     const school = await prisma.school.findUnique({
       where: { id: schoolId },
@@ -308,6 +308,11 @@ class BulkImportImporter {
             throw new Error(`There is no campus called "${data.campusName}" in your school`);
           }
           campusId = campus.id;
+        }
+        if (campusId == null && Array.isArray(campusIds)) {
+          // A restricted admin's staff member always belongs to one of their campuses.
+          if (campusIds.length !== 1) throw new Error("Campus is required");
+          campusId = campusIds[0];
         }
 
         await createWithRegistration(school.prefix, "STA", (registrationNumber) =>

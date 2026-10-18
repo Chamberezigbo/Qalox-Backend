@@ -68,11 +68,11 @@ async function main() {
   const names = async (req) => (await call(students.getStudentDetails, { ...req, query: {} })).body.data.map((x) => x.name).sort();
   const listA = (await call(students.getStudentDetails, A)).body;
   const stuNames = (r) => (r.data || r.students || []).map((x) => x.name).sort();
-  assert.deepStrictEqual(stuNames(listA), [c1.student.name, none.student.name].sort());
-  assert.deepStrictEqual(stuNames((await call(students.getStudentDetails, B)).body), [c2.student.name, none.student.name].sort());
-  assert.strictEqual(stuNames((await call(students.getStudentDetails, C)).body).length, 3);
+  assert.deepStrictEqual(stuNames(listA), [c1.student.name]);
+  assert.deepStrictEqual(stuNames((await call(students.getStudentDetails, B)).body), [c2.student.name]);
+  assert.strictEqual(stuNames((await call(students.getStudentDetails, C)).body).length, 2);
   assert.strictEqual(stuNames((await call(students.getStudentDetails, D)).body).length, 3);
-  log("student lists: A, B, C and head admin each see the right set (no-campus visible to all)");
+  log("student lists: A, B, C and head admin each see the right set (untagged records are the owner's only)");
 
   assert.strictEqual((await call(students.getStudentDetails, { ...A, query: { campusId: String(c2.campusId) } })).status, 403);
   log("naming another campus is refused (403)");
@@ -85,22 +85,22 @@ async function main() {
 
   // Staff / classes / subjects
   const staffNames = async (req) => (await call(staffC.getAllStaff, req)).body.staff.map((x) => x.name).sort();
-  assert.deepStrictEqual(await staffNames(A), [c1.staff.name, none.staff.name].sort());
+  assert.deepStrictEqual(await staffNames(A), [c1.staff.name]);
   assert.strictEqual((await call(staffC.getStaffDetails, { ...A, params: { staffId: String(c2.staff.id) } })).status, 404);
   assert.strictEqual((await call(staffC.deleteStaff, { ...A, params: { staffId: String(c2.staff.id) } })).status, 404);
   assert.ok(await prisma.staff.findUnique({ where: { id: c2.staff.id } }));
-  assert.strictEqual((await call(classesC.getAllClasses, A)).body.classes.length, 2);
+  assert.strictEqual((await call(classesC.getAllClasses, A)).body.classes.length, 1);
   assert.strictEqual((await call(classesC.getAllClasses, D)).body.classes.length, 3);
-  assert.strictEqual((await call(subjectsC.getAllSubjects, B)).body.subjects.length, 2);
+  assert.strictEqual((await call(subjectsC.getAllSubjects, B)).body.subjects.length, 1);
   assert.strictEqual((await call(classesC.createClass, { ...A, body: { name: "X", campusId: c2.campusId } })).status, 403);
   assert.strictEqual((await call(subjectsC.deleteSubject, { ...A, params: { subjectId: String(c2.subject.id) } })).status, 404);
   log("staff, classes, subjects: scoped lists, 404 on other campus, no creating elsewhere");
 
   // Fees
   const debt = async (req) => (await call(fees.getDebtSummary, req)).body.data;
-  assert.strictEqual((await debt(A)).totalExpected, 2000); // campus 1 + no-campus
+  assert.strictEqual((await debt(A)).totalExpected, 1000); // campus 1 only
   assert.strictEqual((await debt(D)).totalExpected, 3000);
-  assert.strictEqual((await call(fees.getStudentFees, A)).body.meta.total, 2);
+  assert.strictEqual((await call(fees.getStudentFees, A)).body.meta.total, 1);
   assert.strictEqual((await call(fees.getReceipt, { ...A, params: { studentFeeId: String(c2.fee.id) } })).status, 404);
   assert.strictEqual((await call(fees.recordPayment, { ...A, body: { studentFeeId: c2.fee.id, amount: 50, paymentMethod: "Cash" } })).status, 404);
   assert.strictEqual((await prisma.studentFee.findUnique({ where: { id: c2.fee.id } })).amountPaid, 200);
@@ -149,14 +149,59 @@ async function main() {
   };
   const feesReq = (await through("fees.manage")).req;
   assert.deepStrictEqual(feesReq.campusIds, [c1.campusId]);
-  assert.strictEqual((await call(fees.getDebtSummary, feesReq)).body.data.totalExpected, 2000);
+  assert.strictEqual((await call(fees.getDebtSummary, feesReq)).body.data.totalExpected, 1000);
   assert.strictEqual((await call(fees.getReceipt, { ...feesReq, params: { studentFeeId: String(c2.fee.id) } })).status, 404);
   const stuReq = (await through("students.manage")).req;
   assert.deepStrictEqual(stuReq.campusIds, [c2.campusId]);
-  assert.deepStrictEqual(stuNames((await call(students.getStudentDetails, stuReq)).body), [c2.student.name, none.student.name].sort());
+  assert.deepStrictEqual(stuNames((await call(students.getStudentDetails, stuReq)).body), [c2.student.name]);
   assert.strictEqual((await call(students.getSingleStudent, { ...stuReq, params: { id: String(c1.student.id) } })).status, 404);
   assert.strictEqual((await through("classes.manage")).status, 403);
   log("mixed roles: Bursar on campus 1 and Secretary on campus 2 each see only their campus, per module");
+
+  // Untagged records: owner sees them, campus sub-admin does not, until the owner assigns them.
+  assert.strictEqual((await call(staffC.getStaffDetails, { ...A, params: { staffId: String(none.staff.id) } })).status, 404);
+  assert.strictEqual((await call(staffC.getStaffDetails, { ...D, params: { staffId: String(none.staff.id) } })).status, 200);
+  const campusCtl = require("../res/controller/admin/campusController");
+  const counts = (await call(campusCtl.getUntaggedRecords, D)).body.data;
+  assert.deepStrictEqual(counts, { staff: 1, classes: 1, subjects: 1, students: 1 });
+  await call(campusCtl.assignUntaggedRecords, { ...D, params: { campusId: String(c2.campusId) }, body: { types: ["staff", "classes", "subjects", "students"] } });
+  assert.strictEqual((await call(staffC.getStaffDetails, { ...B, params: { staffId: String(none.staff.id) } })).status, 200);
+  assert.strictEqual((await call(staffC.getStaffDetails, { ...A, params: { staffId: String(none.staff.id) } })).status, 404);
+  assert.deepStrictEqual((await call(campusCtl.getUntaggedRecords, D)).body.data, { staff: 0, classes: 0, subjects: 0, students: 0 });
+  log("untagged records: hidden from campus sub-admins, owner assigns them to a campus, then only that campus sees them");
+
+  // A restricted admin's new staff member always lands in one of their campuses.
+  const made = await call(staffC.createStaff, { ...A, body: { name: "New Teacher", duty: "Teacher", email: `nt${Date.now()}@x.com` } });
+  assert.strictEqual(made.status, 201);
+  assert.strictEqual((await prisma.staff.findFirst({ where: { name: "New Teacher", schoolId: s.schoolId } })).campusId, c1.campusId);
+  log("a restricted admin's new staff member is tagged to their campus");
+
+  // CA templates per campus
+  const ac2 = new AssessmentController();
+  const tpl = [{ name: "CA1", maxScore: 20, isExam: false }, { name: "Exam", maxScore: 60, isExam: true }];
+  assert.strictEqual((await call(ac2.createCATemplate, { ...D, schoolId: s.schoolId, body: { templates: tpl } })).status, 201); // owner: school-wide
+  const aTpl = await call(ac2.createCATemplate, { ...A, schoolId: s.schoolId, body: { templates: [{ name: "CA1", maxScore: 10, isExam: false }, { name: "Exam", maxScore: 70, isExam: true }] } });
+  assert.strictEqual(aTpl.status, 201);
+  const aGet = (await call(ac2.getCATemplates, { ...A, schoolId: s.schoolId })).body.data;
+  assert.deepStrictEqual(aGet.schoolWide, []);
+  assert.deepStrictEqual(aGet.campus.map((t) => t.maxScore).sort(), [10, 70]);
+  const bGet = (await call(ac2.getCATemplates, { ...B, schoolId: s.schoolId })).body.data;
+  assert.deepStrictEqual(bGet.campus, []);
+  assert.strictEqual((await call(ac2.getCATemplates, { ...D, schoolId: s.schoolId })).body.data.schoolWide.length, 2);
+  log("CA setup: each campus sees and edits only its own template; the school-wide one is the owner's");
+
+  // Campus branding falls back to the school's, and uses the campus's own when set
+  const { resolveBranding } = require("../res/util/campusBranding");
+  await prisma.school.update({ where: { id: s.schoolId }, data: { logoUrl: "r2:school-logo", stampUrl: "r2:school-stamp" } });
+  await prisma.campus.update({ where: { id: c1.campusId }, data: { logoUrl: "r2:c1-logo" } });
+  const b1 = await resolveBranding(prisma, { schoolId: s.schoolId, campusId: c1.campusId });
+  const b2 = await resolveBranding(prisma, { schoolId: s.schoolId, campusId: c2.campusId });
+  assert.strictEqual(b1.logoUrl, "r2:c1-logo");
+  assert.strictEqual(b1.stampUrl, "r2:school-stamp");
+  assert.strictEqual(b2.logoUrl, "r2:school-logo");
+  assert.strictEqual(b1.name, c1.campusName ?? "Campus 1");
+  assert.strictEqual((await call(campusCtl.updateCampusBranding, { ...A, params: { campusId: String(c2.campusId) }, files: {} })).status, 403);
+  log("campus branding: own logo/name when set, school's otherwise; another campus's branding is off limits");
 
   console.log("School with no campuses");
   const z = await seedSchool("zero", 0);

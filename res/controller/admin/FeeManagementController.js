@@ -8,6 +8,7 @@ const { brandedEmail } = require("../../util/emailTemplate");
 const { loadStudentFeeForReceipt, buildReceiptData } = require("../../util/receiptData");
 const flutterwave = require("../../Services/FlutterwaveService");
 const campusScope = require("../../util/campusScope");
+const { resolveBranding } = require("../../util/campusBranding");
 
 /**
  * A student-fee record of this school, in the admin's campus scope (by the student's
@@ -395,9 +396,9 @@ exports.recordPayment = async (req, res, next) => {
       );
     });
 
-    const school = await prisma.school.findUnique({
-      where: { id: studentFee.schoolId },
-      select: { name: true, logoUrl: true, stampUrl: true },
+    const school = await resolveBranding(prisma, {
+      schoolId: studentFee.schoolId,
+      campusId: studentFee.student.campusId ?? studentFee.feeStructure?.class?.campusId ?? null,
     });
     const [schoolLogo, schoolStamp] = await Promise.all([
       schoolMediaUrl(school?.logoUrl),

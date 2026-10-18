@@ -1,6 +1,7 @@
 import prisma from "../util/prisma";
 const { schoolMediaUrl } = require("../controller/public/publicController");
 const { getEnrolledClassId } = require("../util/enrolledClass");
+const { resolveBranding, effectiveCampusId } = require("../util/campusBranding");
 const { automaticRemark, effectiveRemark } = require("../util/remarkRules");
 const {
     resumptionDateFor,
@@ -14,9 +15,17 @@ export class AssessmentService {
     async createCATemplate(data: {
         schoolId: number;
         classId?: number;
+        /** A campus's default template (used by its classes with no template of their own); null/absent with no classId = school-wide. */
+        campusId?: number | null;
         templates: { name: string; maxScore: number; isExam: boolean }[];
     }) {
         const { schoolId, classId, templates } = data;
+        // A class template belongs to the class; otherwise it is a campus or school-wide default.
+        const tplCampusId = classId ? null : (data.campusId ?? null);
+        if (tplCampusId != null) {
+            const campus = await prisma.campus.findFirst({ where: { id: tplCampusId, schoolId }, select: { id: true } });
+            if (!campus) throw new Error("Campus not found or does not belong to your school");
+        }
 
         // 1. Verify school exists
         const school = await prisma.school.findUnique({
@@ -51,7 +60,8 @@ export class AssessmentService {
         const oldTemplates = await prisma.cATemplate.findMany({
             where: {
                 schoolId,
-                classId: classId ?? null
+                classId: classId ?? null,
+                campusId: tplCampusId
             }
         });
 
@@ -61,7 +71,8 @@ export class AssessmentService {
             await tx.cATemplate.deleteMany({
                 where: {
                     schoolId,
-                    classId: classId ?? null
+                    classId: classId ?? null,
+                    campusId: tplCampusId
                 }
             });
 
@@ -70,11 +81,20 @@ export class AssessmentService {
                 data: templates.map((t) => ({
                     schoolId,
                     classId: classId ?? null,
+                    campusId: tplCampusId,
                     name: t.name,
                     maxScore: t.maxScore,
                     isExam: t.isExam
                 }))
             });
+
+            // A class template changes that class only, a campus template that campus's classes;
+            // only a school-wide template reaches every class of the school.
+            const classesAffected = classId
+                ? { schoolId, id: classId }
+                : tplCampusId != null
+                    ? { schoolId, campusId: tplCampusId }
+                    : { schoolId };
 
             // Update existing CAs and Exams that match template names
             // This ensures when templates change, all created assessments update
@@ -88,7 +108,7 @@ export class AssessmentService {
                         await tx.exam.updateMany({
                             where: {
                                 name: newTemplate.name,
-                                class: { schoolId }
+                                class: classesAffected
                             },
                             data: { maxScore: newTemplate.maxScore }
                         });
@@ -97,7 +117,7 @@ export class AssessmentService {
                         await tx.continuousAssessment.updateMany({
                             where: {
                                 name: newTemplate.name,
-                                class: { schoolId }
+                                class: classesAffected
                             },
                             data: { maxScore: newTemplate.maxScore }
                         });
@@ -107,7 +127,7 @@ export class AssessmentService {
 
             // Return what was saved
             const saved = await tx.cATemplate.findMany({
-                where: { schoolId, classId: classId ?? null },
+                where: { schoolId, classId: classId ?? null, campusId: tplCampusId },
                 select: { id: true, name: true, maxScore: true, isExam: true, classId: true }
             });
 
@@ -115,12 +135,23 @@ export class AssessmentService {
         });
     }
 
-    async getCATemplates(schoolId: number, classId?: number) {
-        // School-wide template (classId = null)
-        const schoolWide = await prisma.cATemplate.findMany({
-            where: { schoolId, classId: null },
-            select: { id: true, name: true, maxScore: true, isExam: true }
-        });
+    async getCATemplates(schoolId: number, classId?: number, opts: { campusId?: number | null; includeSchoolWide?: boolean } = {}) {
+        const { campusId = null, includeSchoolWide = true } = opts;
+        // School-wide template (no class, no campus). A campus sub-admin does not get it.
+        const schoolWide = includeSchoolWide
+            ? await prisma.cATemplate.findMany({
+                where: { schoolId, classId: null, campusId: null },
+                select: { id: true, name: true, maxScore: true, isExam: true }
+            })
+            : [];
+
+        // A campus's own default template
+        const campusTemplates = campusId != null
+            ? await prisma.cATemplate.findMany({
+                where: { schoolId, classId: null, campusId },
+                select: { id: true, name: true, maxScore: true, isExam: true }
+            })
+            : [];
 
         // Class-specific template only if classId was provided
 
@@ -150,7 +181,7 @@ export class AssessmentService {
             };
         }
 
-        return { schoolWide, classSpecific };
+        return { schoolWide, campus: campusTemplates, classSpecific };
     }
 
 
@@ -198,9 +229,19 @@ export class AssessmentService {
             where: { schoolId, classId }  // class-specific
         });
 
+        // Then the class's campus template, then the school-wide one.
+        if (templates.length === 0) {
+            const cls = await prisma.class.findFirst({ where: { id: classId, schoolId }, select: { campusId: true } });
+            if (cls?.campusId != null) {
+                templates = await prisma.cATemplate.findMany({
+                    where: { schoolId, classId: null, campusId: cls.campusId }
+                });
+            }
+        }
+
         if (templates.length === 0) {
             templates = await prisma.cATemplate.findMany({
-                where: { schoolId, classId: null }  // school-wide fallback
+                where: { schoolId, classId: null, campusId: null }  // school-wide fallback
             });
         }
 
@@ -1622,7 +1663,8 @@ export class AssessmentService {
                 gender: true,
                 passportUrl: true,
                 classId: true,
-                class: { select: { id: true, name: true, customName: true, campus: { select: { name: true } } } },
+                campusId: true,
+                class: { select: { id: true, name: true, customName: true, campusId: true, campus: { select: { name: true } } } },
                 academicSessionId: true
             }
         });
@@ -1636,7 +1678,7 @@ export class AssessmentService {
         if (enrolledClassId !== student.classId) {
             const enrolledClass = await prisma.class.findFirst({
                 where: { id: enrolledClassId, schoolId },
-                select: { id: true, name: true, customName: true, campus: { select: { name: true } } }
+                select: { id: true, name: true, customName: true, campusId: true, campus: { select: { name: true } } }
             });
             if (enrolledClass) {
                 student.classId = enrolledClassId;
@@ -1648,9 +1690,10 @@ export class AssessmentService {
             throw new Error("This student is not in that class");
         }
 
-        const school = await prisma.school.findUnique({
-            where: { id: schoolId },
-            select: { name: true, logoUrl: true, stampUrl: true }
+        // The campus's own name, logo and stamp when it has them; the school's otherwise.
+        const school = await resolveBranding(prisma, {
+            schoolId,
+            campusId: effectiveCampusId(student)
         });
         const [schoolLogo, schoolStamp] = await Promise.all([
             schoolMediaUrl(school?.logoUrl),

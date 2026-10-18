@@ -623,6 +623,8 @@ export class TeacherService {
         classGroupId?: number;
         /** Submit even though scores look missing. Never overrides submitted/published. */
         force?: boolean;
+        /** The teacher the submitter chose to send to; must be that group's class teacher. */
+        recipientStaffId?: number;
     }) {
         const { staffId, schoolId, classId, subjectId, termId, academicSessionId, force } = input;
 
@@ -676,8 +678,42 @@ export class TeacherService {
         // 3. Hand it to the class teacher (or, when the submitter IS the class
         //    teacher, nothing to hand over).
         return this.handToClassTeacher({
-            staffId, schoolId, classId, subjectId, academicSessionId, termId: effectiveTermId, scope
+            staffId, schoolId, classId, subjectId, academicSessionId, termId: effectiveTermId, scope,
+            recipientStaffId: input.recipientStaffId
         });
+    }
+
+    /**
+     * Who a subject teacher can send results to for one class (and group): every teacher
+     * of the school, with the class teacher the admin assigned there listed first and
+     * flagged. Only that teacher can actually receive the results.
+     */
+    async getResultRecipients(input: { schoolId: number; classId: number; classGroupId?: number }) {
+        const { schoolId, classId } = input;
+        const scope = input.classGroupId ? parseScope(input.classGroupId) : 0;
+        const target = await classTeacherOfScope(prisma, { schoolId, classId, scope });
+        if (!target.cls) throw new AppError("Class not found", 404);
+        if (!target.valid) throw new AppError("That group is not in this class", 400);
+
+        // A school with campuses lists the class's campus teachers (and ones with no campus).
+        const staff = await prisma.staff.findMany({
+            where: {
+                schoolId,
+                ...(target.cls.campusId != null ? { OR: [{ campusId: target.cls.campusId }, { campusId: null }, { id: target.staffId ?? -1 }] } : {})
+            },
+            select: { id: true, name: true },
+            orderBy: { name: "asc" }
+        });
+
+        const teachers = staff
+            .map((t) => ({ id: t.id, name: t.name, isClassTeacher: t.id === target.staffId }))
+            .sort((a, b) => Number(b.isClassTeacher) - Number(a.isClassTeacher));
+
+        return {
+            classTeacherId: target.staffId ?? null,
+            label: scopeLabel(target.cls.name, target.groupName),
+            teachers
+        };
     }
 
     /**
@@ -732,6 +768,7 @@ export class TeacherService {
         academicSessionId: number;
         termId: number;
         scope: number;
+        recipientStaffId?: number;
     }) {
         const { staffId, schoolId, classId, subjectId, academicSessionId, termId, scope } = input;
 
@@ -747,6 +784,19 @@ export class TeacherService {
                     409
                 ),
                 { code: "NO_CLASS_TEACHER" }
+            );
+        }
+
+        // The teacher named has to be the class teacher of record: results are reviewed by
+        // them, never by another subject teacher, and the admin decides who that is.
+        if (input.recipientStaffId && input.recipientStaffId !== target.staffId) {
+            const chosen = await prisma.staff.findFirst({ where: { id: input.recipientStaffId, schoolId }, select: { name: true } });
+            throw Object.assign(
+                new AppError(
+                    `${chosen?.name ?? "That teacher"} is not the class teacher of ${label}. Choose the class teacher, or ask the admin to assign them.`,
+                    400
+                ),
+                { code: "NOT_CLASS_TEACHER" }
             );
         }
 
@@ -947,6 +997,8 @@ export class TeacherService {
         academicSessionId: number;
         /** One group only. Left out, every group of the class is submitted. */
         classGroupId?: number;
+        /** The class teacher chosen; applies only when a single group is being submitted. */
+        recipientStaffId?: number;
     }) {
         const { staffId, schoolId, classId, termId, academicSessionId } = input;
 
@@ -1043,7 +1095,8 @@ export class TeacherService {
 
                     const handed = await this.handToClassTeacher({
                         staffId, schoolId, classId, subjectId, academicSessionId,
-                        termId: effectiveTermId, scope: scope.classGroupId
+                        termId: effectiveTermId, scope: scope.classGroupId,
+                        recipientStaffId: scopes.length === 1 ? input.recipientStaffId : undefined
                     });
                     record("included" in handed ? "included_automatically" : "submitted");
                 } catch (error: any) {

@@ -111,6 +111,9 @@ const {
   createCampus,
   updateCampus,
   getCampuses,
+  getUntaggedRecords,
+  assignUntaggedRecords,
+  updateCampusBranding,
 } = require("../../controller/admin/campusController")
 
 const {
@@ -189,9 +192,10 @@ router.get("/my-school", auth.authenticateAdmin, getMySchool);
 // "this school has no campuses" — the exact confusion this endpoint exists to
 // remove. It reports setup state, not campus or class data.
 router.get("/setup-status", auth.authenticateAdmin, getSetupStatus);
+// The school's own logo and stamp: the owner's only. A campus has its own (below).
 router.patch(
   "/school/branding",
-  auth.authenticateSchoolLevelAdmin,
+  auth.authenticateSuperAdmin,
   auth.attachSchoolId,
   upload.fields([{ name: "logoUrl", maxCount: 1 }, { name: "stampUrl", maxCount: 1 }]),
   updateSchoolBranding
@@ -333,6 +337,17 @@ router.get("/ai/credits", auth.authenticateSchoolLevelAdmin, auth.attachSchoolId
 router.post("/campus/create", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, createCampus);
 router.patch("/campus/update/:campusId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, updateCampus);
 router.get("/campuses", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE), auth.attachSchoolId, getCampuses);
+// Records with no campus yet (created before the school had campuses): the owner tags them.
+router.patch(
+  "/campus/:campusId/branding",
+  auth.authenticateSchoolLevelAdmin,
+  auth.requirePermission(PERMISSIONS.CAMPUSES_MANAGE),
+  auth.attachSchoolId,
+  upload.fields([{ name: "logoUrl", maxCount: 1 }, { name: "stampUrl", maxCount: 1 }]),
+  updateCampusBranding
+);
+router.get("/campus/untagged", auth.authenticateSuperAdmin, auth.attachSchoolId, getUntaggedRecords);
+router.post("/campus/:campusId/assign-records", auth.authenticateSuperAdmin, auth.attachSchoolId, assignUntaggedRecords);
 
 // Subject routes — sub-admins need PERMISSIONS.SUBJECTS_MANAGE; head admins always pass
 router.post("/subject/create", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SUBJECTS_MANAGE), auth.attachSchoolId, createSubject);

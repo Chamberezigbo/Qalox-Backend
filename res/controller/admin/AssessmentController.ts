@@ -42,19 +42,27 @@ export class AssessmentController {
                 }
             }
 
-            // The school-wide template (no class) is shared by every campus: head admins only.
-            if (classId) await this.guardClass(req, classId);
-            else if (campusScope.isRestricted(req)) {
-                return res.status(403).json({ success: false, message: "Only the head admin can change the school-wide template" });
+            // A class template needs a class the admin can reach. Without a class it is a
+            // campus's default (a restricted admin's is always one of theirs); only the owner
+            // can leave the campus out to set the school-wide template.
+            let campusId: number | null = req.body.campusId ? Number(req.body.campusId) : null;
+            if (classId) {
+                await this.guardClass(req, classId);
+                campusId = null;
+            } else if (campusScope.isRestricted(req)) {
+                campusId = campusScope.campusForNewRecord(req, campusId);
+            } else if (campusId != null) {
+                campusScope.assertCampusAllowed(req, campusId);
             }
 
             const result = await this.service.createCATemplate({
                 schoolId,
                 classId: classId ? Number(classId) : undefined,
+                campusId,
                 templates
             });
 
-            const scope = classId ? `class ${classId}` : "school";
+            const scope = classId ? `class ${classId}` : campusId != null ? `campus ${campusId}` : "school";
 
             return res.status(201).json({
                 success: true,
@@ -74,7 +82,17 @@ export class AssessmentController {
 
             if (classId) await this.guardClass(req, classId);
 
-            const result = await this.service.getCATemplates(Number(req.schoolId), classId);
+            // A restricted admin sees their campus's template (never the school-wide one);
+            // the owner may ask for any campus's with ?campusId=.
+            const restricted = campusScope.isRestricted(req);
+            const campusId: number | null = restricted
+                ? campusScope.campusForNewRecord(req, req.query.campusId as string | undefined)
+                : req.query.campusId ? Number(req.query.campusId) : null;
+
+            const result = await this.service.getCATemplates(Number(req.schoolId), classId, {
+                campusId,
+                includeSchoolWide: !restricted
+            });
 
             return res.status(200).json({ success: true, data: result });
         } catch (err) {

@@ -25,9 +25,10 @@ exports.createStaff = async (req, res, next) => {
     } = req.body;
 
     // A campus named in the form has to be this school's, and a restricted admin's own.
-    if (Number.isInteger(campusId)) {
-      campusScope.assertCampusAllowed(req, campusId);
-      const campus = await prisma.campus.findFirst({ where: { id: campusId, schoolId }, select: { id: true } });
+    // A restricted admin's staff member always gets one of their campuses.
+    const staffCampusId = campusScope.campusForNewRecord(req, Number.isInteger(campusId) ? campusId : null);
+    if (staffCampusId != null) {
+      const campus = await prisma.campus.findFirst({ where: { id: staffCampusId, schoolId }, select: { id: true } });
       if (!campus) return res.status(404).json({ success: false, message: "Campus not found" });
     }
 
@@ -85,7 +86,7 @@ exports.createStaff = async (req, res, next) => {
     const newStaff = await prisma.staff.create({
       data: {
         schoolId,
-        campusId: Number.isInteger(campusId) ? campusId : null,
+        campusId: staffCampusId,
         name,
         email: normalizedEmail,
         gender: normalizedGender,
@@ -186,6 +187,14 @@ exports.bulkCreateStaff = async (req, res, next) => {
             continue;
           }
           campusId = campusRecord.id;
+        }
+        if (campusId == null && campusScope.isRestricted(req)) {
+          if (req.campusIds.length !== 1) {
+            results.push({ row: rowNumber, success: false, error: "Campus is required" });
+            failureCount++;
+            continue;
+          }
+          campusId = req.campusIds[0];
         }
 
         const uniqueId = generateUniqueIdentifier(school.prefix, "STA");

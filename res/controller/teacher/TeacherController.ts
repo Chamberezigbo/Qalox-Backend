@@ -133,6 +133,7 @@ export class TeacherController {
                 academicSessionId: Number(academicSessionId),
                 termId: req.body.termId ? Number(req.body.termId) : undefined,
                 classGroupId: req.body.classGroupId ? Number(req.body.classGroupId) : undefined,
+                recipientStaffId: req.body.recipientStaffId ? Number(req.body.recipientStaffId) : undefined,
                 // Strictly `true`: anything else (a string, a missing field) must
                 // not switch off the missing-scores check by accident.
                 force: req.body.force === true
@@ -178,6 +179,23 @@ export class TeacherController {
         }
     };
 
+    /** The teachers a subject teacher can send a class's (or group's) results to. */
+    getResultRecipients = async (req: TeacherRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.staffId || !req.schoolId) return res.status(401).json({ message: "Unauthorized" });
+            const classId = Number(req.query.classId);
+            if (!Number.isInteger(classId) || classId < 1) throw new Error("classId is required");
+            const data = await this.service.getResultRecipients({
+                schoolId: req.schoolId,
+                classId,
+                classGroupId: req.query.classGroupId ? Number(req.query.classGroupId) : undefined
+            });
+            return res.json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     submitAllResults = async (req: TeacherRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.staffId || !req.schoolId) return res.status(401).json({ message: "Unauthorized" });
@@ -194,7 +212,8 @@ export class TeacherController {
                 classId: Number(classId),
                 academicSessionId: Number(academicSessionId),
                 termId: req.body.termId ? Number(req.body.termId) : undefined,
-                classGroupId: req.body.classGroupId ? Number(req.body.classGroupId) : undefined
+                classGroupId: req.body.classGroupId ? Number(req.body.classGroupId) : undefined,
+                recipientStaffId: req.body.recipientStaffId ? Number(req.body.recipientStaffId) : undefined
             });
 
             const { submitted, included, skipped, failed } = data.counts;

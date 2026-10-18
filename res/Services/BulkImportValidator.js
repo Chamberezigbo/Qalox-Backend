@@ -36,7 +36,7 @@ class BulkImportValidator {
   static async loadReference(schoolId, entity, campusIds = null) {
     const campusFilter = Array.isArray(campusIds) ? { id: { in: campusIds } } : {};
     const classCampusFilter = Array.isArray(campusIds)
-      ? { OR: [{ campusId: null }, { campusId: { in: campusIds } }] }
+      ? { campusId: { in: campusIds } }
       : {};
     if (entity === "staff") {
       const [campuses, staff] = await Promise.all([

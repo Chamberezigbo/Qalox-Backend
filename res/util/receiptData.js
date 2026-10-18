@@ -1,5 +1,6 @@
 const prisma = require("./prisma");
 const { schoolMediaUrl } = require("../controller/public/publicController");
+const { resolveBranding } = require("./campusBranding");
 
 /** Loads a StudentFee with everything a receipt needs — shared by admin, parent and student receipt endpoints. */
 const loadStudentFeeForReceipt = (studentFeeId) =>
@@ -7,7 +8,7 @@ const loadStudentFeeForReceipt = (studentFeeId) =>
     where: { id: studentFeeId },
     include: {
       student: true,
-      feeStructure: { include: { items: true, class: { select: { name: true } } } },
+      feeStructure: { include: { items: true, class: { select: { name: true, campusId: true } } } },
       payments: { orderBy: { paymentDate: "desc" }, take: 1 },
     },
   });
@@ -16,9 +17,10 @@ const loadStudentFeeForReceipt = (studentFeeId) =>
 const buildReceiptData = async (studentFee) => {
   const latestPayment = studentFee.payments[0];
 
-  const school = await prisma.school.findUnique({
-    where: { id: studentFee.schoolId },
-    select: { name: true, logoUrl: true, stampUrl: true, brandColor: true },
+  // The student's campus's own name, logo and stamp, else the school's.
+  const school = await resolveBranding(prisma, {
+    schoolId: studentFee.schoolId,
+    campusId: studentFee.student?.campusId ?? studentFee.feeStructure?.class?.campusId ?? null,
   });
   const [schoolLogo, schoolStamp] = await Promise.all([
     schoolMediaUrl(school?.logoUrl),
