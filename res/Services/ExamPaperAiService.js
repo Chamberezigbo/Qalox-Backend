@@ -37,6 +37,16 @@ const TURN_SCHEMA = {
         title: { type: "string" },
         instructions: { type: "string" },
         durationMinutes: { type: "integer" },
+        // What the printed paper shows. Set a flag to false to remove that part.
+        layout: {
+          type: "object",
+          properties: {
+            showNameDate: { type: "boolean" },
+            answerLines: { type: "boolean" },
+            showMarks: { type: "boolean" },
+            showHeader: { type: "boolean" },
+          },
+        },
         sections: {
           type: "array",
           items: {
@@ -69,6 +79,9 @@ How to work:
 - Questions must suit the class level and the Nigerian curriculum (WAEC/NECO style where fitting), be clear, unambiguous and free of errors.
 - You are given the CURRENT paper as JSON. When the teacher asks for a change ("make question 4 harder", "replace the theory section", "add 5 more", "regenerate"), return the WHOLE updated paper, keeping each unchanged question's "id" exactly as given, and leaving the "id" out for new questions. If the teacher only asks a question or chats, reply and do NOT return a paper.
 - Images: if the teacher attached images, you can see them. To put one of THIS message's images beside a question, set that question's "attachmentIndex" (1 = the first image attached). To have a diagram or illustration drawn (a labelled biology diagram, a geometry figure, a map outline), set "imagePrompt" to a precise description of the picture; use this only when a picture genuinely helps the question, and never more than 3 per paper turn. Do not describe images in the question text as if the student could not see them.
+- PRINT LAYOUT: the printed paper has exactly four switches, in "layout": showNameDate (the Name and Date lines at the top), answerLines (the writing lines under each theory question), showMarks (the [n marks] label on each question) and showHeader (the school logo and name at the top). To remove or bring back any of these, return the paper with "layout" updated (false removes it, true shows it) and keep every question as it was. You CANNOT change any other part of the print design (fonts, sizes, spacing, page layout, colours); if asked, say plainly that you cannot, and do not pretend you did.
+- Whenever you change ANYTHING about the paper (questions, instructions, marks, layout), you MUST return the whole paper. A reply that says something changed without the paper attached changes nothing.
+- Never put question numbers ("1.") or option letters ("A.") inside a question's "text" or an option; the printout adds them.
 - Never claim to have done something you did not put in the paper. Keep "reply" short (under 80 words), plain text, no markdown. Say what you did and offer one useful next step.
 
 Return only the requested JSON: reply, and paper when you wrote or changed it.${

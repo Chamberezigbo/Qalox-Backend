@@ -36,6 +36,24 @@ const imagePrefix = (schoolId, chatId) => `exam-papers/${schoolId}/${chatId}/`;
 
 const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 
+/** What the printed paper shows. All on by default, so an older paper prints as it always did. */
+const LAYOUT_DEFAULTS = { showNameDate: true, answerLines: true, showMarks: true, showHeader: true };
+
+const normalizeLayout = (raw) => {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  for (const [key, fallback] of Object.entries(LAYOUT_DEFAULTS)) {
+    out[key] = typeof input[key] === "boolean" ? input[key] : fallback;
+  }
+  return out;
+};
+
+// The AI often writes the number or the option letter into the text ("1. Which…", "A. Nigeria"),
+// and the printout adds its own, so it would print twice.
+const stripQuestionNumber = (text) => text.replace(/^\s*(?:q(?:uestion)?\s*)?\d{1,3}\s*[.):\-–]\s+/i, "").trim();
+const stripOptionLetter = (text) => text.replace(/^\s*\(?[A-Fa-f]\s*[.):\-–]\s+/, "").trim();
+const stripInstructionsLabel = (text) => text.replace(/^\s*(?:general\s+)?instructions?\s*[:\-–]\s*/i, "").trim();
+
 /**
  * Rebuilds a paper from untrusted input.
  *
@@ -72,7 +90,7 @@ function normalizePaper(raw, { imagePrefix: prefix, previous = null, fallbackTit
     const questions = [];
     for (const q of questionsIn) {
       if (questionCount >= LIMITS.questions) break;
-      const text = clean(q?.text, LIMITS.textChars);
+      const text = stripQuestionNumber(clean(q?.text, LIMITS.textChars));
       if (!text) continue;
       questionCount += 1;
 
@@ -84,7 +102,7 @@ function normalizePaper(raw, { imagePrefix: prefix, previous = null, fallbackTit
 
       if (type === "objective") {
         const options = (Array.isArray(q?.options) ? q.options : [])
-          .map((o) => clean(typeof o === "string" ? o : o?.text, 500))
+          .map((o) => stripOptionLetter(clean(typeof o === "string" ? o : o?.text, 500)))
           .filter(Boolean)
           .slice(0, LIMITS.options)
           .map((optText, i) => ({ label: OPTION_LABELS[i], text: optText }));
@@ -107,7 +125,7 @@ function normalizePaper(raw, { imagePrefix: prefix, previous = null, fallbackTit
       id: uniqueId(s?.id, "s"),
       type,
       title: clean(s?.title, LIMITS.titleChars) || (type === "objective" ? `Section ${String.fromCharCode(65 + si)}: Objective` : `Section ${String.fromCharCode(65 + si)}: Theory`),
-      instructions: clean(s?.instructions, LIMITS.instructionChars),
+      instructions: stripInstructionsLabel(clean(s?.instructions, LIMITS.instructionChars)),
       questions,
     };
   });
@@ -118,7 +136,8 @@ function normalizePaper(raw, { imagePrefix: prefix, previous = null, fallbackTit
   return {
     paper: {
       title: clean(input.title, LIMITS.titleChars) || fallbackTitle,
-      instructions: clean(input.instructions, LIMITS.instructionChars),
+      instructions: stripInstructionsLabel(clean(input.instructions, LIMITS.instructionChars)),
+      layout: normalizeLayout(input.layout ?? previous?.layout),
       durationMinutes: Number.isFinite(duration) && duration > 0 ? Math.min(duration, 600) : null,
       totalMarks,
       sections,
@@ -141,4 +160,4 @@ function parsePaper(json) {
   }
 }
 
-module.exports = { LIMITS, normalizePaper, parsePaper, questionCount, imagePrefix, newId };
+module.exports = { LAYOUT_DEFAULTS, normalizeLayout, LIMITS, normalizePaper, parsePaper, questionCount, imagePrefix, newId };

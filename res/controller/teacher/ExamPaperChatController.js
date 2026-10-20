@@ -28,6 +28,9 @@ const MAX_TURNS = 60;
 const MAX_PAPERS_PER_DAY = 30;
 const MAX_GENERATED_IMAGES_PER_TURN = 3;
 
+/** A reply that reads as "I made a change", which is only true if the paper really changed. */
+const CLAIMS_A_CHANGE = /\b(i(?:'ve| have)?\s+(?:removed|deleted|updated|changed|replaced|added|made|regenerated|rewritten|rewrote|edited|adjusted|fixed)|has been (?:removed|deleted|updated|changed|replaced|added)|have been (?:removed|deleted|updated|changed|replaced|added)|(?:changes?|updates?|edits?|corrections?)\s+(?:have|has|had)\s+been\s+(?:made|applied|done|completed)|(?:removed|deleted) (?:the|all))\b/i;
+
 class ChatError extends Error {
   constructor(status, message, code, data) {
     super(message);
@@ -313,6 +316,7 @@ exports.sendMessage = async (req, res, next) => {
     let paper = previous;
     let imageCredits = 0;
     const notes = [];
+    let paperChanged = false;
 
     if (result.paper && Array.isArray(result.paper.sections) && result.paper.sections.length > 0) {
       // Every question gets an id now, so what the AI asked for (a picture, one of the
@@ -365,7 +369,14 @@ exports.sendMessage = async (req, res, next) => {
         }
       }
 
+      paperChanged = JSON.stringify(paper) !== JSON.stringify(previous);
       await prisma.examPaperChat.update({ where: { id: chat.id }, data: { paperJson: JSON.stringify(paper) } });
+    }
+
+    // The AI sometimes says it changed the paper without sending the changed paper. Say so,
+    // rather than let "done" stand for nothing.
+    if (!paperChanged && CLAIMS_A_CHANGE.test(result.reply || "")) {
+      notes.push("Note: the paper itself did not change. Tell me again exactly what to change, or use the Print layout options above the paper.");
     }
 
     const reply = [result.reply, ...notes].filter(Boolean).join("\n\n") || "Done.";
@@ -383,7 +394,7 @@ exports.sendMessage = async (req, res, next) => {
       success: true,
       data: {
         reply,
-        paperChanged: paper !== previous,
+        paperChanged,
         paper: await withUrls(paper),
         attachments: await Promise.all(attachmentKeys.map((k) => r2.getPresignedUrl(k).catch(() => null))),
         creditsCharged: charged + imageCredits,
@@ -429,8 +440,10 @@ exports.uploadImage = async (req, res, next) => {
 exports.pdf = async (req, res, next) => {
   try {
     const chat = await loadChat(req);
-    const paper = parsePaper(chat.paperJson);
-    if (!paper || questionCount(paper) === 0) throw new ChatError(409, "There are no questions to print yet.", "EMPTY_PAPER");
+    const stored = parsePaper(chat.paperJson);
+    if (!stored || questionCount(stored) === 0) throw new ChatError(409, "There are no questions to print yet.", "EMPTY_PAPER");
+    // Rebuilt through the same cleaning as every save, so a paper stored before a fix prints clean too.
+    const paper = normalizePaper(stored, { imagePrefix: imagePrefix(chat.schoolId, chat.id), previous: stored, fallbackTitle: chat.title }).paper;
 
     const ctx = await loadContext(req.schoolId, chat);
     const branding = await resolveBranding(prisma, { schoolId: req.schoolId, campusId: ctx.campusId });

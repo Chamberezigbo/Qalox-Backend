@@ -127,6 +127,54 @@ describe("normalizePaper", () => {
   });
 });
 
+describe("print layout and cleaning", () => {
+  const ctx = { imagePrefix: "exam-papers/5/4/" };
+
+  it("strips numbering the AI wrote into questions, options and instructions", () => {
+    const { paper } = normalizePaper(
+      { instructions: "Instructions: Answer all", sections: [{ type: "objective", questions: [{ text: "1. Which is a noun?", options: ["A. Nigeria", "B) John", "C. table", "D. Monday"], answer: "B" }] }] },
+      ctx
+    );
+    expect(paper.instructions).toBe("Answer all");
+    expect(paper.sections[0].questions[0].text).toBe("Which is a noun?");
+    expect(paper.sections[0].questions[0].options.map((o: any) => o.text)).toEqual(["Nigeria", "John", "table", "Monday"]);
+  });
+
+  it("defaults every layout switch on, keeps booleans and drops anything else", () => {
+    expect(normalizePaper({ sections: [] }, ctx).paper.layout).toEqual({ showNameDate: true, answerLines: true, showMarks: true, showHeader: true });
+    expect(normalizePaper({ sections: [], layout: { showNameDate: false, answerLines: "no", evil: true } }, ctx).paper.layout)
+      .toEqual({ showNameDate: false, answerLines: true, showMarks: true, showHeader: true });
+  });
+
+  it("keeps the previous layout when a rewritten paper does not mention it", () => {
+    const previous = { layout: { showNameDate: false, answerLines: false, showMarks: true, showHeader: true }, sections: [] };
+    expect(normalizePaper({ sections: [] }, { ...ctx, previous }).paper.layout.showNameDate).toBe(false);
+  });
+
+  it("applies a layout change the AI asks for, and says the paper changed", async () => {
+    mockPrisma.examPaperChat.findFirst.mockResolvedValue({
+      ...CHAT,
+      paperJson: JSON.stringify(normalizePaper({ sections: [{ type: "theory", questions: [{ id: "q1", text: "Explain", marks: 5 }] }] }, { imagePrefix: "exam-papers/5/4/" }).paper),
+    });
+    ai.chatTurn.mockResolvedValue({
+      reply: "I removed the Name and Date lines.",
+      paper: { layout: { showNameDate: false }, sections: [{ type: "theory", questions: [{ id: "q1", text: "Explain", marks: 5 }] }] },
+      usage: { inputTokens: 10, outputTokens: 10 },
+    });
+    const { body } = await call(controller.sendMessage, { body: { message: "remove name and date" } });
+    expect(body.data.paperChanged).toBe(true);
+    expect(body.data.paper.layout.showNameDate).toBe(false);
+    expect(body.data.reply).not.toMatch(/did not change/);
+  });
+
+  it("does not let a claimed change pass when the paper did not change", async () => {
+    ai.chatTurn.mockResolvedValue({ reply: "Changes have been made.", paper: null, usage: { inputTokens: 10, outputTokens: 10 } });
+    const { body } = await call(controller.sendMessage, { body: { message: "remove the lines" } });
+    expect(body.data.paperChanged).toBe(false);
+    expect(body.data.reply).toMatch(/paper itself did not change/);
+  });
+});
+
 describe("sendMessage", () => {
   it("stores the paper the AI writes, with the marks worked out, and charges the turn", async () => {
     ai.chatTurn.mockResolvedValue({
@@ -218,6 +266,55 @@ describe("start and save", () => {
     const { body } = await call(controller.savePaper, { body: { paper: { title: "Edited", sections: [{ type: "objective", questions: [{ text: "Q?", options: ["a", "b"], answer: "A" }] }] } } });
     expect(body.data.paper.title).toBe("Edited");
     expect(mockPrisma.examPaperChat.update.mock.calls[0][0].data.title).toBe("Edited");
+  });
+});
+
+describe("PDF layout switches", () => {
+  const read2 = (buffer: Buffer) => {
+    const run = spawnSync(process.execPath, [path.join(__dirname, "helpers", "pdfText.js")], { input: buffer, maxBuffer: 20 * 1024 * 1024 });
+    return JSON.parse(run.stdout.toString());
+  };
+  const build = (layout: object) => {
+    const { paper } = normalizePaper(
+      { title: "Eng", layout, sections: [{ type: "theory", questions: [{ text: "Write a letter.", marks: 10 }] }] },
+      { imagePrefix: "p/" }
+    );
+    return buildExamPaperPdf(paper, { school: { name: "Daniel College" }, className: "JSS1", subjectName: "English", termName: "First Term", images: new Map() });
+  };
+
+  it("prints Name and Date and marks by default", async () => {
+    const { text } = read2(await build({}));
+    expect(text).toContain("Name:");
+    expect(text).toContain("Date:");
+    expect(text).toContain("[10 marks]");
+  });
+
+  it("leaves out Name and Date when switched off", async () => {
+    const { text } = read2(await build({ showNameDate: false }));
+    expect(text).not.toContain("Name:");
+    expect(text).not.toContain("Date:");
+  });
+
+  it("leaves out the marks label and the school header when switched off", async () => {
+    const { text } = read2(await build({ showMarks: false, showHeader: false }));
+    expect(text).not.toContain("[10 marks]");
+    expect(text).not.toContain("Daniel College");
+  });
+
+  it("draws fewer writing lines when answerLines is off", async () => {
+    const withLines = await build({});
+    const without = await build({ answerLines: false });
+    // Writing lines are vector strokes in the page content, so the file is smaller without them.
+    expect(without.length).toBeLessThan(withLines.length);
+  });
+
+  it("puts the marks after the whole question, never over it", async () => {
+    const { paper } = normalizePaper(
+      { sections: [{ type: "theory", questions: [{ text: "Define a noun.\na) Common noun\nb) Proper noun\nc) Abstract noun", marks: 10 }] }] },
+      { imagePrefix: "p/" }
+    );
+    const { text } = read2(await buildExamPaperPdf(paper, { school: { name: "S" }, className: "c", subjectName: "s", images: new Map() }));
+    expect(text.indexOf("c) Abstract noun")).toBeLessThan(text.indexOf("[10 marks]"));
   });
 });
 

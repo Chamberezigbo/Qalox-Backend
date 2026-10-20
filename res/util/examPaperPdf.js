@@ -45,15 +45,20 @@ async function buildExamPaperPdf(paper, ctx) {
   doc.addPage();
   const width = doc.page.width - MARGIN * 2;
 
-  // Header: logo, school name, paper title
-  const logo = ctx.school.logo ? await prepareImage(ctx.school.logo) : null;
-  if (logo) {
-    const h = 44;
-    const w = Math.min((logo.width / logo.height) * h, 90);
-    doc.image(logo.buffer, MARGIN, MARGIN - 6, { fit: [w, h] });
+  const layout = { showNameDate: true, answerLines: true, showMarks: true, showHeader: true, ...(paper.layout || {}) };
+
+  // Header: logo and school name (unless switched off), then the paper title
+  doc.y = MARGIN;
+  if (layout.showHeader) {
+    const logo = ctx.school.logo ? await prepareImage(ctx.school.logo) : null;
+    if (logo) {
+      const h = 44;
+      const w = Math.min((logo.width / logo.height) * h, 90);
+      doc.image(logo.buffer, MARGIN, MARGIN - 6, { fit: [w, h] });
+    }
+    doc.font("Bold").fontSize(15).fillColor(INK).text(ctx.school.name || "", MARGIN, MARGIN, { width, align: "center" });
   }
-  doc.font("Bold").fontSize(15).fillColor(INK).text(ctx.school.name || "", MARGIN, MARGIN, { width, align: "center" });
-  doc.font("Bold").fontSize(12).text(paper.title || "Exam paper", { width, align: "center" });
+  doc.font("Bold").fontSize(12).fillColor(INK).text(paper.title || "Exam paper", MARGIN, doc.y, { width, align: "center" });
   const meta = [ctx.subjectName, ctx.className, ctx.termName].filter(Boolean).join("  ·  ");
   doc.font("Body").fontSize(10).fillColor(MUTED).text(meta, { width, align: "center" });
   doc.moveDown(0.6);
@@ -66,7 +71,7 @@ async function buildExamPaperPdf(paper, ctx) {
   doc.font("Body").fontSize(10).fillColor(INK).text(facts.join("      "), MARGIN, doc.y, { width, align: "center" });
   doc.moveDown(0.8);
 
-  if (!ctx.answers) {
+  if (!ctx.answers && layout.showNameDate) {
     // Name / date lines for the student.
     const y = doc.y;
     doc.font("Body").fontSize(10).fillColor(INK);
@@ -97,10 +102,23 @@ async function buildExamPaperPdf(paper, ctx) {
     for (const q of section.questions) {
       number += 1;
       room(doc, 60);
-      const marks = q.marks ? `  [${q.marks} mark${q.marks === 1 ? "" : "s"}]` : "";
-      doc.font("Bold").fontSize(10.5).fillColor(INK).text(`${number}.  `, MARGIN, doc.y, { continued: true, width });
-      doc.font("Body").text(q.text, { continued: !!marks });
-      if (marks) doc.font("Italic").fillColor(MUTED).fontSize(9).text(marks);
+      const numberWidth = 26;
+      const top = doc.y;
+      // The number sits in its own column and the text in a block beside it, so a long or
+      // multi-line question never runs under the number or the marks.
+      doc.font("Bold").fontSize(10.5).fillColor(INK).text(`${number}.`, MARGIN, top, { width: numberWidth, lineBreak: false });
+      const markLabel = layout.showMarks && q.marks ? `[${q.marks} mark${q.marks === 1 ? "" : "s"}]` : null;
+      const textWidth = width - numberWidth;
+      doc.font("Body").fontSize(10.5);
+      // A one-line question keeps its marks on the same line; a longer one puts them after the
+      // last line, so the label can never print over the text.
+      const oneLine = markLabel && doc.heightOfString(q.text, { width: textWidth - 70 }) < 16;
+      doc.fillColor(INK).text(q.text, MARGIN + numberWidth, top, { width: oneLine ? textWidth - 70 : textWidth });
+      if (markLabel) {
+        const y = oneLine ? top + 1.5 : doc.y + 1;
+        doc.font("Italic").fontSize(9).fillColor(MUTED).text(markLabel, MARGIN + numberWidth, y, { width: textWidth, align: "right", lineBreak: false });
+        if (!oneLine) doc.y = y + 12;
+      }
 
       const imageBytes = q.imageKey ? ctx.images.get(q.imageKey) : null;
       const image = imageBytes ? await prepareImage(imageBytes) : null;
@@ -108,7 +126,7 @@ async function buildExamPaperPdf(paper, ctx) {
         const scale = Math.min(IMAGE_MAX_WIDTH / image.width, IMAGE_MAX_HEIGHT / image.height, 1);
         const h = image.height * scale;
         room(doc, h + 8);
-        doc.image(image.buffer, MARGIN + 18, doc.y + 4, { width: image.width * scale, height: h });
+        doc.image(image.buffer, MARGIN + numberWidth, doc.y + 4, { width: image.width * scale, height: h });
         doc.y += h + 10;
       }
 
@@ -117,17 +135,17 @@ async function buildExamPaperPdf(paper, ctx) {
         for (const o of q.options ?? []) {
           room(doc, 16);
           const correct = ctx.answers && o.label === q.answer;
-          doc.font(correct ? "Bold" : "Body").fontSize(10).fillColor(INK).text(`${o.label}.  ${o.text}${correct ? "   (correct)" : ""}`, MARGIN + 22, doc.y, { width: width - 22 });
+          doc.font(correct ? "Bold" : "Body").fontSize(10).fillColor(INK).text(`${o.label}.  ${o.text}${correct ? "   (correct)" : ""}`, MARGIN + numberWidth + 8, doc.y, { width: width - numberWidth - 8 });
         }
       } else if (ctx.answers && q.answer) {
         doc.moveDown(0.15);
-        doc.font("Italic").fontSize(9.5).fillColor(MUTED).text(`Marking guide: ${q.answer}`, MARGIN + 22, doc.y, { width: width - 22 });
-      } else if (!ctx.answers) {
+        doc.font("Italic").fontSize(9.5).fillColor(MUTED).text(`Marking guide: ${q.answer}`, MARGIN + numberWidth, doc.y, { width: width - numberWidth });
+      } else if (!ctx.answers && layout.answerLines) {
         // Writing space for a theory answer.
         const lines = Math.max(2, Math.min(8, Math.round((q.marks || 5) / 1.5)));
         for (let i = 0; i < lines; i++) {
           room(doc, 18);
-          doc.moveTo(MARGIN + 22, doc.y + 14).lineTo(MARGIN + width, doc.y + 14).strokeColor("#d1d5db").lineWidth(0.5).stroke();
+          doc.moveTo(MARGIN + numberWidth, doc.y + 14).lineTo(MARGIN + width, doc.y + 14).strokeColor("#d1d5db").lineWidth(0.5).stroke();
           doc.y += 18;
         }
       }
