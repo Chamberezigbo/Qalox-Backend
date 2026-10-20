@@ -2041,6 +2041,51 @@ model LessonNoteChatMessage {
   @@map("lesson_note_chat_messages")
 }
 
+// A teacher's conversation with the AI that builds ONE printable exam paper. The paper
+// itself (sections, questions, marks, images) lives in paperJson and is replaced whenever
+// the AI rewrites it or the teacher edits it.
+model ExamPaperChat {
+  id        Int     @id @default(autoincrement())
+  schoolId  Int
+  staffId   Int
+  classId   Int
+  subjectId Int
+  title     String  @db.VarChar(255)
+  // Optional: when a scheme of work exists for the term, the AI is grounded in it.
+  schemeOfWorkId Int?
+  paperJson      String? @db.LongText
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ExamPaperChatMessage[]
+
+  @@index([schoolId])
+  @@index([staffId])
+  @@map("exam_paper_chats")
+}
+
+model ExamPaperChatMessage {
+  id     Int @id @default(autoincrement())
+  chatId Int
+
+  role    String @db.VarChar(8) // user | model
+  content String @db.Text
+  // Keys of the images the teacher attached to this message (R2), as a JSON array.
+  attachmentsJson String? @db.Text
+
+  inputTokens    Int?
+  outputTokens   Int?
+  creditsCharged Int?
+
+  createdAt DateTime @default(now())
+
+  chat ExamPaperChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId])
+  @@map("exam_paper_chat_messages")
+}
+
 model LessonNote {
   id              Int     @id @default(autoincrement())
   schoolId        Int

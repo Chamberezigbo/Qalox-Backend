@@ -4,6 +4,7 @@ const { AppError } = require("../util/AppError");
 const { createNotification } = require("../util/notify");
 const rules = require("../util/resultWorkflowRules");
 const { automaticRemark, cleanRemark } = require("../util/remarkRules");
+const { classDisplayName, usableCustomName } = require("../util/classLabel");
 const {
   UNGROUPED,
   studentScopeWhere,
@@ -311,15 +312,15 @@ async function classesForClassTeacher({ schoolId, staffId }) {
     }
     if (show) {
       scopes.push({
-        classId: cls.id, classGroupId: UNGROUPED, name: cls.name, customName: cls.customName, groupName: null,
-        label: scopeLabel(cls.customName ? `${cls.name} — ${cls.customName}` : cls.name, null),
+        classId: cls.id, classGroupId: UNGROUPED, name: cls.name, customName: usableCustomName(cls.customName), groupName: null,
+        label: scopeLabel(classDisplayName(cls.name, cls.customName), null),
       });
     }
   }
   for (const group of ownGroups) {
-    const className = group.class.customName ? `${group.class.name} — ${group.class.customName}` : group.class.name;
+    const className = classDisplayName(group.class.name, group.class.customName);
     scopes.push({
-      classId: group.classId, classGroupId: group.id, name: group.class.name, customName: group.class.customName,
+      classId: group.classId, classGroupId: group.id, name: group.class.name, customName: usableCustomName(group.class.customName),
       groupName: group.name, label: scopeLabel(className, group.name),
     });
   }
@@ -336,10 +337,10 @@ async function classOverview({ schoolId, staffId, classId, classGroupId = UNGROU
   ]);
 
   return {
-    class: { id: cls.id, name: cls.name, customName: cls.customName },
+    class: { id: cls.id, name: cls.name, customName: usableCustomName(cls.customName) },
     classGroupId,
     groupName: cls.groupName,
-    label: scopeLabel(cls.customName ? `${cls.name} — ${cls.customName}` : cls.name, cls.groupName),
+    label: scopeLabel(classDisplayName(cls.name, cls.customName), cls.groupName),
     academicSessionId: sessionId,
     termId: resolvedTermId,
     termName,

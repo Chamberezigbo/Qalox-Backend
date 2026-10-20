@@ -8,6 +8,8 @@ const { TeacherAnalyticsController } = require("../controller/teacher/TeacherAna
 const { AssignmentController } = require("../controller/teacher/AssignmentController");
 const { ExamTimetableController } = require("../controller/teacher/ExamTimetableController");
 const { teacherAuthMiddleware } = require("../middleware/teacherMiddleware");
+const examPaperChatController = require("../controller/teacher/ExamPaperChatController");
+const uploadExamPaperImages = require("../middleware/uploadExamPaperImages");
 const uploadAssignment = require("../middleware/uploadAssignment");
 const uploadSchemeOfWork = require("../middleware/uploadSchemeOfWork");
 const notificationController = require("../controller/NotificationController");
@@ -71,6 +73,7 @@ router.get("/results/my-submissions", teacherAuthMiddleware, teacherController.g
 // Class teacher: review subject submissions, compile the class, send it to the admin.
 router.get("/class-results/classes", teacherAuthMiddleware, classResultController.myClasses);
 router.get("/class-results", teacherAuthMiddleware, classResultController.overview);
+router.get("/class-results/subject-scores", teacherAuthMiddleware, classResultController.subjectScores);
 router.get("/class-results/broadsheet", teacherAuthMiddleware, classResultController.broadsheet);
 router.get("/class-results/report-cards.pdf", teacherAuthMiddleware, classResultController.reportCardsPdf);
 router.get("/class-results/broadsheet.pdf", teacherAuthMiddleware, classResultController.broadsheetPdf);
@@ -118,6 +121,16 @@ router.get("/lesson-notes/chats/:id", teacherAuthMiddleware, lessonNoteChatContr
 router.post("/lesson-notes/chats/:id/messages", teacherAuthMiddleware, lessonNoteChatController.sendMessage);
 router.post("/lesson-notes/chats/:id/generate", teacherAuthMiddleware, lessonNoteChatController.generateFromChat);
 router.post("/lesson-notes/chats/:id/refine", teacherAuthMiddleware, lessonNoteChatController.refineNote);
+
+// Exam papers: chat with the AI to build a printable paper (objective + theory, images, PDF).
+router.post("/exam-papers", teacherAuthMiddleware, examPaperChatController.start);
+router.get("/exam-papers", teacherAuthMiddleware, examPaperChatController.list);
+router.get("/exam-papers/:id", teacherAuthMiddleware, examPaperChatController.get);
+router.delete("/exam-papers/:id", teacherAuthMiddleware, examPaperChatController.remove);
+router.post("/exam-papers/:id/messages", teacherAuthMiddleware, uploadExamPaperImages.images("images"), examPaperChatController.sendMessage);
+router.patch("/exam-papers/:id/paper", teacherAuthMiddleware, examPaperChatController.savePaper);
+router.post("/exam-papers/:id/images", teacherAuthMiddleware, uploadExamPaperImages.single("image"), examPaperChatController.uploadImage);
+router.get("/exam-papers/:id/paper.pdf", teacherAuthMiddleware, examPaperChatController.pdf);
 
 // Multiple-choice tests: generate, review, edit, publish.
 router.post("/tests/generate", teacherAuthMiddleware, testController.generate);

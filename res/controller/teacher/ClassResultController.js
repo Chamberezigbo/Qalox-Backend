@@ -102,6 +102,52 @@ exports.submit = handle(async (req, res) => {
   res.status(201).json({ success: true, message: "Class results submitted to the admin", data });
 });
 
+/**
+ * One subject's scores for the class teacher's group, so they can review what a subject
+ * teacher submitted before accepting or returning it. The same figures the broadsheet uses.
+ */
+exports.subjectScores = handle(async (req, res) => {
+  const classId = toId(req.query.classId);
+  const subjectId = toId(req.query.subjectId);
+  if (!classId || !subjectId) return badRequest(res, "classId and subjectId are required");
+
+  const classGroupId = parseScope(req.query.classGroupId);
+  // Throws unless this teacher is the class teacher of this class/group.
+  const overview = await Workflow.classOverview({
+    schoolId: req.schoolId, staffId: req.staffId, classId, classGroupId, termId: toId(req.query.termId) ?? undefined,
+  });
+  const subject = overview.subjects.find((s) => s.subjectId === subjectId);
+  if (!subject) return res.status(404).json({ success: false, message: "That subject is not taught in this class" });
+
+  const sheet = await new AssessmentServiceModule.AssessmentService().computeBroadsheet({
+    classId, schoolId: req.schoolId, academicSessionId: overview.academicSessionId,
+    subjectIds: [subjectId], termId: overview.termId, classGroupId: classGroupId === 0 ? null : classGroupId,
+  });
+
+  const rows = sheet.rows.map((row) => {
+    const score = row.scores[subject.name];
+    return {
+      studentId: row.studentId,
+      studentName: row.studentName,
+      registrationNumber: row.registrationNumber,
+      caTotal: score?.caTotal ?? 0,
+      examTotal: score?.examTotal ?? 0,
+      subjectTotal: score?.subjectTotal ?? 0,
+      grade: score?.grade ?? null,
+      remark: score?.remark ?? null,
+    };
+  }).sort((a, b) => a.studentName.localeCompare(b.studentName));
+
+  res.json({
+    success: true,
+    data: {
+      subjectId, subjectName: subject.name, state: subject.state, teachers: subject.teachers,
+      submissionId: subject.submissionId, submittedBy: subject.submittedBy, submittedAt: subject.submittedAt,
+      actions: subject.actions, rows,
+    },
+  });
+});
+
 /** The class as one broadsheet, for the subjects that count. Class teacher only. */
 exports.broadsheet = handle(async (req, res) => {
   const classId = toId(req.query.classId);

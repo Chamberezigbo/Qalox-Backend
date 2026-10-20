@@ -51,6 +51,12 @@ const CHARS_PER_TOKEN = 4;
 /** Image input is billed as a flat tile cost rather than by character. */
 const TOKENS_PER_IMAGE = 800;
 
+/**
+ * An AI-drawn diagram is billed per image, not per token. Gemini's image model costs about
+ * $0.04 an image, which at $0.0005 a credit is 80 credits.
+ */
+const CREDITS_PER_GENERATED_IMAGE = 80;
+
 const estimateTokensFromText = (text) => Math.ceil((text?.length ?? 0) / CHARS_PER_TOKEN);
 
 /**
@@ -175,4 +181,5 @@ module.exports = {
   creditsForTokens,
   estimateTokensFromText,
   TOKENS_PER_IMAGE,
+  CREDITS_PER_GENERATED_IMAGE,
 };

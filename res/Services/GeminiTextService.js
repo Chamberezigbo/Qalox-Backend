@@ -499,6 +499,9 @@ Return only the requested JSON.`,
 }
 
 module.exports = {
+  callGemini,
+  readStructured,
+  getApiKey,
   generateLessonNote,
   chatTurn,
   refineNote,

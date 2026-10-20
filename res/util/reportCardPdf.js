@@ -387,4 +387,4 @@ async function buildBroadsheetsPdf(items) {
 }
 
 
-module.exports = { buildReportCardsPdf, buildBroadsheetPdf, buildBroadsheetsPdf, loadImage, formatDate, naira };
+module.exports = { buildReportCardsPdf, buildBroadsheetPdf, buildBroadsheetsPdf, loadImage, formatDate, naira, openDocument, collect };

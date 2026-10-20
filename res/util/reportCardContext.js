@@ -71,7 +71,8 @@ function promotionLabel(outcome, toClassName) {
   return toClassName ? `${base} to ${toClassName}` : base;
 }
 
-const className = (c) => (c.customName ? `${c.name} — ${c.customName}` : c.name);
+const { classDisplayName } = require("./classLabel");
+const className = (c) => classDisplayName(c.name, c.customName);
 
 /**
  * What the report card says about the session as a whole. Null unless this is the
