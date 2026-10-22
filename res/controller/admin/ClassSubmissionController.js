@@ -87,6 +87,21 @@ exports.savePrincipalRemarks = handle(async (req, res) => {
   res.json({ success: true, message: "Remarks saved", data });
 });
 
+/** Any class's students with their remarks, for the admin to write principal's remarks. */
+exports.listPrincipalRemarks = handle(async (req, res) => {
+  const classId = toId(req.query.classId);
+  if (!classId) return res.status(400).json({ success: false, message: "classId is required" });
+  const hasGroup = req.query.classGroupId !== undefined && req.query.classGroupId !== "";
+  const data = await Workflow.listPrincipalRemarks({
+    schoolId: req.schoolId, classId,
+    classGroupId: hasGroup ? Number(req.query.classGroupId) || 0 : undefined,
+    termId: toId(req.query.termId) ?? undefined,
+    classScope: campusScope.classWhere(req),
+    studentScope: campusScope.studentWhere(req),
+  });
+  res.json({ success: true, data });
+});
+
 const scopeTitle = (d) => `${d.class.customName ? `${d.class.name} — ${d.class.customName}` : d.class.name}${d.groupName ? ` — ${d.groupName}` : ""}`;
 const COUNTED = ["accepted", "own", "published"];
 

@@ -1737,9 +1737,12 @@ export class AssessmentService {
                 classes: { some: { classId: student.classId } }
             },
             select: {
+                usePosition: true,
                 grades: { orderBy: { minScore: "desc" } }
             }
         });
+        // A position is only shown when the school's grading scheme for this class turns it on.
+        const showPosition = gradingScheme?.usePosition === true;
 
         // Fetch results for each subject
         const subjects = await Promise.all(
@@ -1816,7 +1819,10 @@ export class AssessmentService {
         // and ranking everyone again for every card would be slow); otherwise they are
         // worked out here. Either way the same subjects are summed.
         let classStudentScores: Array<{ studentId: number; score: number }>;
-        if (input.classScores) {
+        if (!showPosition) {
+            // Not shown, so nobody is ranked: skips the per-classmate score queries too.
+            classStudentScores = [];
+        } else if (input.classScores) {
             classStudentScores = input.classScores.map((entry) => ({ ...entry }));
         } else {
             // A class with groups ranks within the student's own group (SS 1 A is
@@ -1881,7 +1887,7 @@ export class AssessmentService {
 
         // Sort by score descending and find position
         const sortedByScore = classStudentScores.sort((a, b) => b.score - a.score);
-        const classPosition = sortedByScore.findIndex(s => s.studentId === studentId) + 1;
+        const classPosition = showPosition ? sortedByScore.findIndex(s => s.studentId === studentId) + 1 : null;
 
         // Fetch remark based on average score using RemarkScheme
         const remarkScheme = await prisma.remarkScheme.findUnique({
@@ -1976,7 +1982,8 @@ export class AssessmentService {
             performanceSummary: {
                 totalScore,
                 averageScore,
-                classPosition: `${classPosition}`,
+                classPosition: classPosition === null ? null : `${classPosition}`,
+                showPosition,
                 overallGrade: overallGrade?.grade ?? "N/A",
                 sessionLength: allTerms.length,
                 subjectCount: subjects.length

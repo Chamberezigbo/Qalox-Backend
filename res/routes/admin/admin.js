@@ -429,6 +429,7 @@ router.get("/results/class-submissions/:id", auth.authenticateSchoolLevelAdmin, 
 router.post("/results/class-submissions/:id/approve", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, classSubmissionController.approve);
 router.post("/results/class-submissions/:id/return", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, classSubmissionController.returnToClassTeacher);
 
+router.get("/results/principal-remarks", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, classSubmissionController.listPrincipalRemarks);
 router.put("/results/remarks", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_GENERATE), auth.attachSchoolId, classSubmissionController.savePrincipalRemarks);
 
 router.get("/result/student", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.RESULTS_MANAGE), auth.attachSchoolId, assessmentController.getStudentResult);

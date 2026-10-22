@@ -233,7 +233,8 @@ function drawCard(doc, card, images) {
   const cells = [
     ["Total Score", summary.totalScore],
     ["Average Score", summary.averageScore],
-    ["Class Position", summary.classPosition],
+    // Only when the school's grading scheme turns positions on.
+    ...(summary.classPosition != null ? [["Class Position", summary.classPosition]] : []),
     ["Overall Grade", summary.overallGrade],
     ["No. of Subjects", subjects.length],
     ["School Resumption Date", formatDate(card.schoolRecommendationDate)],

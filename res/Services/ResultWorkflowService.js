@@ -1032,6 +1032,53 @@ async function listRemarks({ schoolId, staffId, classId, classGroupId = UNGROUPE
 }
 
 /**
+ * The admin's view of a class's remarks: every active student of the class (or one group of
+ * it) with the class teacher's remark and the principal's, for any term, whether or not the
+ * class was ever submitted through Class Results. `classScope` / `studentScope` are a
+ * campus-restricted admin's reach.
+ *
+ * @param {{ schoolId: number, classId: number, classGroupId?: number, termId?: number, classScope?: object, studentScope?: object }} input
+ *   `classGroupId` left out lists the whole class; 0 only the students in no group.
+ */
+async function listPrincipalRemarks({ schoolId, classId, classGroupId, termId, classScope = {}, studentScope = {} }) {
+  const cls = await prisma.class.findFirst({
+    where: { id: classId, schoolId, ...classScope },
+    select: { id: true, name: true, customName: true },
+  });
+  if (!cls) throw fail(404, "Class not found", "CLASS_NOT_FOUND");
+  const { sessionId, termId: resolvedTermId, termName } = await resolveSessionTerm(prisma, schoolId, termId);
+
+  const students = await prisma.student.findMany({
+    where: {
+      schoolId, classId, academicSessionId: sessionId, status: "active", ...studentScope,
+      ...(classGroupId === undefined ? {} : studentScopeWhere(classGroupId)),
+    },
+    select: { id: true, name: true, surname: true, otherNames: true, registrationNumber: true },
+    orderBy: [{ surname: "asc" }, { name: "asc" }],
+  });
+  const saved = students.length
+    ? await prisma.studentTermRemark.findMany({
+        where: { schoolId, academicSessionId: sessionId, termId: resolvedTermId, studentId: { in: students.map((s) => s.id) } },
+        select: { studentId: true, classTeacherRemark: true, principalRemark: true },
+      })
+    : [];
+  const savedBy = new Map(saved.map((r) => [r.studentId, r]));
+
+  return {
+    label: classDisplayName(cls.name, cls.customName),
+    termId: resolvedTermId,
+    termName,
+    students: students.map((st) => ({
+      studentId: st.id,
+      name: displayName(st),
+      registrationNumber: st.registrationNumber,
+      classTeacherRemark: savedBy.get(st.id)?.classTeacherRemark ?? "",
+      principalRemark: savedBy.get(st.id)?.principalRemark ?? "",
+    })),
+  };
+}
+
+/**
  * Saves the class teacher's remarks for students in their own group. Blank clears
  * a remark (the automatic one is used again). Refused once the group's results are
  * with the admin, and for any student outside the group.
@@ -1167,6 +1214,7 @@ async function classReportCards({ schoolId, classId, classGroupId = UNGROUPED, s
 module.exports = {
   classReportCards,
   listRemarks,
+  listPrincipalRemarks,
   saveRemarks,
   savePrincipalRemarks,
   resolveSessionTerm,

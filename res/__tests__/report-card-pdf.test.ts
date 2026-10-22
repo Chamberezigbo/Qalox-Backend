@@ -35,6 +35,16 @@ const read = async (buffer: Buffer): Promise<{ text: string; pages: number }> =>
 };
 
 describe("report card PDF", () => {
+  it("shows the class position only when the card has one, and the principal's remark when it has one", async () => {
+    const on = await read(await buildReportCardsPdf([card({ principalRemark: "Keep it up." })], { loadImages: false }));
+    expect(on.text).toContain("Class Position");
+    expect(on.text).toContain("Keep it up.");
+
+    const off = await read(await buildReportCardsPdf([card({ performanceSummary: { totalScore: 175, averageScore: 88, classPosition: null, overallGrade: "A" } })], { loadImages: false }));
+    expect(off.text).not.toContain("Class Position");
+    expect(off.text).toContain("Average Score");
+  });
+
   it("is a real PDF with the card's names, scores and remark", async () => {
     const pdf = await buildReportCardsPdf([card()], { loadImages: false });
     expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");

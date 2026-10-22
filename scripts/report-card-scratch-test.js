@@ -44,6 +44,9 @@ async function main() {
 
   const ss1 = await prisma.class.create({ data: { schoolId, campusId: campus.id, name: "SS 1" } });
   const jss3 = await prisma.class.create({ data: { schoolId, campusId: campus.id, name: "JSS 3", promotesToClassId: ss1.id } });
+  // Positions are only shown when the grading scheme turns them on.
+  const scheme = await prisma.gradingScheme.create({ data: { schoolId, name: "Std", usePosition: true } });
+  await prisma.gradingSchemeClass.createMany({ data: [{ schemeId: scheme.id, classId: jss3.id }, { schemeId: scheme.id, classId: ss1.id }] });
   const subject = await prisma.subject.create({ data: { schoolId, name: "Maths" } });
   await prisma.classSubject.create({ data: { classId: jss3.id, subjectId: subject.id } });
 
@@ -180,5 +183,15 @@ async function main() {
   c = await card(top.id, t2.id);
   assert.strictEqual(c.sessionSummary.promotion, null, "undone run is not claimed");
   log("undoing the promotion removes the claim");
+
+  console.log("Class position follows the grading scheme");
+  const ssCard = async (id) => svc.getStudentCompleteResult({ studentId: id, schoolId, academicSessionId: sessA.id, termId: t2.id });
+  assert.ok((await ssCard(top.id)).performanceSummary.classPosition, "shown while the scheme turns positions on");
+  await prisma.gradingScheme.update({ where: { id: scheme.id }, data: { usePosition: false } });
+  const off = await ssCard(top.id);
+  assert.strictEqual(off.performanceSummary.classPosition, null, "hidden when the scheme does not use positions");
+  assert.strictEqual(off.performanceSummary.showPosition, false);
+  assert.ok(off.performanceSummary.averageScore != null, "the rest of the summary is untouched");
+  log("position is hidden when the school did not enable it, and everything else stays");
 }
 main().then(() => { console.log("\nAll report card checks passed"); return prisma.$disconnect(); }).catch((e) => { console.error(e); process.exit(1); });
