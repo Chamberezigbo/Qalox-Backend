@@ -10,6 +10,9 @@ const prisma = new PrismaClient();
 
 const { StudentAuthController } = require("../controller/auth/StudentAuthController");
 const notificationController = require("../controller/NotificationController");
+const chatController = require("../controller/ChatController");
+const uploadChat = require("../middleware/uploadChat");
+const { studentAuthMiddleware } = require("../middleware/studentMiddleware");
 
 const studentAuthController = new StudentAuthController();
 
@@ -36,6 +39,15 @@ router.use(auth);
 router.get("/notifications", notificationController.student.list);
 router.patch("/notifications/:id/read", notificationController.student.markRead);
 router.patch("/notifications/read-all", notificationController.student.markAllRead);
+
+// Chat with the teachers of their own class
+router.get("/chat/contacts", studentAuthMiddleware, chatController.student.contacts);
+router.get("/chat/conversations", studentAuthMiddleware, chatController.student.conversations);
+router.get("/chat/unread", studentAuthMiddleware, chatController.student.unread);
+router.post("/chat/conversations", studentAuthMiddleware, chatController.student.open);
+router.get("/chat/conversations/:id/messages", studentAuthMiddleware, chatController.student.messages);
+router.post("/chat/conversations/:id/messages", studentAuthMiddleware, uploadChat.single("file"), chatController.student.send);
+router.patch("/chat/conversations/:id/read", studentAuthMiddleware, chatController.student.read);
 
 router.post("/create", async (req, res, next) => {
   const { error } = studentSchema.validate(req.body);

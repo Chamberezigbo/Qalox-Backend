@@ -13,6 +13,8 @@ const uploadExamPaperImages = require("../middleware/uploadExamPaperImages");
 const uploadAssignment = require("../middleware/uploadAssignment");
 const uploadSchemeOfWork = require("../middleware/uploadSchemeOfWork");
 const notificationController = require("../controller/NotificationController");
+const chatController = require("../controller/ChatController");
+const uploadChat = require("../middleware/uploadChat");
 
 
 const router = express.Router();
@@ -38,6 +40,15 @@ router.get("/exams/upcoming", teacherAuthMiddleware, examTimetableController.get
 router.get("/notifications", teacherAuthMiddleware, notificationController.teacher.list);
 router.patch("/notifications/:id/read", teacherAuthMiddleware, notificationController.teacher.markRead);
 router.patch("/notifications/read-all", teacherAuthMiddleware, notificationController.teacher.markAllRead);
+
+// Chat with colleagues and the students they teach
+router.get("/chat/contacts", teacherAuthMiddleware, chatController.teacher.contacts);
+router.get("/chat/conversations", teacherAuthMiddleware, chatController.teacher.conversations);
+router.get("/chat/unread", teacherAuthMiddleware, chatController.teacher.unread);
+router.post("/chat/conversations", teacherAuthMiddleware, chatController.teacher.open);
+router.get("/chat/conversations/:id/messages", teacherAuthMiddleware, chatController.teacher.messages);
+router.post("/chat/conversations/:id/messages", teacherAuthMiddleware, uploadChat.single("file"), chatController.teacher.send);
+router.patch("/chat/conversations/:id/read", teacherAuthMiddleware, chatController.teacher.read);
 
 // Get students assigned to teacher
 router.get("/my-students", teacherAuthMiddleware, teacherController.getStudentsForGrading);

@@ -178,6 +178,9 @@ model School {
   smsQuotaOverride Int?
   smsUsedThisTerm  Int  @default(0)
 
+  // Whether staff and students may chat inside the app. Staff-to-staff chat is unaffected.
+  chatStudentsEnabled Boolean @default(true)
+
   // AI generation credits (Scheme of Work → AI Lesson Notes / Exam Questions)
   // follow the exact same pattern — see res/util/getAiCreditsAllowanceForSchool.js.
   // aiCreditsOverride is a Super Admin manual escape hatch; null means "use
@@ -2242,4 +2245,67 @@ model StudentAnswer {
   @@unique([attemptId, questionId])
   @@index([attemptId])
   @@map("cbt_answers")
+}
+
+// In-app chat. One thread per pair of people (pairKey), shared by both of them.
+model ChatConversation {
+  id       Int  @id @default(autoincrement())
+  schoolId Int
+  campusId Int?
+
+  // STAFF_STAFF | STAFF_STUDENT
+  kind    String @db.VarChar(16)
+  // "STAFF:12|STUDENT:40", the two participants sorted, so a pair always maps to the same thread.
+  pairKey String @db.VarChar(64)
+
+  // Not named createdAt on purpose: the global Prisma middleware in res/util/prisma.js
+  // truncates every `createdAt` to a date, and chat needs the time of day.
+  startedAt          DateTime @default(now())
+  lastMessageAt      DateTime?
+  lastMessagePreview String?  @db.VarChar(140)
+
+  participants ChatParticipant[]
+  messages     ChatMessage[]
+
+  @@unique([schoolId, pairKey])
+  @@index([schoolId, lastMessageAt])
+  @@map("chat_conversations")
+}
+
+model ChatParticipant {
+  id             Int @id @default(autoincrement())
+  conversationId Int
+
+  // STAFF | STUDENT
+  userType String @db.VarChar(8)
+  userId   Int
+  // Everything up to this message id has been seen by this participant.
+  lastReadMessageId Int @default(0)
+
+  conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userType, userId])
+  @@index([userType, userId])
+  @@map("chat_participants")
+}
+
+model ChatMessage {
+  id             Int @id @default(autoincrement())
+  conversationId Int
+
+  senderType String  @db.VarChar(8)
+  senderId   Int
+  body       String? @db.Text
+  // R2 object key of an attached photo or document, with its original name and type.
+  attachmentKey  String? @db.VarChar(255)
+  attachmentName String? @db.VarChar(255)
+  attachmentMime String? @db.VarChar(100)
+
+  sentAt DateTime @default(now())
+
+  conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, id])
+  @@index([senderType, senderId, sentAt])
+  @@map("chat_messages")
 }

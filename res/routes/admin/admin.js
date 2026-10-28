@@ -297,6 +297,13 @@ router.get("/sms/quota", auth.authenticateSchoolLevelAdmin, auth.requirePermissi
 router.post("/broadcasts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, createBroadcast);
 router.get("/broadcasts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.SMS_BROADCAST_SEND), auth.attachSchoolId, getBroadcasts);
 
+// Staff-student chats: read-only oversight (campus-scoped), plus the school's on/off switch for student chat
+const chatController = require("../../controller/ChatController");
+router.get("/chat/settings", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, chatController.admin.getSettings);
+router.patch("/chat/settings", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, chatController.admin.setSettings);
+router.get("/chat/conversations", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, chatController.admin.conversations);
+router.get("/chat/conversations/:id/messages", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, chatController.admin.messages);
+
 // Self-service billing — how a school pays or redeems a coupon, including
 // while locked (see isLockAllowlisted in authenticateSuperAdmin.js), so no
 // permission gate here beyond being a recognized school-level admin.
