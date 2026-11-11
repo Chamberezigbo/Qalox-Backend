@@ -1,7 +1,9 @@
+const { Prisma } = require("@prisma/client");
 const prisma = require("../../util/prisma");
 const logger = require("../../config/logger");
 const { effectivePassMark, suggestLadder, validateLadder } = require("../../util/classLadder");
 const campusScope = require("../../util/campusScope");
+const { checkedRules } = require("../../Services/PromotionService");
 
 /**
  * The class ladder and pass marks: which class each class's students move up to,
@@ -25,6 +27,7 @@ exports.getClassLadder = async (req, res, next) => {
         campusId: true,
         promotesToClassId: true,
         passMark: true,
+        promotionRules: true,
         campus: { select: { name: true } },
         _count: { select: { students: { where: { status: "active" } } } },
       },
@@ -47,6 +50,8 @@ exports.getClassLadder = async (req, res, next) => {
           promotesToClassId: c.promotesToClassId,
           passMark: c.passMark,
           effectivePassMark: effectivePassMark(c),
+          // A rule for just this class (null = the school's rule applies).
+          promotionRules: c.promotionRules ?? null,
           // Only offered where nothing is saved yet, or where it differs from what is.
           suggestion,
           isSet: c.promotesToClassId != null,
@@ -89,7 +94,17 @@ exports.saveClassLadder = async (req, res, next) => {
         return res.status(400).json({ success: false, message: "Pass mark must be between 0 and 100" });
       }
 
-      parsed.push({ classId, promotesToClassId, passMark });
+      // Only when the key is sent: leaving it out keeps the class's saved rule.
+      let promotionRules;
+      if (Object.prototype.hasOwnProperty.call(entry, "promotionRules")) {
+        try {
+          promotionRules = (await checkedRules(req.schoolId, entry.promotionRules)) ?? Prisma.DbNull;
+        } catch (e) {
+          return res.status(e.statusCode || 400).json({ success: false, message: e.message });
+        }
+      }
+
+      parsed.push({ classId, promotesToClassId, passMark, promotionRules });
     }
 
     // Only the classes the admin can reach: a class on another campus is not found,
@@ -111,7 +126,11 @@ exports.saveClassLadder = async (req, res, next) => {
       parsed.map((p) =>
         prisma.class.updateMany({
           where: { id: p.classId, schoolId: req.schoolId },
-          data: { promotesToClassId: p.promotesToClassId, passMark: p.passMark },
+          data: {
+            promotesToClassId: p.promotesToClassId,
+            passMark: p.passMark,
+            ...(p.promotionRules !== undefined && { promotionRules: p.promotionRules }),
+          },
         })
       )
     );

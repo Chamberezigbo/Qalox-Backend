@@ -31,7 +31,8 @@ exports.savePolicy = handle(async (req, res) => {
   const raw = req.body?.trialMargin;
   // null (or "") switches the trial outcome off.
   const trialMargin = raw === null || raw === undefined || raw === "" ? null : Number(raw);
-  const data = await PromotionService.savePolicy(req.schoolId, { basis, trialMargin });
+  // `rules` absent keeps the saved rule; null clears it.
+  const data = await PromotionService.savePolicy(req.schoolId, { basis, trialMargin, rules: req.body?.rules });
   res.status(200).json({ success: true, message: "Promotion policy saved", data });
 });
 

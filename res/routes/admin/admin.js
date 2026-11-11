@@ -96,6 +96,7 @@ const {
 } = require("../../controller/admin/SubAdminController");
 
 const { PERMISSIONS } = require("../../util/permissions");
+const classNamingController = require("../../controller/admin/ClassNamingController");
 
 const {
   createClass,
@@ -232,6 +233,9 @@ router.get("/promotion/preview", auth.authenticateSuperAdmin, auth.attachSchoolI
 router.post("/promotion/apply", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.apply);
 router.get("/promotion/runs", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.listRuns);
 router.post("/promotion/runs/:id/undo", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.undo);
+router.get("/class-naming", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.list);
+router.post("/class-naming/rename", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.rename);
+router.post("/class-naming/add", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.addSystem);
 router.get("/class-ladder", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classLadderController.getClassLadder);
 router.put("/class-ladder", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classLadderController.saveClassLadder);
 router.patch("/student/:id/withdraw", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STUDENTS_MANAGE), auth.attachSchoolId, withdrawStudent);

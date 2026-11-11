@@ -8,6 +8,7 @@ const adminRoutes = require("./res/routes/admin/admin");
 const schoolSetupRoutes = require("./res/routes/school");
 const classRoutes = require("./res/routes/class");
 const systemAdmin = require("./res/routes/system-admin/generateToken");
+const systemAdminErrors = require("./res/routes/system-admin/errors");
 const studentRoutes = require("./res/routes/student");
 const teacherRoutes = require("./res/routes/teacher");
 const parentRoutes = require("./res/routes/parent");
@@ -20,6 +21,7 @@ const webhookRoutes = require("./res/routes/webhooks");
 const { notFound } = require("./res/middleware/404");
 const studentDash = require("./res/routes/studentDashboard");
 const requestLogger = require("./res/middleware/requestLogger");
+const { captureError, purgeOldErrors } = require("./res/util/errorTracker");
 const logger = require("./res/config/logger");
 const documentationMiddleware = require("./res/middleware/documentation");
 const cron = require("node-cron");
@@ -100,6 +102,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/school", schoolSetupRoutes);
 app.use("/api/class", classRoutes);
 app.use("/api/system-admin", systemAdmin);
+app.use("/api/system-admin", systemAdminErrors);
 app.use("/api/student", studentRoutes);
 app.use("/api/teacher", teacherRoutes);
 app.use("/api/parent", parentRoutes);
@@ -118,13 +121,17 @@ app.use(errorMiddleware);
 
 // Global error handlers to prevent silent crashes
 process.on('unhandledRejection', (reason) => {
-  console.error('[UNHANDLED_REJECTION]', reason);
-  logger.error('[UNHANDLED_REJECTION]', { reason: String(reason) });
+  logger.error('[UNHANDLED_REJECTION]', { reason: String(reason), stack: (reason as any)?.stack });
+  captureError(reason, { source: 'unhandled_rejection' });
 });
 
-process.on('uncaughtException', (error) => {
-  console.error('[UNCAUGHT_EXCEPTION]', error);
+process.on('uncaughtException', async (error) => {
   logger.error('[UNCAUGHT_EXCEPTION]', { message: error.message, stack: error.stack });
+  // Give the database write a moment to finish before the process exits.
+  await Promise.race([
+    captureError(error, { source: 'uncaught_exception' }),
+    new Promise((resolve) => setTimeout(resolve, 3000)),
+  ]);
   process.exit(1);
 });
 
@@ -152,10 +159,13 @@ async function startServer() {
         ["AUDIT_LOG_CLEANUP", cleanupOldLoginEvents],
         ["NOTIFICATION_CLEANUP", cleanupOldNotifications],
         ["TOKEN_CLEANUP", cleanupDeadAuthArtifacts],
+        // Error records are kept 90 days, then removed.
+        ["ERROR_LOG_CLEANUP", () => purgeOldErrors(90)],
       ];
       for (const [label, run] of jobs) {
         run().catch((err) => {
           logger.error(`[${label}] Run failed`, { error: err.message });
+          captureError(err, { source: "job", extra: { job: label } });
         });
       }
     });
@@ -165,6 +175,7 @@ async function startServer() {
     cron.schedule("*/5 * * * *", () => {
       failStrandedAiJobs().catch((err) => {
         logger.error("[AI_JOB_RECOVERY] Run failed", { error: err.message });
+        captureError(err, { source: "job", extra: { job: "AI_JOB_RECOVERY" } });
       });
     });
   } catch (error) {

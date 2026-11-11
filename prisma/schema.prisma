@@ -319,6 +319,8 @@ model Class {
   // Score a student needs to pass at the end of the session. Null falls back to
   // the default for the class's stage (40 for JSS, 50 for SS) — see util/classLadder.
   passMark          Float?
+  // A rule for just this class; overrides the school's. Null uses the school's.
+  promotionRules    Json?
   staffId     Int? // Optional, in case a class is created without a teacher assigned
   createdAt   DateTime     @default(now())
   school      School       @relation(fields: [schoolId], references: [id])
@@ -1899,6 +1901,9 @@ model PromotionPolicy {
   // Marks below the pass mark that still earn "promoted on trial". Null turns
   // the trial outcome off, so a student is either promoted or repeats.
   trialMargin Float?   @default(5)
+  // The school's own promotion rule (see util/promotionRules.js). Null keeps the
+  // original behaviour: the average against each class's pass mark.
+  rules       Json?
   updatedAt   DateTime @default(now()) @updatedAt
 
   school School @relation(fields: [schoolId], references: [id])
@@ -2308,4 +2313,34 @@ model ChatMessage {
   @@index([conversationId, id])
   @@index([senderType, senderId, sentAt])
   @@map("chat_messages")
+}
+
+
+// Server errors kept past a deploy (Railway only shows recent logs). One row per
+// occurrence; `fingerprint` groups the same bug. Written by util/errorTracker.js.
+// Named occurredAt, not createdAt: the global Prisma middleware truncates createdAt to a date.
+model ErrorLog {
+  id          Int      @id @default(autoincrement())
+  fingerprint String   @db.VarChar(40)
+  name        String   @db.VarChar(100)
+  message     String   @db.Text
+  stack       String?  @db.Text
+  // request | unhandled_rejection | uncaught_exception
+  source      String   @db.VarChar(24)
+  statusCode  Int?
+  method      String?  @db.VarChar(10)
+  route       String?  @db.VarChar(255)
+  requestId   String?  @db.VarChar(64)
+  schoolId    Int?
+  userType    String?  @db.VarChar(20)
+  userId      Int?
+  userAgent   String?  @db.VarChar(255)
+  extra       Json?
+  occurredAt  DateTime @default(now())
+
+  @@index([fingerprint, occurredAt])
+  @@index([occurredAt])
+  @@index([requestId])
+  @@index([schoolId])
+  @@map("error_logs")
 }

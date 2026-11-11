@@ -1,6 +1,7 @@
 const prisma = require("../util/prisma");
 const logger = require("../config/logger");
 const { AppError } = require("../util/AppError");
+const { Prisma } = require("@prisma/client");
 const { effectivePassMark } = require("../util/classLadder");
 const { syncStudentFeeInvoices } = require("../util/studentFeeSync");
 const {
@@ -8,6 +9,12 @@ const {
   DEFAULT_POLICY,
   sessionAverage,
   suggestOutcome,
+  sessionSubjectScores,
+  validateRules,
+  normalizeRules,
+  describeRules,
+  evaluateRules,
+  suggestOutcomeByRules,
   validateDecisions,
   classPromotionStatus,
 } = require("../util/promotionRules");
@@ -32,19 +39,33 @@ async function getPolicy(schoolId) {
     basis: row?.basis ?? DEFAULT_POLICY.basis,
     // A saved null means the trial outcome was switched off; no row means the default.
     trialMargin: row ? row.trialMargin : DEFAULT_POLICY.trialMargin,
+    // The school's own promotion rule; null means the original average-vs-pass-mark behaviour.
+    rules: row?.rules ?? null,
   };
 }
 
-async function savePolicy(schoolId, { basis, trialMargin }) {
+/** Checks a rule against this school's subjects and returns the clean version to store (null = none). */
+async function checkedRules(schoolId, rules) {
+  if (rules === null || rules === undefined) return null;
+  const subjects = await prisma.subject.findMany({ where: { schoolId }, select: { id: true } });
+  const problem = validateRules(rules, { subjectIds: new Set(subjects.map((x) => x.id)) });
+  if (problem) throw new AppError(problem, 400);
+  return normalizeRules(rules);
+}
+
+async function savePolicy(schoolId, { basis, trialMargin, rules }) {
   if (!BASES.includes(basis)) throw new AppError("basis must be all_terms or last_term", 400);
   if (trialMargin !== null && (!Number.isFinite(trialMargin) || trialMargin < 0 || trialMargin > 50)) {
     throw new AppError("The trial margin must be between 0 and 50, or off", 400);
   }
 
+  // undefined leaves the saved rule alone; null clears it (back to the average-vs-pass-mark default).
+  const ruleChange = rules === undefined ? {} : { rules: (await checkedRules(schoolId, rules)) ?? Prisma.DbNull };
+
   await prisma.promotionPolicy.upsert({
     where: { schoolId },
-    create: { schoolId, basis, trialMargin },
-    update: { basis, trialMargin },
+    create: { schoolId, basis, trialMargin, ...ruleChange },
+    update: { basis, trialMargin, ...ruleChange },
   });
   return getPolicy(schoolId);
 }
@@ -54,7 +75,7 @@ async function loadClassContext(client, { schoolId, classId, fromSessionId }) {
   const [cls, session] = await Promise.all([
     client.class.findFirst({
       where: { id: classId, schoolId },
-      select: { id: true, name: true, customName: true, campusId: true, promotesToClassId: true, passMark: true },
+      select: { id: true, name: true, customName: true, campusId: true, promotesToClassId: true, passMark: true, promotionRules: true },
     }),
     client.academicSession.findFirst({ where: { id: fromSessionId, schoolId }, select: { id: true, name: true } }),
   ]);
@@ -97,7 +118,7 @@ async function previewClass({ schoolId, classId, fromSessionId }) {
     ids.length
       ? prisma.publishedResultRow.findMany({
           where: { studentId: { in: ids }, publishedResult: { academicSessionId: fromSessionId } },
-          select: { studentId: true, total: true, publishedResult: { select: { termId: true } } },
+          select: { studentId: true, total: true, publishedResult: { select: { termId: true, subjectId: true } } },
         })
       : [],
     prisma.academicTerm.findMany({
@@ -127,20 +148,44 @@ async function previewClass({ schoolId, classId, fromSessionId }) {
   const rowsByStudent = new Map();
   for (const row of rows) {
     if (!rowsByStudent.has(row.studentId)) rowsByStudent.set(row.studentId, []);
-    rowsByStudent.get(row.studentId).push({ termId: row.publishedResult.termId, total: row.total });
+    rowsByStudent
+      .get(row.studentId)
+      .push({ termId: row.publishedResult.termId, subjectId: row.publishedResult.subjectId, total: row.total });
   }
 
   const owedByStudent = new Map(
     fees.map((f) => [f.studentId, Math.max(0, (f._sum.totalFee ?? 0) - (f._sum.amountPaid ?? 0))])
   );
 
+  // Which rule applies: this class's own, else the school's, else the original average test.
+  const rules = cls.promotionRules ?? policy.rules ?? null;
+  const ruleSource = cls.promotionRules ? "class" : policy.rules ? "school" : "default";
+  let subjectNames = {};
+  if (rules) {
+    const subjects = await prisma.subject.findMany({ where: { schoolId }, select: { id: true, name: true } });
+    subjectNames = Object.fromEntries(subjects.map((x) => [x.id, x.name]));
+  }
+
   const items = students.map((student) => {
-    const { average, termsWithResults } = sessionAverage(
-      rowsByStudent.get(student.id) ?? [],
-      policy.basis,
-      termOrder
-    );
-    const suggestion = suggestOutcome({ average, passMark, trialMargin: policy.trialMargin, isFinalClass });
+    const studentRows = rowsByStudent.get(student.id) ?? [];
+    const { average, termsWithResults } = sessionAverage(studentRows, policy.basis, termOrder);
+
+    let suggestion;
+    let checks = null;
+    if (rules) {
+      const subjectScores = sessionSubjectScores(studentRows, policy.basis, termOrder);
+      const evaluation = evaluateRules(rules, { average, subjectScores, subjectNames });
+      checks = evaluation.checks;
+      suggestion = suggestOutcomeByRules({
+        average,
+        hasScores: Object.keys(subjectScores).length > 0,
+        evaluation,
+        trialMargin: policy.trialMargin,
+        isFinalClass,
+      });
+    } else {
+      suggestion = suggestOutcome({ average, passMark, trialMargin: policy.trialMargin, isFinalClass });
+    }
 
     return {
       studentId: student.id,
@@ -148,6 +193,7 @@ async function previewClass({ schoolId, classId, fromSessionId }) {
       registrationNumber: student.registrationNumber,
       groupName: student.classGroup?.name ?? null,
       average,
+      checks,
       suggestedOutcome: suggestion.outcome,
       reason: suggestion.reason,
       // Fewer terms of results than the class has published: worth a look.
@@ -166,6 +212,7 @@ async function previewClass({ schoolId, classId, fromSessionId }) {
     fromSession: session,
     policy,
     passMark,
+    rule: { source: ruleSource, summary: rules ? describeRules(rules, subjectNames) : null },
     isFinalClass,
     nextClass,
     // Where an admin may send a student instead: same campus, never the class itself.
@@ -585,4 +632,4 @@ async function schoolOverview({ schoolId, fromSessionId }) {
   };
 }
 
-module.exports = { getPolicy, savePolicy, previewClass, applyPromotion, undoRun, listRuns, schoolOverview };
+module.exports = { getPolicy, savePolicy, checkedRules, previewClass, applyPromotion, undoRun, listRuns, schoolOverview };

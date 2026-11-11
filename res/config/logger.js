@@ -1,5 +1,33 @@
 const winston = require("winston");
 const path = require("path");
+const requestContext = require("../util/requestContext");
+
+const isProduction = process.env.NODE_ENV === "production";
+
+// Values under these keys are never written to a log (here or in the error table).
+const SENSITIVE_KEY = /pass(word)?|token|authorization|secret|otp|cookie|api[-_]?key|credential/i;
+
+function redact(value, depth = 0) {
+  if (depth > 6 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1));
+  const out = {};
+  for (const [key, v] of Object.entries(value)) {
+    out[key] = SENSITIVE_KEY.test(key) ? "[redacted]" : redact(v, depth + 1);
+  }
+  return out;
+}
+
+// Adds the current request's id (and redacts secrets) to every line, from any file.
+const withContext = winston.format((info) => {
+  const ctx = requestContext.get();
+  if (ctx?.requestId && !info.requestId) info.requestId = ctx.requestId;
+  for (const key of Object.keys(info)) {
+    if (key !== "level" && key !== "message" && key !== "stack" && info[key] && typeof info[key] === "object") {
+      info[key] = redact(info[key]);
+    }
+  }
+  return info;
+});
 
 // Custom color format for terminal
 const colors = {
@@ -17,6 +45,7 @@ const logger = winston.createLogger({
   format: winston.format.combine(
     winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
     winston.format.errors({ stack: true }),
+    withContext(),
     winston.format.splat(),
     winston.format.json()
   ),
@@ -24,7 +53,11 @@ const logger = winston.createLogger({
   transports: [
     // Console transport - for terminal monitoring
     new winston.transports.Console({
-      format: winston.format.combine(
+      // Production (Railway): one JSON object per line, so logs can be searched by field
+      // (level, requestId, schoolId...). Development keeps the coloured, readable output.
+      format: isProduction
+        ? winston.format.combine(winston.format.timestamp(), winston.format.json())
+        : winston.format.combine(
         winston.format.timestamp({ format: "HH:mm:ss" }),
         winston.format.printf(({ timestamp, level, message, ...meta }) => {
           const color = colors[level] || colors.reset;
@@ -53,4 +86,13 @@ const logger = winston.createLogger({
   ],
 });
 
+// Railway's disk is wiped on every deploy, so log files there would only cost I/O. Errors are
+// kept in the database instead (util/errorTracker.js); the files stay for local development.
+if (isProduction) {
+  logger.transports
+    .filter((t) => t instanceof winston.transports.File)
+    .forEach((t) => logger.remove(t));
+}
+
 module.exports = logger;
+module.exports.redact = redact;
