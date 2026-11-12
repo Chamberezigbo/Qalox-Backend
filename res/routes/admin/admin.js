@@ -97,6 +97,7 @@ const {
 
 const { PERMISSIONS } = require("../../util/permissions");
 const classNamingController = require("../../controller/admin/ClassNamingController");
+const attendanceOverviewController = require("../../controller/admin/AttendanceOverviewController");
 
 const {
   createClass,
@@ -233,6 +234,8 @@ router.get("/promotion/preview", auth.authenticateSuperAdmin, auth.attachSchoolI
 router.post("/promotion/apply", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.apply);
 router.get("/promotion/runs", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.listRuns);
 router.post("/promotion/runs/:id/undo", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.undo);
+router.get("/attendance/teachers", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, attendanceOverviewController.listTeachers);
+router.get("/attendance/broadsheet", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, attendanceOverviewController.broadsheet);
 router.get("/class-naming", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.list);
 router.post("/class-naming/rename", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.rename);
 router.post("/class-naming/add", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.addSystem);

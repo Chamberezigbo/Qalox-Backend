@@ -37,7 +37,9 @@ const imagePrefix = (schoolId, chatId) => `exam-papers/${schoolId}/${chatId}/`;
 const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 
 /** What the printed paper shows. All on by default, so an older paper prints as it always did. */
-const LAYOUT_DEFAULTS = { showNameDate: true, answerLines: true, showMarks: true, showHeader: true };
+// `compact` is off by default so a paper prints as it always did; on, objective questions print in two
+// columns with tight spacing, which fits 20 or more questions on one page.
+const LAYOUT_DEFAULTS = { showNameDate: true, answerLines: true, showMarks: true, showHeader: true, compact: false };
 
 const normalizeLayout = (raw) => {
   const input = raw && typeof raw === "object" ? raw : {};

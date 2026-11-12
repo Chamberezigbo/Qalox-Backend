@@ -9,10 +9,11 @@ const r2 = require("../../Services/R2Service");
 const { classDisplayName } = require("../../util/classLabel");
 const { normalizePaper, parsePaper, questionCount, imagePrefix, newId, LIMITS } = require("../../util/examPaper");
 const { buildExamPaperPdf } = require("../../util/examPaperPdf");
+const { buildExamPaperDocx } = require("../../util/examPaperDocx");
 const { loadImage } = require("../../util/reportCardPdf");
 const { resolveBranding } = require("../../util/campusBranding");
 const { schoolMediaUrl } = require("../public/publicController");
-const { sendPdf } = require("../../util/sendPdf");
+const { sendPdf, sendDocx } = require("../../util/sendPdf");
 
 /**
  * Chat with the AI to build ONE printable exam paper.
@@ -437,37 +438,60 @@ exports.uploadImage = async (req, res, next) => {
 };
 
 /** GET /api/teacher/exam-papers/:id/paper.pdf?answers=1&inline=1 */
-exports.pdf = async (req, res, next) => {
-  try {
-    const chat = await loadChat(req);
-    const stored = parsePaper(chat.paperJson);
-    if (!stored || questionCount(stored) === 0) throw new ChatError(409, "There are no questions to print yet.", "EMPTY_PAPER");
-    // Rebuilt through the same cleaning as every save, so a paper stored before a fix prints clean too.
-    const paper = normalizePaper(stored, { imagePrefix: imagePrefix(chat.schoolId, chat.id), previous: stored, fallbackTitle: chat.title }).paper;
+/**
+ * The paper cleaned the same way as every save, plus what a printout needs: the school's name and
+ * logo, the class, subject and term, and the question images. Shared by the PDF and Word downloads.
+ */
+async function loadPrintable(req) {
+  const chat = await loadChat(req);
+  const stored = parsePaper(chat.paperJson);
+  if (!stored || questionCount(stored) === 0) throw new ChatError(409, "There are no questions to print yet.", "EMPTY_PAPER");
+  // Rebuilt through the same cleaning as every save, so a paper stored before a fix prints clean too.
+  const paper = normalizePaper(stored, { imagePrefix: imagePrefix(chat.schoolId, chat.id), previous: stored, fallbackTitle: chat.title }).paper;
 
-    const ctx = await loadContext(req.schoolId, chat);
-    const branding = await resolveBranding(prisma, { schoolId: req.schoolId, campusId: ctx.campusId });
-    const logoUrl = await schoolMediaUrl(branding.logoUrl);
+  const ctx = await loadContext(req.schoolId, chat);
+  const branding = await resolveBranding(prisma, { schoolId: req.schoolId, campusId: ctx.campusId });
+  const logoUrl = await schoolMediaUrl(branding.logoUrl);
 
-    const images = new Map();
-    for (const section of paper.sections) {
-      for (const q of section.questions) {
-        if (q.imageKey && !images.has(q.imageKey)) {
-          const bytes = await r2.getObjectBuffer(q.imageKey).catch(() => null);
-          if (bytes) images.set(q.imageKey, bytes);
-        }
+  const images = new Map();
+  for (const section of paper.sections) {
+    for (const q of section.questions) {
+      if (q.imageKey && !images.has(q.imageKey)) {
+        const bytes = await r2.getObjectBuffer(q.imageKey).catch(() => null);
+        if (bytes) images.set(q.imageKey, bytes);
       }
     }
+  }
 
-    const buffer = await buildExamPaperPdf(paper, {
+  return {
+    paper,
+    print: {
       school: { name: branding.name, logo: logoUrl ? await loadImage(logoUrl) : null },
       className: ctx.className,
       subjectName: ctx.subjectName,
       termName: ctx.termName,
       images,
       answers: req.query.answers === "1",
-    });
-    sendPdf(res, buffer, `${paper.title}${req.query.answers === "1" ? "-answers" : ""}`, { inline: req.query.inline === "1" });
+    },
+  };
+}
+
+exports.pdf = async (req, res, next) => {
+  try {
+    const { paper, print } = await loadPrintable(req);
+    const buffer = await buildExamPaperPdf(paper, print);
+    sendPdf(res, buffer, `${paper.title}${print.answers ? "-answers" : ""}`, { inline: req.query.inline === "1" });
+  } catch (error) {
+    fail(error, res, next);
+  }
+};
+
+/** GET /teacher/exam-papers/:id/paper.docx[?answers=1]: the same paper as an editable Word document. */
+exports.docx = async (req, res, next) => {
+  try {
+    const { paper, print } = await loadPrintable(req);
+    const buffer = await buildExamPaperDocx(paper, print);
+    sendDocx(res, buffer, `${paper.title}${print.answers ? "-answers" : ""}`);
   } catch (error) {
     fail(error, res, next);
   }

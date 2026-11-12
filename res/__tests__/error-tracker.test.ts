@@ -3,6 +3,7 @@ jest.mock("../util/prisma", () => ({
 }));
 jest.mock("../config/logger", () => ({ warn: jest.fn(), info: jest.fn(), error: jest.fn() }));
 
+export {};
 const prismaMock = require("../util/prisma");
 const tracker = require("../util/errorTracker");
 const requestContext = require("../util/requestContext");

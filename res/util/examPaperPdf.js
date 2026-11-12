@@ -34,6 +34,117 @@ function room(doc, needed) {
   if (doc.y + needed > bottom(doc)) doc.addPage();
 }
 
+
+const COL_GAP = 20;
+const COMPACT_SIZE = 9.5;
+const COMPACT_NUMBER_WIDTH = 23;
+const COMPACT_IMAGE_MAX_HEIGHT = 110;
+
+/**
+ * An objective section in two columns with tight spacing (the "compact" layout). Each question is
+ * measured first and placed whole: it goes in the left column until that is full, then the right,
+ * then a new page, so a question is never split. Returns the last question number used.
+ */
+async function drawCompactObjective(doc, section, startNumber, layout, ctx, width) {
+  const colWidth = (width - COL_GAP) / 2;
+  const textWidth = colWidth - COMPACT_NUMBER_WIDTH;
+  const xOf = (c) => MARGIN + c * (colWidth + COL_GAP);
+
+  let col = 0;
+  let pageTop = doc.y;
+  let y = pageTop;
+  const bottoms = [pageTop, pageTop];
+  let number = startNumber;
+
+  for (const q of section.questions) {
+    number += 1;
+    const marks = layout.showMarks && q.marks ? ` [${q.marks}]` : "";
+    const text = `${q.text}${marks}`;
+    const options = q.options ?? [];
+    // A short marker keeps the answers copy as compact as the question paper.
+    const optionText = (o) => `${o.label}. ${o.text}${ctx.answers && o.label === q.answer ? " *" : ""}`;
+
+    doc.font("Body").fontSize(COMPACT_SIZE);
+    const lineHeight = doc.currentLineHeight(true);
+    const textHeight = doc.heightOfString(text, { width: textWidth });
+    // All options on one line when they fit, otherwise one per line.
+    const inline = options.map(optionText).join("     ");
+    const inlineFits = options.length > 0 && doc.heightOfString(inline, { width: textWidth }) <= lineHeight * 1.2;
+    // Otherwise two options per row (a 2 x 2 grid for four options) when each fits its half, else one per line.
+    const cellWidth = textWidth / 2;
+    const gridFits = !inlineFits && options.length > 0 && options.every((o) => doc.heightOfString(optionText(o), { width: cellWidth - 4 }) <= lineHeight * 1.2);
+    const optionsHeight = inlineFits
+      ? lineHeight
+      : gridFits
+        ? Math.ceil(options.length / 2) * lineHeight
+        : options.reduce((sum, o) => sum + doc.heightOfString(optionText(o), { width: textWidth }), 0);
+
+    const imageBytes = q.imageKey ? ctx.images.get(q.imageKey) : null;
+    const image = imageBytes ? await prepareImage(imageBytes) : null;
+    const scale = image ? Math.min(textWidth / image.width, COMPACT_IMAGE_MAX_HEIGHT / image.height, 1) : 1;
+    const imageHeight = image ? image.height * scale + 4 : 0;
+
+    const block = textHeight + imageHeight + optionsHeight + 5;
+
+    if (y + block > bottom(doc)) {
+      if (col === 0) {
+        col = 1;
+        y = pageTop;
+      } else {
+        doc.addPage();
+        col = 0;
+        pageTop = MARGIN;
+        y = pageTop;
+        bottoms[0] = bottoms[1] = pageTop;
+      }
+    }
+
+    const x = xOf(col);
+    doc.font("Bold").fontSize(COMPACT_SIZE).fillColor(INK).text(`${number}.`, x, y, { width: COMPACT_NUMBER_WIDTH, lineBreak: false });
+    doc.font("Body").fontSize(COMPACT_SIZE).fillColor(INK).text(text, x + COMPACT_NUMBER_WIDTH, y, { width: textWidth });
+    let cursor = y + textHeight;
+
+    if (image) {
+      doc.image(image.buffer, x + COMPACT_NUMBER_WIDTH, cursor + 2, { width: image.width * scale, height: image.height * scale });
+      cursor += imageHeight;
+    }
+
+    if (inlineFits) {
+      // Each option is placed at a measured position (not "continued" text, which wraps unpredictably).
+      let ox = x + COMPACT_NUMBER_WIDTH;
+      for (const o of options) {
+        const correct = ctx.answers && o.label === q.answer;
+        const label = optionText(o);
+        doc.font(correct ? "Bold" : "Body").fontSize(COMPACT_SIZE).fillColor(INK).text(label, ox, cursor, { lineBreak: false });
+        ox += doc.widthOfString(label) + 14;
+      }
+    } else if (gridFits) {
+      options.forEach((o, i) => {
+        const correct = ctx.answers && o.label === q.answer;
+        doc.font(correct ? "Bold" : "Body").fontSize(COMPACT_SIZE).fillColor(INK).text(
+          optionText(o),
+          x + COMPACT_NUMBER_WIDTH + (i % 2) * cellWidth,
+          cursor + Math.floor(i / 2) * lineHeight,
+          { width: cellWidth - 4, lineBreak: false },
+        );
+      });
+    } else {
+      let oy = cursor;
+      for (const o of options) {
+        const correct = ctx.answers && o.label === q.answer;
+        doc.font(correct ? "Bold" : "Body").fontSize(COMPACT_SIZE).fillColor(INK).text(optionText(o), x + COMPACT_NUMBER_WIDTH, oy, { width: textWidth });
+        oy += doc.heightOfString(optionText(o), { width: textWidth });
+      }
+    }
+
+    y += block;
+    bottoms[col] = y;
+  }
+
+  doc.y = Math.max(bottoms[0], bottoms[1]);
+  return number;
+}
+
 /**
  * @param {object} paper the normalized paper
  * @param {{ school: { name: string | null, logo?: Buffer | null }, className: string, subjectName: string, termName?: string | null, images: Map<string, Buffer>, answers?: boolean }} ctx
@@ -45,7 +156,7 @@ async function buildExamPaperPdf(paper, ctx) {
   doc.addPage();
   const width = doc.page.width - MARGIN * 2;
 
-  const layout = { showNameDate: true, answerLines: true, showMarks: true, showHeader: true, ...(paper.layout || {}) };
+  const layout = { showNameDate: true, answerLines: true, showMarks: true, showHeader: true, compact: false, ...(paper.layout || {}) };
 
   // Header: logo and school name (unless switched off), then the paper title
   doc.y = MARGIN;
@@ -66,7 +177,7 @@ async function buildExamPaperPdf(paper, ctx) {
   const facts = [
     paper.durationMinutes ? `Time allowed: ${paper.durationMinutes} minutes` : null,
     `Total marks: ${paper.totalMarks}`,
-    ctx.answers ? "TEACHER'S COPY (with answers)" : null,
+    ctx.answers ? (layout.compact ? "TEACHER'S COPY (with answers, * = correct)" : "TEACHER'S COPY (with answers)") : null,
   ].filter(Boolean);
   doc.font("Body").fontSize(10).fillColor(INK).text(facts.join("      "), MARGIN, doc.y, { width, align: "center" });
   doc.moveDown(0.8);
@@ -98,6 +209,12 @@ async function buildExamPaperPdf(paper, ctx) {
       doc.font("Italic").fontSize(9.5).fillColor(MUTED).text(section.instructions, { width });
     }
     doc.moveDown(0.5);
+
+    if (layout.compact && section.type === "objective") {
+      number = await drawCompactObjective(doc, section, number, layout, ctx, width);
+      doc.moveDown(0.3);
+      continue;
+    }
 
     for (const q of section.questions) {
       number += 1;
@@ -142,11 +259,12 @@ async function buildExamPaperPdf(paper, ctx) {
         doc.font("Italic").fontSize(9.5).fillColor(MUTED).text(`Marking guide: ${q.answer}`, MARGIN + numberWidth, doc.y, { width: width - numberWidth });
       } else if (!ctx.answers && layout.answerLines) {
         // Writing space for a theory answer.
-        const lines = Math.max(2, Math.min(8, Math.round((q.marks || 5) / 1.5)));
+        const lineGap = layout.compact ? 14 : 18;
+        const lines = layout.compact ? Math.max(1, Math.min(4, Math.round((q.marks || 5) / 2.5))) : Math.max(2, Math.min(8, Math.round((q.marks || 5) / 1.5)));
         for (let i = 0; i < lines; i++) {
-          room(doc, 18);
-          doc.moveTo(MARGIN + numberWidth, doc.y + 14).lineTo(MARGIN + width, doc.y + 14).strokeColor("#d1d5db").lineWidth(0.5).stroke();
-          doc.y += 18;
+          room(doc, lineGap);
+          doc.moveTo(MARGIN + numberWidth, doc.y + lineGap - 4).lineTo(MARGIN + width, doc.y + lineGap - 4).strokeColor("#d1d5db").lineWidth(0.5).stroke();
+          doc.y += lineGap;
         }
       }
       doc.moveDown(0.7);
@@ -160,11 +278,17 @@ async function buildExamPaperPdf(paper, ctx) {
   const range = doc.bufferedPageRange();
   for (let i = 0; i < range.count; i++) {
     doc.switchToPage(range.start + i);
+    // The footer sits inside the bottom margin. With the margin in force pdfkit treats that as
+    // running off the page and adds a blank page for every footer, doubling the page count.
+    const margins = doc.page.margins;
+    const saved = margins.bottom;
+    margins.bottom = 0;
     doc.font("Body").fontSize(8.5).fillColor(MUTED).text(`Page ${i + 1} of ${range.count}`, MARGIN, doc.page.height - MARGIN + 14, { width, align: "center", lineBreak: false });
+    margins.bottom = saved;
   }
 
   doc.end();
   return done;
 }
 
-module.exports = { buildExamPaperPdf };
+module.exports = { buildExamPaperPdf, prepareImage };

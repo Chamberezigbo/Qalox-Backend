@@ -142,6 +142,7 @@ router.post("/exam-papers/:id/messages", teacherAuthMiddleware, uploadExamPaperI
 router.patch("/exam-papers/:id/paper", teacherAuthMiddleware, examPaperChatController.savePaper);
 router.post("/exam-papers/:id/images", teacherAuthMiddleware, uploadExamPaperImages.single("image"), examPaperChatController.uploadImage);
 router.get("/exam-papers/:id/paper.pdf", teacherAuthMiddleware, examPaperChatController.pdf);
+router.get("/exam-papers/:id/paper.docx", teacherAuthMiddleware, examPaperChatController.docx);
 
 // Multiple-choice tests: generate, review, edit, publish.
 router.post("/tests/generate", teacherAuthMiddleware, testController.generate);

@@ -141,9 +141,11 @@ describe("print layout and cleaning", () => {
   });
 
   it("defaults every layout switch on, keeps booleans and drops anything else", () => {
-    expect(normalizePaper({ sections: [] }, ctx).paper.layout).toEqual({ showNameDate: true, answerLines: true, showMarks: true, showHeader: true });
+    // Compact (20+ questions per page) is opt-in, so an older paper prints exactly as it always did.
+    expect(normalizePaper({ sections: [] }, ctx).paper.layout).toEqual({ showNameDate: true, answerLines: true, showMarks: true, showHeader: true, compact: false });
+    expect(normalizePaper({ sections: [], layout: { compact: true } }, ctx).paper.layout.compact).toBe(true);
     expect(normalizePaper({ sections: [], layout: { showNameDate: false, answerLines: "no", evil: true } }, ctx).paper.layout)
-      .toEqual({ showNameDate: false, answerLines: true, showMarks: true, showHeader: true });
+      .toEqual({ showNameDate: false, answerLines: true, showMarks: true, showHeader: true, compact: false });
   });
 
   it("keeps the previous layout when a rewritten paper does not mention it", () => {

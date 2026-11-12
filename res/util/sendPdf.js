@@ -1,12 +1,12 @@
 /** A file name that is safe in a Content-Disposition header: letters, numbers, dashes. */
-const safeFileName = (name, fallback = "document") => {
+const safeFileName = (name, fallback = "document", extension = "pdf") => {
   const cleaned = String(name ?? "")
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .replace(/[^A-Za-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  return `${cleaned || fallback}.pdf`;
+  return `${cleaned || fallback}.${extension}`;
 };
 
 /**
@@ -22,4 +22,13 @@ function sendPdf(res, buffer, name, { inline = false } = {}) {
   res.end(buffer);
 }
 
-module.exports = { sendPdf, safeFileName };
+/** Sends a Word document as a download. */
+function sendDocx(res, buffer, name) {
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  res.setHeader("Content-Length", buffer.length);
+  res.setHeader("Content-Disposition", `attachment; filename="${safeFileName(name, "document", "docx")}"`);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.end(buffer);
+}
+
+module.exports = { sendPdf, sendDocx, safeFileName };
