@@ -9,6 +9,7 @@ const schoolSetupRoutes = require("./res/routes/school");
 const classRoutes = require("./res/routes/class");
 const systemAdmin = require("./res/routes/system-admin/generateToken");
 const systemAdminErrors = require("./res/routes/system-admin/errors");
+const systemAdminPractice = require("./res/routes/system-admin/practice");
 const studentRoutes = require("./res/routes/student");
 const teacherRoutes = require("./res/routes/teacher");
 const parentRoutes = require("./res/routes/parent");
@@ -22,6 +23,7 @@ const { notFound } = require("./res/middleware/404");
 const studentDash = require("./res/routes/studentDashboard");
 const requestLogger = require("./res/middleware/requestLogger");
 const { captureError, purgeOldErrors } = require("./res/util/errorTracker");
+const { expireAbandoned: expireAbandonedFeePayments } = require("./res/Services/InAppFeeService");
 const logger = require("./res/config/logger");
 const documentationMiddleware = require("./res/middleware/documentation");
 const cron = require("node-cron");
@@ -103,6 +105,7 @@ app.use("/api/school", schoolSetupRoutes);
 app.use("/api/class", classRoutes);
 app.use("/api/system-admin", systemAdmin);
 app.use("/api/system-admin", systemAdminErrors);
+app.use("/api/system-admin", systemAdminPractice);
 app.use("/api/student", studentRoutes);
 app.use("/api/teacher", teacherRoutes);
 app.use("/api/parent", parentRoutes);
@@ -161,6 +164,8 @@ async function startServer() {
         ["TOKEN_CLEANUP", cleanupDeadAuthArtifacts],
         // Error records are kept 90 days, then removed.
         ["ERROR_LOG_CLEANUP", () => purgeOldErrors(90)],
+        // Online fee payments nobody finished are closed after two days.
+        ["FEE_PAYMENT_CLEANUP", () => expireAbandonedFeePayments()],
       ];
       for (const [label, run] of jobs) {
         run().catch((err) => {

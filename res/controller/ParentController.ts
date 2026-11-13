@@ -107,6 +107,34 @@ export class ParentController {
         }
     };
 
+    getFeeCollection = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            res.json({ success: true, data: await this.service.getFeeCollection(req.parentId, Number(req.params.studentId)) });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    payOnline = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            const data = await this.service.payOnline(req.parentId, Number(req.params.studentId), Number(req.params.studentFeeId), Number(req.body.amount));
+            res.status(201).json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    getFeePayment = async (req: ParentRequest, res: Response, next: NextFunction) => {
+        try {
+            if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });
+            res.json({ success: true, data: await this.service.getFeePayment(req.parentId, String(req.params.reference)) });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     declarePayment = async (req: ParentRequest, res: Response, next: NextFunction) => {
         try {
             if (!req.parentId) return res.status(401).json({ success: false, message: "Unauthorized" });

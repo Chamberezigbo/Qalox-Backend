@@ -22,6 +22,9 @@ router.get("/children/:studentId/attendance", parentAuthMiddleware, parentContro
 router.get("/children/:studentId/fees", parentAuthMiddleware, parentController.getChildFees);
 router.get("/children/:studentId/bank-accounts", parentAuthMiddleware, parentController.getBankAccounts);
 router.post("/children/:studentId/fees/:studentFeeId/declare", parentAuthMiddleware, parentController.declarePayment);
+router.get("/children/:studentId/fee-collection", parentAuthMiddleware, parentController.getFeeCollection);
+router.post("/children/:studentId/fees/:studentFeeId/pay-online", parentAuthMiddleware, parentController.payOnline);
+router.get("/fee-payments/:reference", parentAuthMiddleware, parentController.getFeePayment);
 router.get("/children/:studentId/fees/:studentFeeId/receipt", parentAuthMiddleware, parentController.getReceipt);
 
 router.get("/alerts", parentAuthMiddleware, parentController.getAlerts);

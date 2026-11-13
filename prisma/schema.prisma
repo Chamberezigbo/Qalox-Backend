@@ -433,6 +433,8 @@ model Student {
   // ✅ NEW: Registration Number Field
   registrationNumber String          @unique @db.VarChar(50)
   passportUrl       String?  @db.VarChar(255)
+  // The admin's own answer to "fresh or returning?" for fee purposes. Null = worked out automatically.
+  feeCategory       String?  @db.VarChar(10)
 
   createdAt  DateTime     @default(now())
   school     School       @relation(fields: [schoolId], references: [id])
@@ -1260,6 +1262,13 @@ model FeeStructure {
   classId   Int
   term      String   @db.VarChar(100)
   session   String   @db.VarChar(50)
+  // What this fee is called ("School Fees", "PTA Levy", "Urgent Payment"...). A class can have
+  // several fees in the same term; existing rows are the school fee for everyone.
+  title     String   @default("School Fees") @db.VarChar(100)
+  // Who is invoiced: all | fresh | returning (see util/studentAdmission.js).
+  audience  String   @default("all") @db.VarChar(10)
+  dueDate   DateTime? @db.Date
+  note      String?  @db.VarChar(500)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1268,7 +1277,7 @@ model FeeStructure {
   items       FeeStructureItem[]
   studentFees StudentFee[]
 
-  @@unique([classId, term, session])
+  @@unique([classId, term, session, title, audience])
   @@index([schoolId])
   @@map("fee_structures")
 }
@@ -1335,6 +1344,16 @@ model Payment {
   // landed, amount doesn't match) — status becomes "failed", StudentFee is
   // never touched.
   rejectionReason String? @db.VarChar(255)
+  // bank_transfer: the parent paid the school's own account and an admin approves it.
+  // in_app: paid through Qalox checkout and split to the school; see InAppFeeService.
+  // For in_app, `amount` is still the fee credited to the invoice, `serviceCharge` is
+  // Qalox's share, and `chargedAmount` (= amount + serviceCharge) is what the payer was charged.
+  channel          String   @default("bank_transfer") @db.VarChar(20)
+  serviceCharge    Float?
+  chargedAmount    Float?
+  flwTransactionId String?  @db.VarChar(100)
+  payerType        String?  @db.VarChar(10) // parent | student
+  payerId          Int?
   createdAt    DateTime @default(now())
 
   studentFee  StudentFee         @relation(fields: [studentFeeId], references: [id])
@@ -1342,7 +1361,25 @@ model Payment {
 
   @@index([studentFeeId])
   @@index([bankAccountId])
+  @@index([channel])
   @@map("payments")
+}
+
+// How a school collects fees. "direct" (the default) is the original way: parents pay the
+// school's own account and declare it. "in_app": parents pay inside Qalox, the payment is
+// split to the school's settlement account through a Flutterwave subaccount, and Qalox keeps
+// a service charge. No row means "direct".
+model SchoolFeeSettings {
+  id                      Int      @id @default(autoincrement())
+  schoolId                Int      @unique
+  mode                    String   @default("direct") @db.VarChar(10)
+  settlementBankAccountId Int?
+  flwSubaccountId         String?  @db.VarChar(64)
+  // Null = the platform rate (FEE_SERVICE_CHARGE_PERCENT, 2 by default).
+  serviceChargePercent    Float?
+  updatedAt               DateTime @default(now()) @updatedAt
+
+  @@map("school_fee_settings")
 }
 
 // A school's own bank account that parents/students transfer fees into
@@ -2343,4 +2380,217 @@ model ErrorLog {
   @@index([requestId])
   @@index([schoolId])
   @@map("error_logs")
+}
+
+
+// ============================================
+// PAST-QUESTION PRACTICE (BECE, WASSCE, TVET, WAEC, NECO, WAEC GCE)
+// ============================================
+// A bank shared by every school; students practise from it (see Services/student/PracticeService.js).
+// `past_question` rows are real papers loaded by the platform owner (with the year); `ai_practice` rows
+// are written by AI in the exam's style and double-checked by a second independent pass. Only
+// `approved` questions reach students.
+model PracticeQuestion {
+  id          Int      @id @default(autoincrement())
+  exam        String   @db.VarChar(20)
+  subject     String   @db.VarChar(80)
+  topic       String?  @db.VarChar(120)
+  year        Int?
+  source      String   @default("ai_practice") @db.VarChar(16)
+  text        String   @db.Text
+  explanation String?  @db.Text
+  // approved | needs_review | rejected | hidden (hidden: reported by students, waiting for a look)
+  status      String   @default("needs_review") @db.VarChar(16)
+  reportCount Int      @default(0)
+  contentHash String   @db.VarChar(40)
+  createdAt   DateTime @default(now())
+
+  options PracticeOption[]
+  reports PracticeReport[]
+
+  @@unique([exam, subject, contentHash])
+  @@index([exam, subject, status])
+  @@index([exam, subject, year])
+  @@map("practice_questions")
+}
+
+model PracticeOption {
+  id         Int     @id @default(autoincrement())
+  questionId Int
+  text       String  @db.Text
+  isCorrect  Boolean @default(false)
+  order      Int
+
+  question PracticeQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("practice_options")
+}
+
+// "This question looks wrong." One per student per question; three hide it until the owner looks.
+model PracticeReport {
+  id         Int      @id @default(autoincrement())
+  questionId Int
+  studentId  Int
+  reason     String?  @db.VarChar(200)
+  createdAt  DateTime @default(now())
+
+  question PracticeQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, studentId])
+  @@map("practice_reports")
+}
+
+// One practice run. `questionIds` is the fixed, ordered set chosen at the start, so what a student
+// sees and what is graded cannot drift if the bank changes mid-session.
+model PracticeSession {
+  id              Int       @id @default(autoincrement())
+  studentId       Int
+  schoolId        Int
+  exam            String    @db.VarChar(20)
+  subject         String    @db.VarChar(80)
+  // practice: the answer is shown after each question; exam: timed, shown at the end.
+  mode            String    @db.VarChar(10)
+  topic           String?   @db.VarChar(120)
+  year            Int?
+  questionIds     Json
+  durationMinutes Int?
+  startedAt       DateTime  @default(now())
+  deadlineAt      DateTime?
+  submittedAt     DateTime?
+  // in_progress | submitted | auto_submitted
+  status          String    @default("in_progress") @db.VarChar(16)
+  score           Int?
+  total           Int
+
+  answers PracticeAnswer[]
+
+  @@index([studentId, startedAt])
+  @@map("practice_sessions")
+}
+
+model PracticeAnswer {
+  id               Int      @id @default(autoincrement())
+  sessionId        Int
+  questionId       Int
+  selectedOptionId Int?
+  isCorrect        Boolean?
+  answeredAt       DateTime @updatedAt
+
+  session PracticeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, questionId])
+  @@index([questionId])
+  @@map("practice_answers")
+}
+
+// ── Staff QR attendance ─────────────────────────────────────────────────────
+// Plain Int ids (no relations) keep this additive; school/campus isolation is enforced in the services.
+
+model StaffAttendanceSetting {
+  id               Int       @id @default(autoincrement())
+  schoolId         Int       @unique
+  qrMode           String    @default("live") @db.VarChar(10) // live | printed
+  qrSecret         String    @db.Text // encrypted HMAC secret
+  qrVersion        Int       @default(1)
+  rotatedAt        DateTime?
+  rotatedById      Int?
+  workStart        String    @default("07:30") @db.VarChar(5)
+  graceMinutes     Int       @default(15)
+  workEnd          String    @default("15:00") @db.VarChar(5)
+  workDays         String    @default("1,2,3,4,5") @db.VarChar(20) // 0=Sun..6=Sat
+  timezone         String    @default("Africa/Lagos") @db.VarChar(60)
+  minStayMinutes   Int       @default(30)
+  radiusMeters     Int       @default(150)
+  requireLocation  Boolean   @default(true)
+  // School-wide location, used by campuses that have none of their own.
+  latitude         Float?
+  longitude        Float?
+
+  @@map("staff_attendance_settings")
+}
+
+model StaffSite {
+  id           Int    @id @default(autoincrement())
+  schoolId     Int
+  campusId     Int
+  latitude     Float
+  longitude    Float
+  radiusMeters Int?
+
+  @@unique([schoolId, campusId])
+  @@map("staff_attendance_sites")
+}
+
+model StaffAttendance {
+  id             Int       @id @default(autoincrement())
+  schoolId       Int
+  staffId        Int
+  campusId       Int?
+  day            String    @db.VarChar(10) // local date YYYY-MM-DD
+  signInAt       DateTime?
+  signOutAt      DateTime?
+  signInMethod   String?   @db.VarChar(10) // qr | manual
+  signOutMethod  String?   @db.VarChar(10)
+  status         String    @default("verified") @db.VarChar(15) // verified | needs_review | approved | rejected
+  lateMinutes    Int       @default(0)
+  flags          String?   @db.VarChar(255) // comma list: outside_area, new_device, no_location, poor_gps, after_hours
+  meta           Json?
+  reviewedById   Int?
+  reviewedAt     DateTime?
+  reviewNote     String?   @db.VarChar(255)
+  manualReason   String?   @db.VarChar(255)
+  enteredById    Int?
+
+  @@unique([staffId, day])
+  @@index([schoolId, day])
+  @@index([schoolId, status])
+  @@map("staff_attendance_records")
+}
+
+model StaffAttendanceEvent {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int
+  staffId     Int?
+  actorType   String   @db.VarChar(10) // staff | admin | system
+  actorId     Int?
+  type        String   @db.VarChar(25)
+  detail      Json?
+  occurredAt  DateTime @default(now())
+
+  @@index([schoolId, occurredAt])
+  @@index([staffId])
+  @@map("staff_attendance_events")
+}
+
+model StaffDevice {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int
+  staffId     Int
+  deviceHash  String   @db.VarChar(64)
+  label       String?  @db.VarChar(120)
+  status      String   @default("trusted") @db.VarChar(10) // trusted | pending | revoked
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@unique([staffId, deviceHash])
+  @@index([schoolId, status])
+  @@map("staff_devices")
+}
+
+model GateScreen {
+  id         Int       @id @default(autoincrement())
+  schoolId   Int
+  campusId   Int?
+  name       String    @db.VarChar(100)
+  keyHash    String    @db.VarChar(64)
+  pairCode   String?   @db.VarChar(6)
+  status     String    @default("pending") @db.VarChar(10) // pending | active | revoked
+  pairedById Int?
+  lastSeenAt DateTime?
+  openedAt   DateTime  @default(now())
+
+  @@unique([keyHash])
+  @@index([schoolId])
+  @@map("gate_screens")
 }

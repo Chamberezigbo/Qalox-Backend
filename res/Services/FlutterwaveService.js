@@ -89,7 +89,7 @@ const createBankTransferCharge = async ({ amount, email, fullname, phoneNumber, 
  * @param {{amount: number, email: string, fullname: string, phoneNumber?: string, reference: string, redirectUrl: string, title?: string, description?: string}} params
  * @returns {Promise<{checkoutUrl: string, raw: object}>}
  */
-const createStandardCheckout = async ({ amount, email, fullname, phoneNumber, reference, redirectUrl, title, description }) => {
+const createStandardCheckout = async ({ amount, email, fullname, phoneNumber, reference, redirectUrl, title, description, subaccounts, meta }) => {
   const json = await request("/payments", {
     method: "POST",
     body: {
@@ -99,12 +99,59 @@ const createStandardCheckout = async ({ amount, email, fullname, phoneNumber, re
       redirect_url: redirectUrl,
       customer: { email, phonenumber: phoneNumber, name: fullname },
       customizations: { title: title || "Qalox Subscription", description: description || "Qalox subscription payment" },
+      // Split payment: which subaccount(s) receive what (see createSubaccount). Omitted for subscriptions.
+      ...(subaccounts ? { subaccounts } : {}),
+      ...(meta ? { meta } : {}),
     },
   });
 
   logger.info("[FLUTTERWAVE] Standard checkout initiated", { reference });
 
   return { checkoutUrl: json.data?.link || null, raw: json };
+};
+
+/**
+ * Creates a Flutterwave subaccount: the school's own settlement account. A payment that names it in
+ * `subaccounts` has its split routed there, and Flutterwave settles that share to the school.
+ * POST /subaccounts -> { data: { id, subaccount_id: "RS_...", ... } }
+ *
+ * The default split here (a flat 0) is never used: every fee payment states its own split
+ * (`flat_subaccount`: the school gets exactly the fee).
+ * @param {{ bankCode: string, accountNumber: string, businessName: string, email?: string, phoneNumber?: string }} params
+ * @returns {Promise<{ subaccountId: string }>}
+ */
+const createSubaccount = async ({ bankCode, accountNumber, businessName, email, phoneNumber }) => {
+  const json = await request("/subaccounts", {
+    method: "POST",
+    body: {
+      account_bank: bankCode,
+      account_number: accountNumber,
+      business_name: businessName,
+      business_email: email,
+      business_mobile: phoneNumber,
+      country: "NG",
+      split_type: "flat",
+      split_value: 0,
+    },
+  });
+  const subaccountId = json.data?.subaccount_id;
+  if (!subaccountId) throw new Error("Flutterwave did not return a subaccount id");
+  logger.info("[FLUTTERWAVE] Subaccount created", { subaccountId });
+  return { subaccountId };
+};
+
+/**
+ * Looks a transaction up by OUR reference (tx_ref), for the page a payer returns to, where the
+ * webhook may not have arrived yet. Resolves null while Flutterwave has no such transaction.
+ */
+const verifyByReference = async (reference) => {
+  try {
+    const json = await request(`/transactions/verify_by_reference?tx_ref=${encodeURIComponent(reference)}`);
+    return json.data || null;
+  } catch (error) {
+    if (/no transaction/i.test(error.message || "")) return null;
+    throw error;
+  }
 };
 
 /**
@@ -173,6 +220,8 @@ const resolveAccount = async ({ accountNumber, bankCode }) => {
 module.exports = {
   createBankTransferCharge,
   createStandardCheckout,
+  createSubaccount,
+  verifyByReference,
   verifyTransaction,
   verifyWebhookSignature,
   listBanks,

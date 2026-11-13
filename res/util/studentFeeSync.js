@@ -1,4 +1,6 @@
 const logger = require("../config/logger");
+const { matchesAudience, totalOf } = require("./feeInvoices");
+const { resolveSessionId, classifyStudents } = require("./studentAdmission");
 
 /**
  * Creates a StudentFee invoice for a student against every existing
@@ -46,17 +48,34 @@ async function syncStudentFeeInvoices(tx, student, options = {}) {
 
     const structures = await tx.feeStructure.findMany({
       where: { classId: student.classId, ...(activeSession && { session: activeSession.name }) },
-      select: { id: true, items: { select: { amount: true } } },
+      select: { id: true, session: true, audience: true, items: { select: { amount: true } } },
     });
     if (structures.length === 0) return;
 
+    // Fees for everyone need no classification; a fresh-only or returning-only fee needs to know which
+    // this student is. Read lazily, once, and only if such a fee exists.
+    let record = null;
+    const categoryFor = async (structure) => {
+      record ??= await tx.student.findUnique({ where: { id: student.id }, select: { id: true, feeCategory: true, academicSessionId: true } });
+      const sessionId = await resolveSessionId(tx, student.schoolId, structure.session);
+      if (!record || sessionId === null) return null;
+      return (await classifyStudents(tx, [record], sessionId)).get(record.id).category;
+    };
+
     for (const structure of structures) {
+      // No audience means a fee for everyone (every fee before audiences existed).
+      if ((structure.audience ?? "all") !== "all") {
+        const category = await categoryFor(structure);
+        // Unknown session or student: leave it for the admin rather than guess who owes what.
+        if (!category || !matchesAudience(structure.audience, category)) continue;
+      }
+
       const existing = await tx.studentFee.findUnique({
         where: { studentId_feeStructureId: { studentId: student.id, feeStructureId: structure.id } },
       });
       if (existing) continue;
 
-      const totalFee = structure.items.reduce((sum, item) => sum + item.amount, 0);
+      const totalFee = totalOf(structure.items);
       await tx.studentFee.create({
         data: {
           schoolId: student.schoolId,

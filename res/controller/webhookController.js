@@ -3,6 +3,7 @@ const logger = require("../config/logger");
 const flutterwave = require("../Services/FlutterwaveService");
 const { createNotification } = require("../util/notify");
 const { claimPayment } = require("../util/claimPayment");
+const inAppFees = require("../Services/InAppFeeService");
 
 const addBillingCycle = (from, billingCycle) => {
   const d = new Date(from);
@@ -104,6 +105,14 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
     }
 
     const reference = event.data.tx_ref;
+
+    // A school fee paid in the app (see InAppFeeService). It verifies with Flutterwave itself and
+    // credits the invoice exactly once, so a repeated or concurrent delivery is harmless.
+    if (typeof reference === "string" && reference.startsWith("FEE-")) {
+      const outcome = await inAppFees.fulfil(reference, { transactionId: event.data.id });
+      logger.info("[FLW_WEBHOOK] Fee payment handled", { reference, status: outcome.status });
+      return res.status(200).json({ success: true, message: "Webhook processed" });
+    }
 
     const payment = await prisma.schoolPayment.findUnique({ where: { flwReference: reference } });
 

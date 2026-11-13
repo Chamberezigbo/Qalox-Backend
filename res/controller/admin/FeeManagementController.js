@@ -8,6 +8,11 @@ const { brandedEmail } = require("../../util/emailTemplate");
 const { loadStudentFeeForReceipt, buildReceiptData } = require("../../util/receiptData");
 const flutterwave = require("../../Services/FlutterwaveService");
 const campusScope = require("../../util/campusScope");
+const { claimFeePayment, applyFeePayment } = require("../../util/applyFeePayment");
+const inAppFees = require("../../Services/InAppFeeService");
+const { AUDIENCES, studentsToBill } = require("../../util/feeInvoices");
+const { resolveSessionId } = require("../../util/studentAdmission");
+const { notifyNewFees } = require("../../Services/FeeNotifyService");
 const { resolveBranding } = require("../../util/campusBranding");
 
 /**
@@ -66,6 +71,10 @@ const formatStudentFee = (sf) => ({
   studentName: `${sf.student.name} ${sf.student.surname}`,
   admissionNo: sf.student.registrationNumber,
   class: sf.feeStructure.class.name,
+  feeTitle: sf.feeStructure.title,
+  term: sf.feeStructure.term,
+  session: sf.feeStructure.session,
+  dueDate: sf.feeStructure.dueDate,
   totalFee: sf.totalFee,
   amountPaid: sf.amountPaid,
   outstanding: Math.max(sf.totalFee - sf.amountPaid, 0),
@@ -84,14 +93,34 @@ const formatStudentFee = (sf) => ({
 exports.upsertFeeStructure = async (req, res, next) => {
   try {
     const schoolId = req.schoolId;
-    const { classId, term, session, items } = req.body;
+    const { term, session, items, note } = req.body;
+    const title = String(req.body.title ?? "School Fees").replace(/\s+/g, " ").trim();
+    const audience = req.body.audience ?? "all";
+    const dueDate = req.body.dueDate ? new Date(`${String(req.body.dueDate).slice(0, 10)}T00:00:00.000Z`) : null;
+    // One class (the original shape) or several at once.
+    const classIds = [...new Set((Array.isArray(req.body.classIds) ? req.body.classIds : [req.body.classId]).map((id) => parseInt(id)).filter(Number.isInteger))];
 
-    if (!classId || !term || !session || !Array.isArray(items) || items.length === 0) {
+    if (classIds.length === 0 || !term || !session || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "classId, term, session, and a non-empty items array are required",
+        message: "classId (or classIds), term, session, and a non-empty items array are required",
         code: "MISSING_FIELDS",
       });
+    }
+    if (classIds.length > 80) {
+      return res.status(400).json({ success: false, message: "Choose at most 80 classes at a time", code: "TOO_MANY_CLASSES" });
+    }
+    if (!title || title.length > 100) {
+      return res.status(400).json({ success: false, message: "Give the fee a name of up to 100 characters", code: "INVALID_TITLE" });
+    }
+    if (!AUDIENCES.includes(audience)) {
+      return res.status(400).json({ success: false, message: "audience must be all, fresh or returning", code: "INVALID_AUDIENCE" });
+    }
+    if (dueDate && Number.isNaN(dueDate.getTime())) {
+      return res.status(400).json({ success: false, message: "The due date is not a valid date", code: "INVALID_DUE_DATE" });
+    }
+    if (note && String(note).length > 500) {
+      return res.status(400).json({ success: false, message: "The note can be up to 500 characters", code: "INVALID_NOTE" });
     }
 
     const invalidItems = items.filter((i) => !i.name || typeof i.amount !== "number" || i.amount < 0);
@@ -103,83 +132,103 @@ exports.upsertFeeStructure = async (req, res, next) => {
       });
     }
 
-    const classRecord = await prisma.class.findFirst({
-      where: campusScope.withScope({ id: parseInt(classId), schoolId }, campusScope.classWhere(req)),
+    // Fresh / returning only means something against a real session, which is what "earlier" is measured from.
+    if (audience !== "all" && (await resolveSessionId(prisma, schoolId, session)) === null) {
+      return res.status(400).json({
+        success: false,
+        message: "Choose the session from your school's list for a fee that is only for fresh or returning students",
+        code: "SESSION_NOT_FOUND",
+      });
+    }
+
+    const classRecords = await prisma.class.findMany({
+      where: campusScope.withScope({ id: { in: classIds }, schoolId }, campusScope.classWhere(req)),
     });
-    if (!classRecord) {
-      return res.status(404).json({ success: false, message: "Class not found", code: "CLASS_NOT_FOUND" });
+    if (classRecords.length !== classIds.length) {
+      return res.status(404).json({ success: false, message: "One of the classes was not found", code: "CLASS_NOT_FOUND" });
     }
 
     const totalAmount = items.reduce((sum, i) => sum + i.amount, 0);
+    const newInvoiceIds = [];
 
-    const result = await prisma.$transaction(async (tx) => {
-      // Upsert the structure itself
-      const existing = await tx.feeStructure.findUnique({
-        where: { classId_term_session: { classId: classRecord.id, term, session } },
-      });
+    const results = await prisma.$transaction(async (tx) => {
+      const out = [];
+      for (const classRecord of classRecords) {
+        const data = { dueDate, note: note ? String(note).trim() : null };
+        const existing = await tx.feeStructure.findUnique({
+          where: { classId_term_session_title_audience: { classId: classRecord.id, term, session, title, audience } },
+        });
 
-      let structure;
-      if (existing) {
-        await tx.feeStructureItem.deleteMany({ where: { feeStructureId: existing.id } });
-        structure = await tx.feeStructure.update({
-          where: { id: existing.id },
-          data: { items: { create: items.map((i) => ({ name: i.name, amount: i.amount })) } },
-          include: { items: true },
-        });
-      } else {
-        structure = await tx.feeStructure.create({
-          data: {
-            schoolId,
-            classId: classRecord.id,
-            term,
-            session,
-            items: { create: items.map((i) => ({ name: i.name, amount: i.amount })) },
-          },
-          include: { items: true },
-        });
-      }
-
-      // Generate/refresh StudentFee invoices for all students currently in this class
-      const students = await tx.student.findMany({ where: { classId: classRecord.id, schoolId, status: "active" } });
-      for (const student of students) {
-        const existingFee = await tx.studentFee.findUnique({
-          where: { studentId_feeStructureId: { studentId: student.id, feeStructureId: structure.id } },
-        });
-        if (!existingFee) {
-          await tx.studentFee.create({
-            data: {
-              schoolId,
-              studentId: student.id,
-              feeStructureId: structure.id,
-              totalFee: totalAmount,
-              amountPaid: 0,
-              status: "unpaid",
-            },
+        let structure;
+        if (existing) {
+          await tx.feeStructureItem.deleteMany({ where: { feeStructureId: existing.id } });
+          structure = await tx.feeStructure.update({
+            where: { id: existing.id },
+            data: { ...data, items: { create: items.map((i) => ({ name: i.name, amount: i.amount })) } },
+            include: { items: true },
           });
-        } else if (existingFee.totalFee !== totalAmount) {
-          // Fee structure amount changed — resync the invoice total and status,
-          // preserving whatever the student has already paid
-          await tx.studentFee.update({
-            where: { id: existingFee.id },
-            data: { totalFee: totalAmount, status: computeStatus(totalAmount, existingFee.amountPaid) },
+        } else {
+          structure = await tx.feeStructure.create({
+            data: { schoolId, classId: classRecord.id, term, session, title, audience, ...data, items: { create: items.map((i) => ({ name: i.name, amount: i.amount })) } },
+            include: { items: true },
           });
         }
+
+        // Invoice the class's students this fee is for, and bring existing invoices up to the new total
+        // (keeping whatever was already paid).
+        const students = await tx.student.findMany({
+          where: { classId: classRecord.id, schoolId, status: "active" },
+          select: { id: true, feeCategory: true, academicSessionId: true },
+        });
+        const { billed } = await studentsToBill(tx, { audience, session, schoolId }, students);
+        const have = await tx.studentFee.findMany({
+          where: { feeStructureId: structure.id, studentId: { in: billed.map((st) => st.id) } },
+        });
+        const haveByStudent = new Map(have.map((fee) => [fee.studentId, fee]));
+
+        let created = 0;
+        let updated = 0;
+        for (const student of billed) {
+          const fee = haveByStudent.get(student.id);
+          if (!fee) {
+            const invoice = await tx.studentFee.create({
+              data: { schoolId, studentId: student.id, feeStructureId: structure.id, totalFee: totalAmount, amountPaid: 0, status: "unpaid" },
+            });
+            newInvoiceIds.push(invoice.id);
+            created += 1;
+          } else if (fee.totalFee !== totalAmount) {
+            await tx.studentFee.update({
+              where: { id: fee.id },
+              data: { totalFee: totalAmount, status: computeStatus(totalAmount, fee.amountPaid) },
+            });
+            updated += 1;
+          }
+        }
+        out.push({ classId: classRecord.id, className: classRecord.name, structureId: structure.id, invoicesCreated: created, invoicesUpdated: updated, studentsInClass: students.length, studentsBilled: billed.length });
       }
+      return out;
+    }, { timeout: 60000 });
 
-      return structure;
-    }, { timeout: 20000 });
+    logger.info("[FEE_STRUCTURE_UPSERT] Fee saved", { title, audience, classes: classIds.length, term, session, created: newInvoiceIds.length });
 
-    logger.info("[FEE_STRUCTURE_UPSERT] Fee structure saved", { classId: classRecord.id, term, session });
+    // Optional: tell the parents. After the save, and never able to undo it.
+    const notification = req.body.notifyParents ? await notifyNewFees({ schoolId, studentFeeIds: newInvoiceIds }) : null;
 
     res.status(200).json({
       success: true,
-      message: `Fee breakdown saved for ${classRecord.name}`,
+      message: classRecords.length === 1 ? `${title} saved for ${classRecords[0].name}` : `${title} saved for ${classRecords.length} classes`,
       data: {
-        className: classRecord.name,
-        term: result.term,
-        session: result.session,
-        items: result.items.map((i) => ({ id: i.id, name: i.name, amount: i.amount })),
+        // The original single-class shape, kept for existing callers.
+        className: classRecords[0].name,
+        term,
+        session,
+        title,
+        audience,
+        items: items.map((i) => ({ name: i.name, amount: i.amount })),
         totalAmount,
+        results,
+        invoicesCreated: newInvoiceIds.length,
+        notification,
       },
     });
   } catch (err) {
@@ -213,6 +262,11 @@ exports.getFeeStructures = async (req, res, next) => {
       className: s.class.name,
       term: s.term,
       session: s.session,
+      classId: s.classId,
+      title: s.title,
+      audience: s.audience,
+      dueDate: s.dueDate,
+      note: s.note,
       items: s.items.map((i) => ({ id: i.id, name: i.name, amount: i.amount })),
       totalAmount: s.items.reduce((sum, i) => sum + i.amount, 0),
     }));
@@ -300,6 +354,18 @@ exports.getDebtSummary = async (req, res, next) => {
     const totalExpected = totals._sum.totalFee || 0;
     const totalCollected = totals._sum.amountPaid || 0;
 
+    // How each fee (School Fees, PTA Levy...) is doing. A school has a handful of fee names, so one
+    // aggregate per name is cheap, and it reuses the same campus scope as the totals above.
+    const titles = await prisma.feeStructure.findMany({ where: { schoolId }, select: { title: true }, distinct: ["title"] });
+    const byFee = await Promise.all(
+      titles.map(async ({ title }) => {
+        const agg = await prisma.studentFee.aggregate({ where: feeWhere({ feeStructure: { title } }), _sum: { totalFee: true, amountPaid: true }, _count: { _all: true } });
+        const expected = agg._sum.totalFee || 0;
+        const collected = agg._sum.amountPaid || 0;
+        return { title, invoices: agg._count._all, expected, collected, outstanding: Math.max(expected - collected, 0) };
+      }),
+    );
+
     res.status(200).json({
       success: true,
       data: {
@@ -309,6 +375,7 @@ exports.getDebtSummary = async (req, res, next) => {
         paidCount,
         partialCount,
         unpaidCount,
+        byFee: byFee.filter((f) => f.invoices > 0).sort((a, b) => b.expected - a.expected),
       },
     });
   } catch (err) {
@@ -420,6 +487,7 @@ exports.recordPayment = async (req, res, next) => {
         schoolName: school?.name,
         logoUrl: schoolLogo,
         stampUrl: schoolStamp,
+        feeTitle: studentFee.feeStructure.title,
         term: studentFee.feeStructure.term,
         session: studentFee.feeStructure.session,
         isPartial: newStatus === "partial",
@@ -623,7 +691,22 @@ exports.updateBankAccount = async (req, res, next) => {
       },
     });
 
-    res.status(200).json({ success: true, message: "Bank account updated", data: account });
+    // The in-app payment subaccount points at the account as it WAS. If this is that account and
+    // what it pays into changed, in-app payments are switched off rather than paying the old account.
+    const payoutChanged =
+      (accountNumber !== undefined && accountNumber !== existing.accountNumber) ||
+      (bankCode !== undefined && (bankCode || null) !== existing.bankCode) ||
+      (isActive !== undefined && !Boolean(isActive) && existing.isActive);
+    const switchedToDirect = payoutChanged ? await inAppFees.settlementAccountChanged(req.schoolId, id) : false;
+
+    res.status(200).json({
+      success: true,
+      message: switchedToDirect
+        ? "Bank account updated. In-app payments were switched off because this was your payout account; choose it again in Collect fees to turn them back on."
+        : "Bank account updated",
+      data: account,
+      switchedToDirect,
+    });
   } catch (err) {
     logger.error("[UPDATE_BANK_ACCOUNT] Failed", { error: err.message });
     next(err);
@@ -658,8 +741,9 @@ exports.deleteBankAccount = async (req, res, next) => {
     }
 
     await prisma.schoolBankAccount.delete({ where: { id } });
+    const switchedToDirect = await inAppFees.settlementAccountChanged(req.schoolId, id);
 
-    res.status(200).json({ success: true, message: "Bank account deleted" });
+    res.status(200).json({ success: true, message: "Bank account deleted", switchedToDirect });
   } catch (err) {
     logger.error("[DELETE_BANK_ACCOUNT] Failed", { error: err.message });
     next(err);
@@ -674,7 +758,7 @@ exports.deleteBankAccount = async (req, res, next) => {
 exports.listPendingPayments = async (req, res, next) => {
   try {
     const payments = await prisma.payment.findMany({
-      where: { status: "pending", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
+      where: { status: "pending", channel: "bank_transfer", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
       include: {
         studentFee: {
           include: { student: true, feeStructure: { include: { class: { select: { name: true } } } } },
@@ -693,6 +777,7 @@ exports.listPendingPayments = async (req, res, next) => {
       studentName: `${p.studentFee.student.name} ${p.studentFee.student.surname}`,
       admissionNo: p.studentFee.student.registrationNumber,
       class: p.studentFee.feeStructure.class.name,
+      feeTitle: p.studentFee.feeStructure.title,
       bankAccount: p.bankAccount
         ? {
             id: p.bankAccount.id,
@@ -726,29 +811,30 @@ exports.approvePayment = async (req, res, next) => {
     }
 
     const payment = await prisma.payment.findFirst({
-      where: { id: paymentId, status: "pending", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
+      where: { id: paymentId, status: "pending", channel: "bank_transfer", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
       include: { studentFee: true },
     });
     if (!payment) {
       return res.status(404).json({ success: false, message: "Pending payment not found", code: "NOT_FOUND" });
     }
 
-    const newAmountPaid = payment.studentFee.amountPaid + payment.amount;
-    const newStatus = computeStatus(payment.studentFee.totalFee, newAmountPaid);
-
-    await prisma.$transaction(
-      [
-        prisma.payment.update({
+    // Claimed under a row lock, so two admins clicking Approve together (or an approval racing a
+    // rejection) credit the invoice at most once.
+    const credited = await prisma.$transaction(
+      async (tx) => {
+        if (!(await claimFeePayment(tx, payment.id, { onlyPending: true }))) return false;
+        await tx.payment.update({
           where: { id: payment.id },
           data: { status: "success", recordedBy: adminId, paymentDate: new Date() },
-        }),
-        prisma.studentFee.update({
-          where: { id: payment.studentFeeId },
-          data: { amountPaid: newAmountPaid, status: newStatus },
-        }),
-      ],
+        });
+        await applyFeePayment(tx, payment.studentFeeId, payment.amount);
+        return true;
+      },
       { timeout: 20000 }
     );
+    if (!credited) {
+      return res.status(409).json({ success: false, message: "This payment has already been handled", code: "ALREADY_HANDLED" });
+    }
 
     logger.info("[APPROVE_PAYMENT] Payment approved", { paymentId, adminId, amount: payment.amount });
 
@@ -776,7 +862,7 @@ exports.rejectPayment = async (req, res, next) => {
     }
 
     const payment = await prisma.payment.findFirst({
-      where: { id: paymentId, status: "pending", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
+      where: { id: paymentId, status: "pending", channel: "bank_transfer", studentFee: campusScope.withScope({ schoolId: req.schoolId }, campusScope.viaStudent(req)) },
     });
     if (!payment) {
       return res.status(404).json({ success: false, message: "Pending payment not found", code: "NOT_FOUND" });

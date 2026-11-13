@@ -2,6 +2,8 @@ import prisma from "../../util/prisma";
 import { AppError } from "../../util/AppError";
 import { generateReceiptNo } from "../../util/receiptNo";
 import { loadStudentFeeForReceipt, buildReceiptData } from "../../util/receiptData";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const inAppFees = require("../InAppFeeService");
 
 /**
  * Self-service fee viewing/payment for a logged-in student — the student
@@ -15,7 +17,7 @@ export class StudentFeeService {
         const fees = await prisma.studentFee.findMany({
             where: { studentId },
             include: {
-                feeStructure: { select: { term: true, session: true, items: { select: { name: true, amount: true } } } },
+                feeStructure: { select: { term: true, session: true, title: true, dueDate: true, items: { select: { name: true, amount: true } } } },
                 payments: { orderBy: { paymentDate: "desc" } },
             },
             orderBy: { createdAt: "desc" },
@@ -28,6 +30,8 @@ export class StudentFeeService {
 
             return {
                 id: f.id,
+                title: f.feeStructure.title,
+                dueDate: f.feeStructure.dueDate,
                 term: f.feeStructure.term,
                 session: f.feeStructure.session,
                 items: f.feeStructure.items,
@@ -71,6 +75,10 @@ export class StudentFeeService {
 
         const student = await prisma.student.findUnique({ where: { id: studentId }, select: { schoolId: true } });
         if (!student) throw new AppError("Student not found", 404);
+        // A school that collects fees through the app has no bank transfer to declare.
+        if ((await inAppFees.getSettings(student.schoolId)).mode === "in_app") {
+            throw new AppError("This school collects fees through the app. Use Pay now instead.", 409);
+        }
 
         const studentFee = await prisma.studentFee.findFirst({ where: { id: studentFeeId, studentId } });
         if (!studentFee) throw new AppError("Fee record not found", 404);
@@ -103,6 +111,36 @@ export class StudentFeeService {
                 accountName: bankAccount.accountName,
                 accountNumber: bankAccount.accountNumber,
             },
+        };
+    }
+
+    /** How this student's school collects fees (direct transfer, or pay in the app) and the service charge rate. */
+    async getFeeCollection(studentId: number) {
+        const student = await prisma.student.findUnique({ where: { id: studentId }, select: { schoolId: true } });
+        if (!student) throw new AppError("Student not found", 404);
+        const { mode, ready, serviceChargePercent } = await inAppFees.getCollection(student.schoolId);
+        return { mode, ready, serviceChargePercent };
+    }
+
+    /** Starts an in-app payment for one of the student's own invoices; returns the hosted checkout. */
+    async payOnline(studentId: number, studentFeeId: number, amount: number) {
+        const student = await prisma.student.findUnique({ where: { id: studentId }, select: { schoolId: true, name: true, surname: true, email: true, guardianNumber: true } });
+        if (!student) throw new AppError("Student not found", 404);
+        return inAppFees.startPayment({
+            schoolId: student.schoolId, studentFeeId, studentId, amount, area: "student",
+            payer: { type: "student", id: studentId, name: `${student.name} ${student.surname}`, email: student.email, phone: student.guardianNumber },
+        });
+    }
+
+    /** Where an online payment stands. Asks Flutterwave if the webhook has not told us yet. */
+    async getFeePayment(studentId: number, reference: string) {
+        const payment = await prisma.payment.findUnique({ where: { flwReference: reference }, include: { studentFee: { select: { studentId: true } } } });
+        if (!payment || payment.channel !== "in_app" || payment.studentFee.studentId !== studentId) throw new AppError("Payment not found", 404);
+        const outcome = await inAppFees.fulfil(reference);
+        const p = outcome.payment ?? payment;
+        return {
+            status: outcome.status, amount: p.amount, serviceCharge: p.serviceCharge, chargedAmount: p.chargedAmount,
+            receiptNo: p.receiptNo, studentFeeId: p.studentFeeId, studentId,
         };
     }
 

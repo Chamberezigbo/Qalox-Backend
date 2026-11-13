@@ -128,7 +128,9 @@ Return only the requested JSON.`;
 
 /** One generateContent call. Throws a readable Error on transport or API failure. */
 async function callGemini(body) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${getModel()}:generateContent?key=${getApiKey()}`;
+  // GEMINI_BASE_URL exists so tests can point this at a stand-in server; unset, it is Google's.
+  const base = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+  const url = `${base}/models/${getModel()}:generateContent?key=${getApiKey()}`;
 
   let response;
   try {

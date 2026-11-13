@@ -23,6 +23,31 @@ export class StudentFeeController {
         }
     };
 
+    getFeeCollection = async (req: StudentRequest, res: Response, next: NextFunction) => {
+        try {
+            res.status(200).json({ success: true, data: await this.service.getFeeCollection(req.studentId!) });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    payOnline = async (req: StudentRequest, res: Response, next: NextFunction) => {
+        try {
+            const data = await this.service.payOnline(req.studentId!, Number(req.params.studentFeeId), Number(req.body.amount));
+            res.status(201).json({ success: true, data });
+        } catch (err) {
+            next(err);
+        }
+    };
+
+    getFeePayment = async (req: StudentRequest, res: Response, next: NextFunction) => {
+        try {
+            res.status(200).json({ success: true, data: await this.service.getFeePayment(req.studentId!, String(req.params.reference)) });
+        } catch (err) {
+            next(err);
+        }
+    };
+
     declarePayment = async (req: StudentRequest, res: Response, next: NextFunction) => {
         try {
             const studentFeeId = Number(req.params.studentFeeId);

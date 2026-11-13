@@ -98,6 +98,8 @@ const {
 const { PERMISSIONS } = require("../../util/permissions");
 const classNamingController = require("../../controller/admin/ClassNamingController");
 const attendanceOverviewController = require("../../controller/admin/AttendanceOverviewController");
+const feeCollectionController = require("../../controller/admin/FeeCollectionController");
+const feeSetupController = require("../../controller/admin/FeeSetupController");
 
 const {
   createClass,
@@ -236,6 +238,25 @@ router.get("/promotion/runs", auth.authenticateSuperAdmin, auth.attachSchoolId, 
 router.post("/promotion/runs/:id/undo", auth.authenticateSuperAdmin, auth.attachSchoolId, promotionController.undo);
 router.get("/attendance/teachers", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, attendanceOverviewController.listTeachers);
 router.get("/attendance/broadsheet", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_MANAGE), auth.attachSchoolId, attendanceOverviewController.broadsheet);
+const staffAttendanceController = require("../../controller/StaffAttendanceController");
+router.get("/staff-attendance/board", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.board);
+router.get("/staff-attendance/review", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.review);
+router.post("/staff-attendance/review/:id/decide", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.decide);
+router.post("/staff-attendance/manual", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.manual);
+router.post("/staff-attendance/records/:id/remove", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.removeRecord);
+router.get("/staff-attendance/report", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.report);
+router.get("/staff-attendance/settings", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.settings);
+router.put("/staff-attendance/settings", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.updateSettings);
+router.get("/staff-attendance/locations", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.locations);
+router.put("/staff-attendance/site", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.setSite);
+router.get("/staff-attendance/qr", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.qr);
+router.post("/staff-attendance/qr/regenerate", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.regenerate);
+router.post("/staff-attendance/devices/:id/decide", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.decideDevice);
+router.post("/staff-attendance/devices/reset/:staffId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.resetDevices);
+router.get("/staff-attendance/events", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.events);
+router.get("/staff-attendance/gate-screens", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.gateList);
+router.post("/staff-attendance/gate-screens/pair", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.gatePair);
+router.delete("/staff-attendance/gate-screens/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.STAFF_ATTENDANCE_MANAGE), auth.attachSchoolId, staffAttendanceController.admin.gateRevoke);
 router.get("/class-naming", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.list);
 router.post("/class-naming/rename", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.rename);
 router.post("/class-naming/add", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.CLASSES_MANAGE), auth.attachSchoolId, classNamingController.addSystem);
@@ -282,12 +303,19 @@ router.post("/staff/bulk-upload", auth.authenticateSchoolLevelAdmin, auth.requir
 
 // Fee management routes — sub-admins need PERMISSIONS.FEES_MANAGE; head admins always pass
 router.post("/fees/structure", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, upsertFeeStructure);
+router.post("/fees/structure/preview", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, feeSetupController.preview);
+router.delete("/fees/structure/:id", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, feeSetupController.deleteStructure);
+router.get("/fees/students-category", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, feeSetupController.listCategories);
+router.put("/fees/students/:studentId/category", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, feeSetupController.setCategory);
 router.get("/fees/structure", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getFeeStructures);
 router.get("/fees/students", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getStudentFees);
 router.get("/fees/debt-summary", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getDebtSummary);
 router.post("/fees/payments", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, recordPayment);
 router.get("/fees/receipts/:studentFeeId", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getReceipt);
 router.post("/fees/reminders/send-email", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, sendFeeReminders);
+router.get("/fees/collection", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, feeCollectionController.getCollection);
+router.put("/fees/collection", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, feeCollectionController.setCollection);
+router.get("/fees/online-payments", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, feeCollectionController.listOnlinePayments);
 router.get("/fees/banks", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, getBanks);
 router.get("/fees/resolve-account", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, resolveBankAccount);
 router.post("/fees/bank-accounts", auth.authenticateSchoolLevelAdmin, auth.requirePermission(PERMISSIONS.FEES_MANAGE), auth.attachSchoolId, createBankAccount);

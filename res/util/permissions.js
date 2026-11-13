@@ -25,6 +25,7 @@ const PERMISSIONS = {
   EXAMS_MANAGE: "exams.manage",
   PARENTS_MANAGE: "parents.manage",
   SCHEME_OF_WORK_MANAGE: "scheme_of_work.manage",
+  STAFF_ATTENDANCE_MANAGE: "staff_attendance.manage",
 };
 
 // Human-readable labels, matching the frontend's sidebar module names exactly.
@@ -44,6 +45,7 @@ const PERMISSION_LABELS = {
   [PERMISSIONS.EXAMS_MANAGE]: "Manage Exams",
   [PERMISSIONS.PARENTS_MANAGE]: "Parent Credentials",
   [PERMISSIONS.SCHEME_OF_WORK_MANAGE]: "Scheme of Work",
+  [PERMISSIONS.STAFF_ATTENDANCE_MANAGE]: "Staff Attendance",
 };
 
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
@@ -54,7 +56,7 @@ const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const SUB_ADMIN_TYPES = ["hr", "secretary", "bursar", "other"];
 
 const SUB_ADMIN_TYPE_DEFAULTS = {
-  hr: [PERMISSIONS.STAFF_MANAGE],
+  hr: [PERMISSIONS.STAFF_MANAGE, PERMISSIONS.STAFF_ATTENDANCE_MANAGE],
   secretary: [PERMISSIONS.STUDENTS_MANAGE, PERMISSIONS.CLASSES_MANAGE],
   bursar: [PERMISSIONS.FEES_MANAGE],
   other: [],

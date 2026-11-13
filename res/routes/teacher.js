@@ -33,6 +33,10 @@ const teacherSchemeOfWorkController = require("../controller/teacher/SchemeOfWor
 const examTimetableController = new ExamTimetableController();
 
 router.post("/login", teacherAuthController.login);
+const staffAttendanceController = require("../controller/StaffAttendanceController");
+router.get("/staff-attendance/today", teacherAuthMiddleware, staffAttendanceController.staff.today);
+router.get("/staff-attendance/history", teacherAuthMiddleware, staffAttendanceController.staff.history);
+router.post("/staff-attendance/clock", teacherAuthMiddleware, staffAttendanceController.staff.clock);
 router.get("/overview", teacherAuthMiddleware, teacherOverviewController.getOverview);
 router.get("/exams/upcoming", teacherAuthMiddleware, examTimetableController.getUpcomingExams);
 

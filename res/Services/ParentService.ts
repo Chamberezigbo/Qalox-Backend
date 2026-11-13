@@ -8,6 +8,8 @@ import { schoolMediaUrl } from "../controller/public/publicController";
 import { StudentResultService } from "./student/StudentResultService";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { resolveBranding } = require("../util/campusBranding");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const inAppFees = require("./InAppFeeService");
 
 export class ParentService {
     /** Confirms the requesting parent actually owns this child before any read. */
@@ -167,7 +169,7 @@ export class ParentService {
         const fees = await prisma.studentFee.findMany({
             where: { studentId },
             include: {
-                feeStructure: { select: { term: true, session: true, items: { select: { name: true, amount: true } } } },
+                feeStructure: { select: { term: true, session: true, title: true, dueDate: true, items: { select: { name: true, amount: true } } } },
                 payments: { orderBy: { paymentDate: "desc" } },
             },
             orderBy: { createdAt: "desc" },
@@ -180,6 +182,8 @@ export class ParentService {
 
             return {
                 id: f.id,
+                title: f.feeStructure.title,
+                dueDate: f.feeStructure.dueDate,
                 term: f.feeStructure.term,
                 session: f.feeStructure.session,
                 items: f.feeStructure.items,
@@ -219,6 +223,10 @@ export class ParentService {
      */
     async declarePayment(parentId: number, studentId: number, studentFeeId: number, bankAccountId: number, amount: number) {
         const student = await this.assertOwnsChild(parentId, studentId);
+        // A school that collects fees through the app has no bank transfer to declare.
+        if ((await inAppFees.getSettings(student.schoolId)).mode === "in_app") {
+            throw new AppError("This school collects fees through the app. Use Pay now instead.", 409);
+        }
 
         if (!amount || amount <= 0) throw new AppError("Enter a valid amount", 400);
 
@@ -253,6 +261,36 @@ export class ParentService {
                 accountName: bankAccount.accountName,
                 accountNumber: bankAccount.accountNumber,
             },
+        };
+    }
+
+    /** How this child's school collects fees (direct transfer, or pay in the app) and the service charge rate. */
+    async getFeeCollection(parentId: number, studentId: number) {
+        const student = await this.assertOwnsChild(parentId, studentId);
+        const { mode, ready, serviceChargePercent } = await inAppFees.getCollection(student.schoolId);
+        return { mode, ready, serviceChargePercent };
+    }
+
+    /** Starts an in-app payment for one invoice; returns the hosted checkout to send the parent to. */
+    async payOnline(parentId: number, studentId: number, studentFeeId: number, amount: number) {
+        const student = await this.assertOwnsChild(parentId, studentId);
+        const parent = await prisma.parent.findUnique({ where: { id: parentId }, select: { name: true, email: true, phone: true } });
+        return inAppFees.startPayment({
+            schoolId: student.schoolId, studentFeeId, studentId, amount, area: "parent",
+            payer: { type: "parent", id: parentId, name: parent?.name, email: parent?.email, phone: parent?.phone },
+        });
+    }
+
+    /** Where an online payment stands. Asks Flutterwave if the webhook has not told us yet. */
+    async getFeePayment(parentId: number, reference: string) {
+        const payment = await prisma.payment.findUnique({ where: { flwReference: reference }, include: { studentFee: { select: { studentId: true } } } });
+        if (!payment || payment.channel !== "in_app") throw new AppError("Payment not found", 404);
+        await this.assertOwnsChild(parentId, payment.studentFee.studentId);
+        const outcome = await inAppFees.fulfil(reference);
+        const p = outcome.payment ?? payment;
+        return {
+            status: outcome.status, amount: p.amount, serviceCharge: p.serviceCharge, chargedAmount: p.chargedAmount,
+            receiptNo: p.receiptNo, studentFeeId: p.studentFeeId, studentId: payment.studentFee.studentId,
         };
     }
 

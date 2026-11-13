@@ -36,6 +36,7 @@ const buildReceiptData = async (studentFee) => {
     paymentDate: latestPayment.paymentDate,
     paymentMethod: latestPayment.paymentMethod,
     items: studentFee.feeStructure.items.map((i) => ({ name: i.name, amount: i.amount })),
+    feeTitle: studentFee.feeStructure.title,
     term: studentFee.feeStructure.term,
     session: studentFee.feeStructure.session,
     isPartial: studentFee.status === "partial",
