@@ -60,14 +60,17 @@ exports.rename = async (req, res, next) => {
 exports.addSystem = async (req, res, next) => {
   try {
     const prefix = cleanPrefix(req.body.name);
-    const start = Number(req.body.start);
-    const end = Number(req.body.end);
+    // Levels are optional: none = one class named exactly as typed; only a start = that one level.
+    const blank = (v) => v === undefined || v === null || v === "";
+    const noLevels = blank(req.body.start) && blank(req.body.end);
+    const start = blank(req.body.start) ? 1 : Number(req.body.start);
+    const end = blank(req.body.end) ? start : Number(req.body.end);
     const campusId = req.body.campusId === undefined || req.body.campusId === "" ? null : Number(req.body.campusId);
 
-    if (!prefix || prefix.length > MAX_PREFIX || /\d$/.test(prefix)) {
+    if (!prefix || prefix.length > MAX_PREFIX || (!noLevels && /\d$/.test(prefix))) {
       return res.status(400).json({ success: false, message: "Give a name without a number at the end, e.g. Grade" });
     }
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start + 1 > MAX_LEVELS) {
+    if (!noLevels && (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start + 1 > MAX_LEVELS)) {
       return res.status(400).json({ success: false, message: `Levels must be whole numbers, from 1, with the end not below the start (at most ${MAX_LEVELS} classes)` });
     }
     if (campusScope.isRestricted(req) && campusId == null) {
@@ -80,7 +83,8 @@ exports.addSystem = async (req, res, next) => {
     }
 
     const wanted = [];
-    for (let level = start; level <= end; level++) wanted.push(buildName(prefix, level));
+    if (noLevels) wanted.push(prefix);
+    else for (let level = start; level <= end; level++) wanted.push(buildName(prefix, level));
     const existing = await prisma.class.findMany({
       where: { schoolId: req.schoolId, campusId, name: { in: wanted } },
       select: { name: true },

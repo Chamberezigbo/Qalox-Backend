@@ -76,6 +76,25 @@ describe("addSystem", () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
+  it("creates one class named exactly as typed when no levels are given", async () => {
+    prismaMock.class.findMany.mockResolvedValueOnce([]);
+    const res = mockRes();
+    await controller.addSystem(req({ name: "Lower KG", start: "", end: "" }), res, jest.fn());
+    expect(prismaMock.class.createMany).toHaveBeenCalledWith({
+      data: [{ schoolId: 1, campusId: null, name: "Lower KG" }],
+    });
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it("creates just that level when only the start is given", async () => {
+    prismaMock.class.findMany.mockResolvedValueOnce([]);
+    const res = mockRes();
+    await controller.addSystem(req({ name: "Grade", start: 2 }), res, jest.fn());
+    expect(prismaMock.class.createMany).toHaveBeenCalledWith({
+      data: [{ schoolId: 1, campusId: null, name: "Grade 2" }],
+    });
+  });
+
   it("rejects a bad range", async () => {
     const res = mockRes();
     await controller.addSystem(req({ name: "Grade", start: 5, end: 2 }), res, jest.fn());
